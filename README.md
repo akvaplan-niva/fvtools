@@ -1,4 +1,7 @@
-Use this branch to copy over modules from fvcom_pytools. When that's more or less done, we'll merge into master :)
+# About the workflow in this repository
+
+This repo has two main branches: `master` and `dev`. Both are protected (meaning you have to open a merge request to get stuff in there). `dev` is for active development and is occasionally merged into `master`, which is hopefully more stable and better tested.
+
 
 This projects is currently under my namespace because it's easier to handle wrt permissions, but we could transfer it to apn once we're up and running I guess.
 
@@ -10,7 +13,7 @@ a variety of scripts to interact with FVCOM data before, during and after a mode
 
 # Example workflow:
 ## Preparing an experiment
-1. Create a folder called "my_experiment" and a subfolder of it called "input". 
+1. Create a folder called "my_experiment" and a subfolder of it called "input".
 2. Put a "my_experiment_sigma.dat" file into the my_experiment/input folder, for example a TANH sigma coordinate:
 ```dat
 NUMBER OF SIGMA LEVELS = 35
@@ -74,7 +77,7 @@ ROMS-FVCOM nesting will automatically find the data we need at thredds.met.no, s
   >>> import fvtools.pre_pro.BuildRivers as br
   >>> # If you prepare a new experiment (ROMS nested):
   >>> br.main('2018-01-01-00', '2018-02-01-00', temp=None)
-  
+
   >>> # If you prepare a fvcom-nested experiment:
   >>> br.main('2018-01-01-00', '2018-02-01-00', temp='fvcom_mother_temperatures.npy')
 
@@ -116,7 +119,7 @@ fvcom_make_file_list.py makes a file that links points in time to files and indi
 ### Take a quick look at the results
 qc_gif and qc_gif_uv are two versatile scripts to look at your results between [start, stop] (or the entire timespan if not specified).
 
-These scripts were developed to be used during a simulation to make it easier to look for bad model results. 
+These scripts were developed to be used during a simulation to make it easier to look for bad model results.
 
 They are helpful to look for dynamically active regions so that you can avoid putting a nesting zone there. (that is: we want to put the nesting zone in areas where the flow fluctuates on timescales >> 1h to avoid aliasing and false shocks)
 
