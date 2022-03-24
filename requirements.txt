@@ -1,0 +1,18 @@
+# this is just a draft and has not been tested in any way
+
+progressbar
+f90nml
+
+numpy
+scipy
+pandas
+xarray
+cmocean
+matplotlib
+netCDF4
+utm
+PIL
+numba
+shapely
+pyproj
+pyTMD

@@ -1,0 +1,5 @@
+poly_number;min_res;max_res;points_across
+0;
+1;
+2;
+3;
