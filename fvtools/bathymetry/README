@@ -1,0 +1,24 @@
+Different bathymetry data sets for the Norwegian coast are available for 
+download from Kartverket (https://dybdedata.kartverket.no/DybdedataInnsyn/). 
+However, it is not possible to download data from larger areas in one go (2020), 
+and instead of repeating the tedious task of retreiving data for individual 
+grids in every new project, all the data have been dowloaded to Stokes 
+(/home/frankgaa/Bathymetry). To supplement this data set in areas with no 
+coverage, data from Met's NorShelf model is used. A script for processing 
+the data (bathymetry.py) can be found in the same folder.
+
+Datasets
+ * gridded50_xyz - The best data set from Kartverket. 
+		   It is based on multibeam echo soundings and is available 
+                   on a grid of 50 m resolution. Only available for some 
+                   areas of the coast.
+ * primaer_data_xyz -  An older data set from kartverket. 
+                       Has data from most areas, but with poorer and irregular 
+                       resolution. Used where gridded50_xyz is not available.
+ * norshelf_data - The bathymetry in the Norshelf model.
+                   Used where nothing else is available.
+ * Norgeskyst.txt - Coastline with 20m resolution. Used to specify h = 0 at the coast.
+
+The make_bathymetry function in bathymetry.py creates a bathymetry data set 
+from a given area and saves it to disc . See function baty_langfjorden 
+for example of use.
