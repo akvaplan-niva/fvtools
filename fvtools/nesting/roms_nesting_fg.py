@@ -1104,8 +1104,23 @@ class ROMS_grid():
         self.lat_rho = ncdata.variables.get('lat_rho')[:]
         self.h_rho   = ncdata.variables.get('h')[:]
         self.angle   = ncdata.variables.get('angle')[:]
+
+        # Find z-level using variable sigma levels
         self.Cs_r    = ncvert.variables.get('Cs_r')[:]
-        self.z_rho   = self.h_rho[:, :, None] * self.Cs_r
+        self.s_rho   = ncvert.variables.get('s_rho')[:]
+        self.hc      = ncvert.variables.get('hc')[0]
+        self.S       = np.tile(np.zeros((self.lon_rho.shape))[:,:,None], (1,1,len(self.Cs_r)))
+
+        # - get the depth at each s-level
+        for i, (s, c) in enumerate(zip(self.s_rho, self.Cs_r)):
+            self.S[:, :, i] = (self.hc*s + self.h_rho[:, :]*c)/(self.hc+self.h_rho)
+
+        zeta = np.mean(ncdata.variables['zeta'][:])
+        # this zeta is a slight simplification (good to probably within cm accuracy)-
+        # according to https://www.myroms.org/wiki/Vertical_S-coordinate#transform2,
+        # we would have to use time-varying zeta, but that would require quite a bit of
+        # overhaul of the dimensions, interpolation, etc.
+        self.z_rho = zeta + (zeta + self.h_rho[:,:,None]) * self.S
 
         # u velocity
         # ----
