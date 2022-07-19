@@ -68,9 +68,7 @@ class FVCOM_grid():
             self.lonc,  self.latc  = self.Proj(self.xc, self.yc,  inverse=True)
 
     def __str__(self):
-        return f'''FVCOM grid from {self.filepath}
---
-
+        return f'''
 Attributes:
         Position data
             x, y   (lon, lat)   - node position
@@ -83,24 +81,30 @@ Attributes:
             h, hc               - total depth
 
         Grid identifiers
-            nbsn   - nearby surrounding nodes  (to a node)
-            nbve   - nearby surroundiing cells (to a node)
-            ntsn   - number of nodes surrounding a node
-            ntve   - number of elements surrounding a node
+            nbsn   - ids to nodes surrounding nodes
+            nbve   - ids to cells surrounding nodes
+            ntsn   - number of nodes surrounding nodes
+            ntve   - number of cells surrounding nodes
+            nbse   - cells surrounding cells
+            nese   - number of cells surrounding cells
+
+        Grid details:
+            grid_res    - array with minimum resolution in each triangle
+            grid_angles - array with the angle of each corner in each triangle
 
         Grid area
             art1     - area of node-based control volume (CV)
             tri_area - area of triangles
 
         Grid volume
-            node_volume - volume connected to the data on a node
-            cell_volume - volume connected to the data at a cell
+            node_volume - volume connected to the data on nodes (and sigma layer)
+            cell_volume - volume connected to the data at cells (and sigma layer)
 
         Open boundary identifiers
             read_obc_nodes - numpy object with nodes in each obc
             obc_nodes      - simple list of all obc nodes
             obc_type       - identifier saying which type of OBC condition was used
-                             (will only be read from _restart_****.nc files)
+                             (will only be read from {self.casename}_restart_****.nc files)
 
 Functions:
         Plotting:
@@ -112,25 +116,23 @@ Functions:
             .write_2dm()      - return mesh as a .2dm file that can be read to SMS
             .get_obc()        - turns a .read_obc_nodes object to a .obc_nodes list, 
                                 and optionally plots .obc-nodes
-            .get_res()        - computes an estimate of the mesh resolution 
-            .get_angle()      - computes the angle of each triangle corner
             .get_coast()      - returns coastline polygons (will also include the obc)
-            .find_nearest()   - find nearest grid point (either cell or node) to a point
+            .find_nearest()   - find nearest grid point (either an element (cell) or a node) to a point
             .isinside()       - find nodes inside a search area
  
         Physics
             .get_coriolis()   - Computes the coriolis parameter
 
         Data extraction
-            .interpolate_to_z()  - Interpolates input-field to z-depth
-            .get_section_data()  - Interpolates input field along a section
-            .smooth()            - smooths a input field
-            .make_interpolation_matrices_TS() - creates matrix to interpolate node data to z-depth
-            .make_interpolation_matrices_uv() - creates matrix to interpolate cell data to z-depth
+            .interpolate_to_z(field)  - Interpolates input-field to z-depth
+            .get_section_data(field)  - Interpolates input field along a section
+            .smooth(field)            - smooths an input-field
+            .make_interpolation_matrices_TS() - creates a matrix to interpolate node data to z-depth
+            .make_interpolation_matrices_uv() - creates a matrix to interpolate cell data to z-depth
 
         Mesh cropping
-            .subgrid()        - crops the mesh object and returns a smaller one with indexing
-                                to the old one. (usefull to reduce data-handling size)
+            .subgrid()        - crops the mesh object and returns a smaller object with indexing
+                                to the original mesh (usefull to reduce size of the data being handled)
 
 Extended features through the mesh-connectivity TGE (.T) class:
         -> This contains functions to compute some heavier stuffs (will take a minute or two to set-up)
@@ -145,12 +147,13 @@ Extended features through the mesh-connectivity TGE (.T) class:
 -------------------------------------------------------------------------------------------------------
 Short summary of this mesh:
 ----
+Grid read from:        {self.filepath}
 Number of nodes:       {len(self.x)}
 Number of triangles:   {len(self.xc)}
-Grid resolution:       {np.min(self.get_res()):.2f} m to {np.max(self.get_res()):.2f} m
-Grid angles (degrees): min: {np.min(self.get_angles()):.2f}, max: {np.max(self.get_angles()):.2f}
+Grid resolution:       min: {np.min(self.grid_res):.2f} m, max: {np.max(self.grid_res):.2f} m
+Grid angles (degrees): min: {np.min(self.grid_angles):.2f}, max: {np.max(self.grid_angles):.2f}
 Casename:              {self.casename}
-
+Reference:             {self.reference}
 '''
 
     # Some grid properties we can't always read from files, and may need to compute.
@@ -159,16 +162,28 @@ Casename:              {self.casename}
     def T(self):
         '''
         T computes the same grid connectivity metrics as tge.F
-
         Does also include routines to compute gradients, vorticity and okubo weiss parameter.
         '''
         if not hasattr(self, '_T'):
-            print('- computing grid connectivity using tge, may take a minute.')
-            self._T = tge.main(self, verbose = False)
+            self._T = tge.main(self, verbose = True)
             self._nbsn = self._T.NBSN 
             self._nbve = self._T.NBVE
+            self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
         return self._T
     
+    @property
+    def ctri(self):
+        '''
+        Triangulation using xc, yc as nodes and with land masked.
+        '''
+        if not hasattr(self, '_ctri'):
+            self._ctri = self.cell_tri()
+        return self._ctri
+
+    @ctri.setter
+    def ctri(self, var):
+        self._ctri = var
+
     @property
     def art1(self):
         '''
@@ -222,6 +237,25 @@ Casename:              {self.casename}
     @nbve.setter
     def nbve(self, val):
         self._nbve = val
+
+    @property
+    def nese(self):
+        '''
+        nese is the number of elements surrounding each element
+        '''
+        if not hasattr(self, '_nese'):
+            self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
+
+        return self._nese
+
+    @property
+    def nbse(self):
+        '''
+        nbse is a list referencing the ids of nearby elements surrounding each element
+        '''
+        if not hasattr(self, '_nbse'):
+            self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
+        return self._nbse
 
     @property
     def siglev_c(self):
@@ -353,6 +387,20 @@ Casename:              {self.casename}
     @siglevz_uv.setter 
     def siglevz_uv(self, var):
         self._siglevz_uv = var
+
+    @property
+    def grid_angles(self):
+        '''
+        Angles of triangle corners
+        '''
+        return self._get_angles()
+
+    @property
+    def grid_res(self):
+        '''
+        resolution (minimum length of triangle walls in each triangle)
+        '''
+        return self._get_res()
 
     # Functions we use to load relevant grid data to be used as instance attributes
     # ----------------------------------------------------------------------------------
@@ -492,7 +540,7 @@ Casename:              {self.casename}
 
         return Proj(self.reference)
 
-    def get_res(self):
+    def _get_res(self):
         '''
         Return the grid resolution for each cell
         '''
@@ -503,7 +551,7 @@ Casename:              {self.casename}
         ds   = np.sqrt(dx**2 + dy**2)
         return np.mean(ds, axis = 0)
 
-    def get_angles(self):
+    def _get_angles(self):
         '''
         Return the angles of corners in the grid cells
         '''
@@ -659,28 +707,10 @@ Casename:              {self.casename}
         ctri  = tri.Triangulation(self.xc, self.yc)
 
         # Mask triangles covering land
-        masked_ctris = self._mask_land_tris(ctri.triangles)
+        masked_ctris = tools.mask_land_tris(self.x, self.y, self.tri, ctri.triangles)
 
         return masked_ctris
 
-    def _mask_land_tris(self, ctri):
-        '''
-        Mask triangles facing land
-        '''
-        # Figure out which elements connect to land
-        if verbose_g: print(' - Masking triangles covering land')
-        NV       = tge.check_nv(self.tri, self.x, self.y)
-        NBE      = tge.get_NBE(len(self.xc), len(self.x), NV)
-        ISBCE, _ = tge.get_BOUNDARY(len(self.xc), len(self.x), NBE, NV)
-
-        # Illegal triangles are connected to land at all three vertices
-        # --> ie. where sum of ISBCE for all triangles is > 3
-        all_bce   = ISBCE[:][ctri].sum(axis=1)
-        mask      = all_bce == 3
-        self.ctri = ctri[mask==False]
-
-        # Masked_tri:
-        return ctri[mask==False]
         
     # Routines often used for plotting
     # -----------------------------------------------------------------------------------------
@@ -696,6 +726,19 @@ Casename:              {self.casename}
         plt.axis('equal')
         plt.show(block = False)
         plt.pause(0.1) # to force it to be plotted on the go
+
+    def plot_contour(self, field, *args, **kwargs):
+        '''
+        autofill standard parameters
+        '''
+        f = np.squeeze(field)
+        if np.isnan(f).any():
+            mask = np.isnan(f)[self.tri].any(axis=1)
+            plt.tricontourf(self.x, self.y, self.tri, f, mask = mask, *args, **kwargs)
+        else:
+            plt.tricontourf(self.x, self.y, self.tri, f, *args, **kwargs)
+        plt.axis('equal')
+        plt.show(block = False)
 
     def plot_field(self, field):
         '''
@@ -888,7 +931,7 @@ Casename:              {self.casename}
         - f:       datafield
         - z:       depth [m] to interpolate to f
         - depths:  depth of grid f. Positive downward.
-        - verobse: report progress in routine
+        - verbose: report progress in routine
 
         Returns field at depth z. Will contain nans at z deeper than gridpoint.
         -------------------
@@ -902,16 +945,16 @@ Casename:              {self.casename}
         # ----
         if depths is None:
             if f.shape == self.siglev.T.shape:
-                depths = -self.h[:,None]*self.siglev.T
+                depths = -(self.h[:,None]*self.siglev).T
 
             elif f.shape == self.siglev_center.T.shape:
-                depths = -self.h_uv[:,None]*self.siglev_center.T
+                depths = -(self.h_uv[:,None]*self.siglev_center).T
 
             elif f.shape == self.siglay.T.shape:
-                depths = -self.h[:,None]*self.siglay.T
+                depths = -(self.h[:,None]*self.siglay).T
 
             elif f.shape == self.siglay_center.T.shape:
-                depths = -self.h_uv[:,None]*self.siglay_center.T
+                depths = -(self.h_uv[:,None]*self.siglay_center).T
 
             else:
                 raise ValueError('Dimension does match siglev, siglay, siglev_center or siglay_center, perhaps you should transpose the input field?')
@@ -1238,7 +1281,6 @@ Casename:              {self.casename}
         '''
         Returns x, y points along a section for use in section-analysis
         '''
-        graphical = False
         if section_file is not None:
             try:
                 lon, lat = np.loadtxt(section_file, delimiter = ',', unpack = True)
@@ -1270,14 +1312,13 @@ Casename:              {self.casename}
             self.plot_grid()
             plt.title('Click where you want the section to go (minimum two points)')
             places = plt.ginput(timeout = -1, n = -1)
-            plt.close()
+            plt.close('all')
             x_section = []; y_section = []
             for p in places:
                 x_section.append(p[0])
                 y_section.append(p[1])
             x_section = np.array(x_section)
             y_section = np.array(y_section)
-            graphical = True
 
         # Create an even points spacing
         # ----
@@ -1301,14 +1342,6 @@ Casename:              {self.casename}
 
         self.fresh_section = True
 
-        if graphical:
-            plt.scatter(self.x_sec, self.y_sec, s = 30, c = 'k', zorder = 10)
-            plt.scatter(x_section[0], y_section[0], s = 60, c = 'g', zorder = 11, label = 'start')
-            plt.scatter(x_section[-1], y_section[-1], s = 60, c = 'r', zorder = 11, label = 'stop')
-            plt.legend()
-            plt.title('Section')
-            plt.draw()
-
         # Plot section
         # ----
         if store_transect_img:
@@ -1321,7 +1354,7 @@ Casename:              {self.casename}
             plt.title('Section')
             plt.axis('equal')
             plt.savefig('Section_map.png')
-            plt.close()
+            plt.close('all')
 
 
     def get_section_data(self, data,
@@ -1409,14 +1442,26 @@ Casename:              {self.casename}
         out['x'] = self.x_sec
         out['y'] = self.y_sec
 
+        # Remove nans, otherwise contourf won't accept the input!
+        # ----
+        if np.isnan(out['transect']).any():
+            not_horizontal = ~np.isnan(out['transect'][:,0])
+            for key in out.keys():
+                if key in ['x', 'y']:
+                    out[key] = out[key][not_horizontal]
+                else:
+                    out[key] = out[key][not_horizontal, :]
+
         # Store transect distance
-        dx = np.diff(self.x_sec, prepend = self.x_sec[0]) # since we count starting with the first segment position
-        dy = np.diff(self.y_sec, prepend = self.y_sec[0])
+        dx = np.diff(out['x'], prepend = out['x'][0])/1000 # since we count starting with the first segment position
+        dy = np.diff(out['y'], prepend = out['y'][0])/1000 # dive by 1000 to get distance in kilometers
         dst_seg = np.sqrt(dx**2 + dy**2)
+
         if len(data.shape)>1:
             out['dst'] = np.repeat(np.cumsum(dst_seg)[:,None], data.shape[1], axis = 1)
         else:
             out['dst'] = np.cumsum(dst_seg)
+
         return out
 
     def _interpolate_2D(self, field):

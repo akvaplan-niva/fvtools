@@ -8,7 +8,7 @@ import datetime
 import numpy as np
 import netCDF4
 import matplotlib.mlab as mp
-
+from fvtools.grid import tge
 
 def get_cstr():
     '''Returns case-string'''
@@ -166,7 +166,7 @@ def num2date(time = None, Itime = None, Itime2 = None, year = 1858, month = 11, 
     # ----
     if time is not None:
         try:
-            raw_fvcom = [reference_time + datetime.timedelta(days = this_time) for this_time in time*dt]
+            raw_fvcom = [reference_time + datetime.timedelta(days = this_time) for this_time in time.astype(np.float64)*dt]
             out = np.array(raw_fvcom)
             
         except:
@@ -295,4 +295,22 @@ def make_interpolation_matrices(zlevels, depth):
     interp_matrix[ms, 1:] = 0
     interp_matrix[ms, 0] = 1
 
+def mask_land_tris(x, y, tri, ctri):
+    '''
+    Mask triangles facing land
+    '''
+    # Figure out which elements connect to land
+    xc = np.mean(x[tri], axis = 1)
+    yc = np.mean(y[tri], axis = 1)
+    NV       = tge.check_nv(tri, x, y)
+    NBE      = tge.get_NBE(len(xc), len(x), NV)
+    ISBCE, _ = tge.get_BOUNDARY(len(xc), len(x), NBE, NV)
+
+    # Illegal triangles are connected to land at all three vertices
+    # --> ie. where sum of ISBCE for all triangles is > 3
+    all_bce   = ISBCE[:][ctri].sum(axis=1)
+    mask      = all_bce == 3
+
+    # Masked_tri:
+    return ctri[mask==False]
     return interp_matrix

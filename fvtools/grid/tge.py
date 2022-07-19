@@ -20,7 +20,10 @@ version 0.6:
                              should probably be copied for consistency - but
                              we use the same mathematical method in this script)
 
-in development: 
+version 0.6:
+- Fix boundary issue with vorticity calculation
+
+version 0.7:
 - Calculate the streamfunction on an unstructured grid
 
 '''
@@ -31,7 +34,7 @@ import sys
 from numba import jit, prange
 from datetime import date
 verbose_g = False
-versionnr = 0.6
+versionnr = 0.7
 
 def main(M, verbose = False):
     '''
@@ -74,8 +77,10 @@ def main(M, verbose = False):
                              isonb = 1 on the solid boundary
                              isonb = 2 on the open boundary)
     - NTVE   [MT]           (number of neighboring elements of node M)
-    - NBVE   [MT, NTVE[MT]] (ntve elements containing node i)
-    - NBVT   [MT, ntve(MT)] (the node number of node i in element nvbe[i,j])
+    - NBVE   [MT, :NTVE[MT]] (ntve elements containing node i)
+    - NBVT   [MT, :NTVE(MT)] (the node number of node i in element nvbe[i,j])
+    - NESE   [MT]           (number of elements surrounding a element)
+    - NBSE   [MT, :NESE[MT]] (ids of elements surrounding a element)
 
     Edge information
     ------------------
@@ -187,6 +192,9 @@ def main(M, verbose = False):
 
     # Add reference to M to object if needed later?
     out.M = M
+
+    # Compute CV area
+    out.get_art1()
     
     if verbose: print('-------------------------------------------------------------------------------')
     if verbose: print('                                   Fin')
@@ -620,10 +628,10 @@ def get_CV(XIJC, YIJC, XC, YC, ISBC, IEC, IENODE, NE, NT, MT):
 @jit(nopython = True, parallel = True)
 def get_NBSE_NESE(NBVE, NTVE, NV, NT):
     '''
-    Returns NTSN and NBSN, and reorders elements surrounding a node to go in a cyclical procession
+    Returns NESE and NBSE, and reorders elements surrounding a cell to go in a cyclical procession
     '''
     # Temporary storage for use inside the loop
-    NBSE   = -1*np.ones((NT, len(NBVE[0,:])+2), dtype = np.int64) # Number of nodes surrounding a node (+1) (neighboring surrounding)
+    NBSE   = -1*np.ones((NT, len(NBVE[0,:])+10), dtype = np.int64) # Number of cells surrounding a cell (+10) (neighboring surrounding)
     NESE   = -1*np.ones((NT), dtype = np.int64)                   # Node indicies of nodes surrounding a node
     
     for I in range(NT):   # Loop over all cells
@@ -752,7 +760,7 @@ def get_obc(M):
                 obc_nodes = np.append(obc_nodes, M.read_obc_nodes[0,i][0,:])
 
         except:
-            print(M.filepath + ' does not contain obc_nodes or read_obc_nodes, obc will not be recognized in this tge')
+            print(f'{M.filepath}\ndoes not contain obc_nodes or read_obc_nodes.')
             obc_noces = np.empty(0, dtype = np.int64)
 
     return obc_nodes
@@ -882,7 +890,7 @@ def get_art2(ART1, MT, NBVE, NTVE):
 
 # Get vorticity
 @jit(nopython = True, parallel = True)
-def vorticity_node(U, V, NCV, MT, NTRG, NIEC, DLTXE, DLTYE, ART1):
+def vorticity_node(U, V, NCV, MT, NTRG, NIEC, DLTXE, DLTYE, ART1, ISONB, NTSN, NBSN):
     '''
     Calculate vorticity using the control volume, based on calc_vort.F
 
@@ -895,23 +903,51 @@ def vorticity_node(U, V, NCV, MT, NTRG, NIEC, DLTXE, DLTYE, ART1):
     of the summation.
     '''
     VORT = np.zeros((MT), dtype = np.float32)
+    LIST = np.zeros((MT), dtype = np.float32)
+    AVE  = np.zeros((MT), dtype = np.float32)
     for I in prange(NCV):
-      # Triangle I1 is conncedted to CV wall I
-      I1 = NTRG[I]
+        # Triangle I1 is conncedted to CV wall I
+        I1 = NTRG[I]
 
-      #  The nodes that connect to this wall (NCV are the number of independent edges)
-      IA  = NIEC[I,0]
-      IB  = NIEC[I,1]
+        # The nodes that connect to this wall (NCV are the number of independent edges)
+        IA  = NIEC[I,0]
+        IB  = NIEC[I,1]
 
-      # vorticity flux through this wall
-      UIJ    = U[I1]
-      VIJ    = V[I1]
-      EXFLUX = -(UIJ*DLTXE[I] + VIJ*DLTYE[I])
+        # Vorticity flux through this wall
+        EXFLUX = -(U[I1]*DLTXE[I] + V[I1]*DLTYE[I])
 
-      # "add vorticity" to this wall
-      VORT[IA] -= EXFLUX/ART1[IA]
-      VORT[IB] += EXFLUX/ART1[IB]
+        # "add vorticity" to this wall
+        VORT[IA] -= EXFLUX
+        VORT[IB] += EXFLUX
 
+    VORT = VORT/ART1
+
+    # Correction at boundaries (how does this really work?)
+    # ----
+    for I in range(MT):
+        if ISONB[I] > 0:
+            AVE  = np.float32(0)
+            CNT  = np.float32(0)
+            for J in range(NTSN[I]):
+                JNODE = NBSN[I,J]
+                if JNODE != I and ISONB[JNODE] == 0:
+                    AVE += VORT[JNODE]
+                    CNT += np.float32(1)
+            if not CNT:
+                LIST[I] = np.float32(1)
+            else:
+                VORT[I] = AVE/CNT
+
+    for I in range(MT):
+        if LIST[I] > 0:
+            AVE = np.float32(0)
+            CNT = np.float32(0)
+            for J in range(NTSN[I]):
+                JNODE = NBSN[I,J]
+                if JNODE != I and LIST[JNODE] == 0:
+                    AVE += VORT[JNODE]
+                    CNT += 1
+            VORT[I] = AVE/CNT
     return VORT
 
 # --------------------------------------------------------------------------------------------------------
@@ -1102,7 +1138,7 @@ def vertical_gradient(f, h, sigma):
     return np.gradient(f, sigma, axis = 0)/h
 
 @jit(nopython=True)
-def streamfunction_node(MT, VX, VY, NBSN, NTVE, NTSN, NBVE, NBVT, ISONB, u, v, threshold = 1.0, boundary_conditions = False):
+def streamfunction(MT, VX, VY, NBSN, NTVE, NTSN, NBVE, NBVT, ISONB, u, v, threshold = 1.0, boundary_conditions = False):
     '''
     Compute the streamfunction for a given velocity-field using a "least squares-like" approach
     Boundary condition: psi = 0 at nodes connected to land
@@ -1162,7 +1198,7 @@ def streamfunction_node(MT, VX, VY, NBSN, NTVE, NTSN, NBVE, NBVT, ISONB, u, v, t
 
                 derivative[I] += (0.5*(u[left]+u[right])*dy - 0.5*(v[left]+v[right])*dx)/(NTSN[I]-2)
 
-    # Now that we have the derivative matrix, we can prepare the successive over relaxation iteration step
+    # Now that we have the derivative matrix, we can prepare the successive over-relaxation iteration step
     # Ax = b
     # ----
     psi          = np.zeros((MT), dtype = np.float32)
@@ -1179,19 +1215,18 @@ def streamfunction_node(MT, VX, VY, NBSN, NTVE, NTSN, NBVE, NBVT, ISONB, u, v, t
         # Stronger homogenization for boundary nodes
         # --------------------------------------------------
         if boundary_conditions:
-            # Enforce them later on in the calculation
-            if iterations > 100:
+            if iterations > 100: # Enforce them later on in the calculation
                 for N in range(30):
                     for K in boundary:
                         if ISONB[K] == 1:
                             for J in range(1, NTSN[K]-1):
                                 if ISONB[NBSN[K,J]] == 1:
-                                    psi[K] = 0.5*(psi[K]+psi[NBSN[K,J]])
+                                    #psi[K] = 0.5*(psi[K]+psi[NBSN[K,J]])
+                                    psi[K] = 0
 
 
-        # Stop the iteration if it has converged sufficiently, or of it has been running for too long
+        # Stop the iteration if it has converged sufficiently, or if it has been running for too long
         # -------------------------------------------------
-        print(np.nanmax(np.abs(psi-psi_old)))
         if iterations > 100:
             if np.nanmax(np.abs(psi-psi_old))<threshold :#np.nanmax(np.abs(psi_old-psi)/psi) < threshold:
                 break
@@ -1202,13 +1237,6 @@ def streamfunction_node(MT, VX, VY, NBSN, NTVE, NTSN, NBVE, NBVT, ISONB, u, v, t
             break
 
     return psi
-
-    # Debug - to check that the routine use the correct velocity points when ingrating
-    #         along a triangle wall
-    #old = plt.scatter(M.xc[[left,right],0], M.yc[[left, right],0], c = 'r', zorder = 1000) 
-    #plt.scatter(M.x[NBSN[I,J],0], M.y[NBSN[I,J],0], c = 'k', zorder = 1000)                                                                                                       
-    #plt.pause(0.01)
-    #old.remove()
 
 # -------------------------------------------------------------------------------------------------------
 #     Class that will function as a return of the function, and that can be used to load data into
@@ -1224,6 +1252,7 @@ class TGE():
                 self.load_data_npy(fname)
             elif fname.split('.')[-1] == 'mat':
                 self.load_data_mat(fname)
+            self.get_art1()
 
     def load_data_npy(self, fname):
         tge    = np.load(fname, allow_pickle=True)
@@ -1278,7 +1307,6 @@ class TGE():
         '''
         self.art1 = get_art1(self.NT, self.MT, self.VX, self.VY, self.XC, self.YC,
                              self.NV, self.ISONB, self.NTVE, self.NBVE, self.NBVT, self.NBSN)
-        if verbose: print('Stored to self.art1')
 
     def qc_tge(self, I):
         plot_CV(self.M, self.NBSN, self.NTSN, self.NBVE, self.NTVE, I)
@@ -1287,7 +1315,9 @@ class TGE():
         plot_CV_points(self.M, self.NBSN, self.NTSN, self.NBVE, self.NTVE, I)
 
     def vorticity(self, u, v):
-        return vorticity_node(u, v, self.NCV, self.MT, self.NTRG, self.NIEC, self.DLTXE, self.DLTYE, self.art1)
+        return vorticity_node(u, v, self.NCV, self.MT, self.NTRG, self.NIEC,
+                              self.DLTXE, self.DLTYE, self.art1, self.ISONB,
+                              self.NTSN, self.NBSN)
 
     def vorticity_3D(self, u, v, h, sigma, grid_points = None, verbose = False):
         '''
@@ -1409,11 +1439,13 @@ class TGE():
 
         return out
 
-    def streamfunction(self, u, v):
+    def streamfunction(self, u, v, threshold = 1, boundary_conditions = True):
         '''
         Compute the streamfunction for a dataset
         '''
-        return streamfunction(self.VX, self.VY, self.XC, self.YC, u, v)
+        return streamfunction(self.MT, self.VX, self.VY, 
+                              self.NBSN, self.NTVE, self.NTSN, self.NBVE, self.NBVT, 
+                              self.ISONB, u, v, threshold = threshold, boundary_conditions = boundary_conditions)
 
     # Needed to compute standard deviation:
     # --------------------------
