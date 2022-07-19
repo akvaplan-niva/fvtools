@@ -84,11 +84,11 @@ def make_fileList(name, data_directories):
          
         for file in files:
             print(file)
-            nc = Dataset(os.path.join(directory, file), 'r')
-            t = nc.variables['Itime'][:] + nc.variables['Itime2'][:] / 86400000.
-            fvtime = np.append(fvtime,t)
-            path.extend([os.path.join(directory, file)] * len(t))
-            index.extend(range(len(t)))
+            with Dataset(os.path.join(directory, file), 'r') as nc:
+                t = nc.variables['Itime'][:] + nc.variables['Itime2'][:] / 86400000.
+                fvtime = np.append(fvtime,t)
+                path.extend([os.path.join(directory, file)] * len(t))
+                index.extend(range(len(t)))
 
     # Sort according to time
     sorted_data = sorted(zip(fvtime, path, index), key=lambda x: x[0])
