@@ -250,6 +250,7 @@ def check_obc(M):
     \/\/\/\/
        \/ <- illegal, would be removed.
     '''
+    # load the obc nodes
     read_obc_nodes = np.copy(M['read_obc_nodes'])
     x  = np.copy(M['x']); y = np.copy(M['y']); nv = np.copy(M['nv'])
     already_checked = False; update = False
@@ -297,7 +298,10 @@ def check_coast(M, not_plotted = True):
     Remove bad triangles along the coast (these often appear in smeshing results)
     --> Normally very isolated errors, I wouldn't be too conserned if these
     '''
+    # Make local copy of obc nodes
     read_obc_nodes = np.copy(M['read_obc_nodes'])
+
+    # Make local copy grid points
     x  = np.copy(M['x']); y = np.copy(M['y']); nv = np.copy(M['nv'])
     already_checked = False; update = False
 
@@ -316,7 +320,7 @@ def check_coast(M, not_plotted = True):
         # Need to remove the bad triangle and the bad node and create a new .2dm file
         # ----
         xc = np.mean(x[nv],axis=1); yc = np.mean(y[nv],axis=1)
-        plt.scatter(xc[bad_tri], yc[bad_tri], label = 'bad coast '+triangle, zorder = 10)
+        plt.scatter(xc[bad_tri], yc[bad_tri], label = f'bad coast {triangle}', zorder = 10)
 
         # Remove bad triangles (and nodes), return cropped grid and new triangulation
         x, y, nv, read_obc_nodes = remap(x, y, nv, read_obc_nodes, good_tri)
@@ -356,10 +360,10 @@ def identify_problems_in_grid(sides, x, y, nv, already_checked, critval, name, n
                 plt.axis('equal')
             if n_gt3 > 1:
                 triangle = 'triangles'
-                tring = triangle+' have'
+                tring = f'{triangle} have'
             else:
                 triangle = 'triangle'
-                tring = triangle+' has'
+                tring = f'{triangle} has'
             print(f'  - {n_gt3} {tring} more than one side connected to the {name}.\n'+\
                    '    Removing illegal triangles and moving on.')
 
@@ -377,41 +381,36 @@ def remap(x, y, nv, read_obc_nodes, good_tri):
     # See which nodes to keep (node_ind) and define new node indices
     # ----
     node_ind     = np.unique(nv[good_tri])
-    new_node_ind = np.arange(len(node_ind))
+    new_node_ind = np.arange(len(node_ind), dtype = np.int32)
 
     # Create a map from old indexing to new
     # ----
-    all_nodes    = np.nan*np.ones((len(x)), dtype = np.int32)
+    all_nodes    = -1*np.ones((len(x)), dtype = np.int32)
     all_nodes[node_ind] = new_node_ind
 
-    # Remap the triangles and the positions
+    # Remap the triangles and the positions.
     # ----
-    nv  = all_nodes[nv[good_tri]].astype(np.int32)
-    x   = x[node_ind]
-    y   = y[node_ind]
+    nv_new  = all_nodes[nv[good_tri]].astype(np.int32)
+    x_new   = x[node_ind]; y_new   = y[node_ind]
 
     # Update index of read_obc_nodes
     # ----
     new_read_obc_nodes = np.ndarray((1,len(read_obc_nodes[0,:])), dtype = object)
-    for i in range(len(read_obc_nodes[0,:])):
+    for i in range(len(read_obc_nodes[0,:])): # loop over nodestrings
         tmp = all_nodes[read_obc_nodes[0,i]]
-        new_read_obc_nodes[0,i] = tmp[~np.isnan(tmp)][None,:].astype(np.int32)
-
-    # Prepare for next loop
-    # ----
-    read_obc_nodes  = np.copy(new_read_obc_nodes)
+        new_read_obc_nodes[0,i] = tmp[np.where(tmp>-1)][None,:]
 
     # Look over to check that everything went fine
     # ----
     if np.max(nv) == np.nan:
         raise RemapError('Something went wrong when re-mapping. Check that the grid indexing was ok to start with.')
 
-    for i in range(len(read_obc_nodes[0,:])):
-        tmp = read_obc_nodes[0,i]
+    for i in range(len(new_read_obc_nodes[0,:])):
+        tmp = new_read_obc_nodes[0,i]
         if np.max(tmp) == np.nan:
             raise RemapError('Something went wrong when re-mapping. Check that the grid indexing was ok to start with.')
 
-    return x, y, nv, read_obc_nodes
+    return x_new, y_new, nv_new, new_read_obc_nodes
 
 def update_grid(M, casename = 'BuildCase'):
     '''
@@ -419,9 +418,9 @@ def update_grid(M, casename = 'BuildCase'):
     '''
     # Visualize:
     # ----
-    filename = casename+'_corrected'
+    filename = f'{casename}_corrected'
     plt.triplot(M['x'],M['y'],M['nv'],label='after')
-    plt.title('before and after removing bad triangles')
+    plt.title('Before and after removing bad triangles')
     plt.legend(loc = 'upper right')
 
     # Then we write it!
