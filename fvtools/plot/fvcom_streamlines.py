@@ -39,7 +39,12 @@ class streamlines():
     '''
     Computes streamlines from a velocity dataset
     '''
-    def __init__(self, grid, max_length = 1000, method = 'linear', verbose = True, zorder = None, color = None):
+    def __init__(self, grid, max_length = 1000, 
+                 method='linear', 
+                 verbose=False, 
+                 zorder=None, 
+                 color=None,
+                 linewidth=None):
         '''
         Streamlines need a gridfile to compute grid metrics, and velocity data to
         compute other parameters
@@ -55,7 +60,6 @@ class streamlines():
         # Interpret grid input
         # ----
         self.verbose = verbose
-        self.color = color
         if self.verbose: print('Initializing FVCOM streamline maker\n-----------------------')
         if self.verbose: print('- load grid')
         if isinstance(grid, str):
@@ -73,12 +77,18 @@ class streamlines():
         # Get grid metrics needed by the interpolation algorithm
         # ----
         if self.method == 'linear':
-            self.prepare_linear()
+            self._prepare_linear()
 
         else:
-            self.prepare_nearest()
+            self._prepare_nearest()
 
-    def get_streamlines(self, u, v, xlim = None, ylim = None, res = None, new_initial = False):
+        # Initialize line-styles
+        # ---
+        self.linewidth = linewidth
+        self.color = color
+        self.zorder = zorder
+
+    def get_streamlines(self, u, v, xlim = None, ylim = None, res = None, new_initial = False, axes = None):
         '''
         Runs the streamline show.
 
@@ -86,7 +96,14 @@ class streamlines():
         '''
         # Get an axes that we can plot the lines to
         # ----
-        self.axes = matplotlib.pyplot.gca()
+        if axes is None:
+            self.axes = matplotlib.pyplot.gca()
+        else:
+            self.axes = axes
+
+        # Load plot settings
+        # ----
+        self.plot_settings()
 
         # Initial positions should just need to be calculated once
         # ----
@@ -126,22 +143,16 @@ class streamlines():
 
         # Create matplotlib line 
         if self.verbose: print('- visualize streamlines')
-        self.linecollection()
+        self._linecollection()
 
-    def prepare_linear(self):
+    def _prepare_linear(self):
         '''
         Prepare a linear interpolation algorithim (this is actually quite quick)
         '''
-        self.ctri   = self.M.cell_tri()
-
-        # Store ctri centres, get approximate grid resolution
-        # ----
-        self.xc_centre  = np.mean(self.M.xc[self.M.ctri], axis = 1)
-        self.yc_centre  = np.mean(self.M.yc[self.M.ctri], axis = 1)
-
         # Establish a KD tree to find the nearest cell
         # ----
-        self.cell_tree  = KDTree(np.array([self.xc_centre, self.yc_centre]).transpose())
+        self.cell_tree  = KDTree(np.array([np.mean(self.M.xc[self.M.ctri], axis = 1), 
+                                           np.mean(self.M.yc[self.M.ctri], axis = 1)]).transpose())
 
         # Get approximate grid resolution
         # -----
@@ -151,17 +162,13 @@ class streamlines():
         ds              = np.sqrt(dx**2+dy**2)
         self.gridres    = np.min(ds, axis = 1)
 
-        NT = len(self.xc_centre) # cells
+        NT = len(np.mean(self.M.xc[self.M.ctri], axis = 1)) # cells
         MT = len(self.M.xc)      # nodes
 
         # Find elements surrounding elements
         # ----
         if self.verbose: print('- Find elements surrounding elements')
-        try:
-            NV        = tge.check_nv(self.ctri, self.M.xc, self.M.yc)
-        except ValueError:
-            self.ctri = self.M.cell_tri()
-            NV        = tge.check_nv(self.ctri, self.M.xc, self.M.yc)
+        NV = tge.check_nv(self.M.ctri, self.M.xc, self.M.yc)
 
         NBE                    = tge.get_NBE(NT, MT, NV)
         ISBCE, ISONB           = tge.get_BOUNDARY(NT, MT, NBE, NV)
@@ -169,7 +176,7 @@ class streamlines():
         NTSN, NBSN, NBVE, NBVT = tge.get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, 15, MT)
         self.NBSE, self.NESE   = tge.get_NBSE_NESE(NBVE, NTVE, NV, NT)
 
-    def prepare_nearest(self):
+    def _prepare_nearest(self):
         '''
         prepare grid metrics needed by the nearest neighbor interpolation algorithm
         '''
@@ -215,15 +222,14 @@ class streamlines():
         # ----
         self.initial_positions = np.array([xcorr, ycorr]).T
 
-    def linecollection(self):
+    def _linecollection(self):
         '''
         Lines that indicate direction, and behave relatively similar to matplotlib.streamplot
         --> More or less pure copy of code from matplotlib.streamplot
         '''        
         # create the streamlines
         if self.verbose: print('- prepare line and arrow collection')
-        self.create_lines()
-        self.plot_settings(color = self.color)
+        self._create_lines()
         
         # Prepare the arrow patches we want to plot
         arrows      = []
@@ -249,7 +255,7 @@ class streamlines():
         # Return a streamplot set
         self.streamset = StreamplotSet(lc, ac)
 
-    def create_lines(self):
+    def _create_lines(self):
         self.streamlines = []
         self.streamline_color = []
         for t in range(len(self.streamline_x[:,0])): # loop over trajectories
@@ -260,8 +266,7 @@ class streamlines():
             self.streamlines.extend([np.column_stack([px, py])])
             self.streamline_color.extend([np.array([clr])])
 
-    def plot_settings(self, linewidth = None, arrowstyle = '-|>', arrowsize = 1, zorder = None,
-                      linecolor = None, color = None):
+    def plot_settings(self, arrowstyle = '-|>', arrowsize = 1):
         '''
         Settings for the lineplots
         '''
@@ -272,28 +277,29 @@ class streamlines():
 
         # Set linewidth
         # ----
-        if linewidth is None:
+        if self.linewidth is None:
             self.line_kw['linewidth'] = matplotlib.rcParams['lines.linewidth']
+            self.linewidth = matplotlib.rcParams['lines.linewidth']
         else:
-            self.line_kw['linewidth'] = linewidth
+            self.line_kw['linewidth'] = self.linewidth
 
         # Make sure that lines are plotted on top
         # ----
-        if zorder is None:
-            zorder = mlines.Line2D.zorder
+        if self.zorder is None:
+            self.zorder = mlines.Line2D.zorder
 
-        self.line_kw['zorder']  = zorder
-        self.arrow_kw['zorder'] = zorder
+        self.line_kw['zorder']  = self.zorder
+        self.arrow_kw['zorder'] = self.zorder
 
         # Set color of lines and arrows
         # ----
-        if color is None:
-            color = self.axes._get_lines.get_next_color()
-            self.line_kw['color']   = color
-            self.arrow_kw['color']  = color
+        if self.color is None:
+            self.color = self.axes._get_lines.get_next_color()
+            self.line_kw['color']   = self.color
+            self.arrow_kw['color']  = self.color
         else:
-            self.line_kw['color']   = color
-            self.arrow_kw['color']  = color
+            self.line_kw['color']   = self.color
+            self.arrow_kw['color']  = self.color
 
 @jit(nopython=True)
 def remove_land(grid_x, grid_y, nv, NBSE, NESE, initial_positions, initial_cell):
