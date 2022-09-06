@@ -1,9 +1,6 @@
 # About the workflow in this repository
 
-This repo has two main branches: `master` and `dev`. Both are protected (meaning you have to open a merge request to get stuff in there). `dev` is for active development and is occasionally merged into `master`, which is hopefully more stable and better tested.
-
-
-This projects is currently under my namespace because it's easier to handle wrt permissions, but we could transfer it to apn once we're up and running I guess.
+This repo has two main branches: `master` and `dev`. Master is protected (meaning you have to open a merge request to get stuff in there). `dev` is for active development and is occasionally merged into `master`.
 
 # fvtools - tools to interact with FVCOM data
 a variety of scripts to interact with FVCOM data before, during and after a model run.
@@ -22,18 +19,12 @@ DU = 2.5
 DL = 0.5
 ```
 
-```python
-  >>> fvtools = '/home/host/models/fvcom/utils/fvtools/'
-  >>> import sys; sys.path.insert(0, fvtools)
-
-```
-
 ### Preparing the mesh
 #### The full mesh
 You have a `casename.2dm` file (either from smeshing or from SMS), and you want to set up a model. The first step is to create the FVCOM grid input files using `BuildCase`:
 ```python
-  >>> import fvtools.pre_pro.BuildCase as bc
-  >>> bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
+import fvtools.pre_pro.BuildCase as bc
+bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 
 ```
 BuildCase returns `casename_*.dat` FVCON input files to the `input` folder, and a file called `M.npy` to be used as input to the rest of the setup routines.
@@ -44,15 +35,15 @@ fvtools support two nesting types:
 - From FVCOM (from any FVCOM model that overlaps with this mesh)
 
 ```python
-  >>> import fvtools.nesting.get_ngrd as gn
+import fvtools.nesting.get_ngrd as gn
 
-  >>> # ROMS-FVCOM nesting:
-  >>> # You need to define the width of the nesting zone (R measured in meters). This is typically approximately 4.5 times the mesh resolution at the OBC.
-  >>> gn.main('M.npy', R=5000)
+# ROMS-FVCOM nesting:
+# You need to define the width of the nesting zone (R measured in meters). This is typically approximately 4.5 times the mesh resolution at the OBC.
+gn.main('M.npy', R=5000)
 
-  >>> # FVCOM-FVCOM nesting:
-  >>> # The nest nest grid is computed automatically, give the new grid and a path leading to the mother model (used as OBC conditions)
-  >>> gn.main('M.npy', mother='mother_fvcom.nc')
+# FVCOM-FVCOM nesting:
+# The nest nest grid is computed automatically, give the new grid and a path leading to the mother model (used as OBC conditions)
+gn.main('M.npy', mother='mother_fvcom.nc')
 
 ```
 These routines return a nest-grid file called `ngrd.npy` that you feed to the nesting zone interpolator.
@@ -68,19 +59,19 @@ python fvcom2fvcom_nesting.py -n ngrd.npy -f fileList.txt -o ./input/my_experime
 
 ROMS-FVCOM nesting will automatically find the forcing it need at thredds.met.no:
 ```python
-  >>> import fvtools.nesting.roms_nesting_fg as rn
-  >>> rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='NS')
+import fvtools.nesting.roms_nesting_fg as rn
+rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='NS')
 
 ```
 
 ### River runoff
 ```python
-  >>> import fvtools.pre_pro.BuildRivers as br
-  >>> # If you prepare a new experiment (ROMS nested):
-  >>> br.main('2018-01-01-00', '2018-02-01-00', temp=None)
+import fvtools.pre_pro.BuildRivers as br
+# ROMS nested experiment (ROMS nested):
+br.main('2018-01-01-00', '2018-02-01-00', temp=None)
 
-  >>> # If you prepare a fvcom-nested experiment:
-  >>> br.main('2018-01-01-00', '2018-02-01-00', temp='fvcom_mother_temperatures.npy')
+# FVCOM-nested experiment:
+br.main('2018-01-01-00', '2018-02-01-00', temp='fvcom_mother_temperatures.npy')
 
 ```
 This routine writes a file called `RiverNamelist.nml` and `riverdata.nc`. Put these in the `input` folder.
@@ -93,8 +84,8 @@ Temperatures for big models are stored on the Stokes and Betzy
 ### Atmospheric forcing
 We use the MetCoOp-AROME model for atmospheric forcing.
 ```python
-  >>> import fvtools.atm.read_metCoop as rm
-  >>> rm.main("M.npy", "./input/casename_atm.nc", "2018-01-01-00", "2018-02-01-00")
+import fvtools.atm.read_metCoop as rm
+rm.main("M.npy", "./input/casename_atm.nc", "2018-01-01-00", "2018-02-01-00")
 
 ```
 
@@ -132,7 +123,7 @@ You have now run FVCOM, and it has stored results to output folders, e.g. output
 
 fvcom_make_file_list.py makes a file that links points in time to files and indices in FVCOM results.
 ```python
-  >>> python fvcom_make_filelist.py -d folders.txt -s PO10 -f fileList.txt
+python fvcom_make_filelist.py -d folders.txt -s PO10 -f fileList.txt
 
 ```
 
@@ -146,33 +137,32 @@ They are helpful to look for dynamically active regions so that you can avoid pu
 #### qc_gif
 Plots any field stored on nodes, either as a sigma-layer movie, a z-level movie or a transect movie. It accepts a filename, a folder or a filelist as input.
 ```python
-  >>> import fvtools.plot.qc_gif as qc
+import fvtools.plot.qc_gif as qc
 
-  >>> # sigma level movie
-  >>> qc.main(folder='output01', var=['salinity', 'temp'], sigma=0)
+# sigma level movie
+qc.main(folder='output01', var=['salinity', 'temp'], sigma=0)
 
-  >>> # z-level movie
-  >>> qc.main(filelist='filelist.txt', var=['salinity', 'temp'], z=10)
+# z-level movie
+qc.main(filelist='filelist.txt', var=['salinity', 'temp'], z=10)
 
-  >>> # transect movie
-  >>> # --> either with a transect.txt input file with lon lat as colums
-  >>> qc.main(fname='output01/casename.nc', var=['salinity', 'temp'], section='transect.txt')
+# transect movie
+# --> either with a transect.txt input file with lon lat as colums
+qc.main(fname='output01/casename.nc', var=['salinity', 'temp'], section='transect.txt')
 
-  >>> # --> or as graphical input
-  >>> qc.main(folder='output01', var=['salinity', 'temp'], section=True)
-
+# --> or as graphical input
+qc.main(folder='output01', var=['salinity', 'temp'], section=True)
 ```
 
 #### qc_gif_uv
 As the name suggests, this creates quick georeferenced gifs of velocity fields. It accepts filelist and folder, as well as sigma and z.
 ```python
-  >>> import fvtools.plot.qc_gif_uv as qc
+import fvtools.plot.qc_gif_uv as qc
 
-  >>> # sigma level movie
-  >>> qc.main(folder='output01', sigma=0)
+# sigma level movie
+qc.main(folder='output01', sigma=0)
 
-  >>> # z level movie
-  >>> qc.main(folder='output01', z=10)
+# z level movie
+qc.main(folder='output01', z=10)
 
 ```
 
@@ -181,67 +171,58 @@ The mesh object is the main interface for a quick look at an FVCOM grid. It read
 
 Example use:
 ```python
-  >>> from fvtools.grid.fvcom_grd import FVCOM_grid
-  >>> M = FVCOM_grid("casename_0001.nc")
+from fvtools.grid.fvcom_grd import FVCOM_grid
+M = FVCOM_grid("casename_0001.nc")
 
-  >>> # Get a quick summary of all attributes and functions:
-  >>> print(M)
+# Get a quick summary of all attributes and functions:
+print(M)
 
-  >>> # See the mesh
-  >>> M.plot_grid()
+# See the mesh
+M.plot_grid()
 
-  >>> # Write the mesh to a .2dm file so that you can edit it in SMS
-  >>> M.write_2dm()
+# Write the mesh to a .2dm file so that you can edit it in SMS
+M.write_2dm()
 
 ```
 
 You can georeference the mesh using geoplot
 ```python
-  >>> from fvtools.plot.geoplot import geoplot
-  >>> import matplotlib.pyplot as plt
-  >>> gp = geoplot(M.x, M.y)
-  >>> plt.imshow(gp.img, extent=gp.extent)
-  >>> M.plot_grid()
-
+from fvtools.plot.geoplot import geoplot
+import matplotlib.pyplot as plt
+gp = geoplot(M.x, M.y)
+plt.imshow(gp.img, extent=gp.extent)
+M.plot_grid()
 ```
 
 ### Plot results
 Data stored on nodes can be plotted on visible node-based control volumes, for example:
 ```python
-  >>> plt.imshow(gp, extent=gp.extent)
-  >>> M.plot_cvs(M.h)
+plt.imshow(gp, extent=gp.extent)
+M.plot_cvs(M.h)
 
 ```
 alternatively plot on triangle patches (much faster the first time):
 ```python
-  >>> plt.imshow(gp, extent=gp.extent)
-  >>> M.plot_field(M.h)
+plt.imshow(gp, extent=gp.extent)
+M.plot_field(M.h)
 
 ```
 
 ### Check mass conservation
 ```python
-  >>> tracer = d['fabm_tracer'][:]
-  >>> for i in range(len(tracer[:,0,0])):
-  ...   mass = np.sum(M.node_volume * tracer[i,:].T)
-  ...   plt.scatter(i, mass)
+tracer = d['fabm_tracer'][:]
+for i in range(len(tracer[:,0,0])):
+  mass = np.sum(M.node_volume * tracer[i,:].T)
+  plt.scatter(i, mass)
 
 ```
 
 ### Interpolate data to z-levels
 ```python
-  >>> # Get salinity at 50 m depth and look at it
-  >>> from netCDF4 import Dataset
-  >>> data = Dataset('casename_0001.nc')
-  >>> salt = data['salinity'][0,:]
-  >>> salt_50m = M.interpolate_to_z(salt, 50)
-  >>> M.plot_contour(salt_50m)
-
-```
-
-
-# Doctests
-
-```bash
-python -m doctest -v README.md
+# Get salinity at 50 m depth and look at it
+from netCDF4 import Dataset
+data = Dataset('casename_0001.nc')
+salt = data['salinity'][0,:]
+salt_50m = M.interpolate_to_z(salt, 50)
+M.plot_contour(salt_50m)
 ```
