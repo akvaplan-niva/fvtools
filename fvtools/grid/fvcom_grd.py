@@ -37,7 +37,6 @@ class FVCOM_grid():
         '''
         self.filepath       = pathToFile
         self.reference      = reference
-        self.Proj           = self._get_proj(reference)
         self.cropped_object = False
         global verbose_g
         verbose_g   = verbose
@@ -55,7 +54,11 @@ class FVCOM_grid():
             self._load_nc()
 
         else:
-            raise InputError(f'{self.filepath} is not a valid for FVCOM_grid')
+            raise InputError(f'{self.filepath} can not be read by FVCOM_grid')
+
+        # Set the projection
+        # ----
+        self.Proj = self._get_proj()
 
         # For the case where the input file does not contain x,y or lon,lat data
         # ----
@@ -81,6 +84,7 @@ Attributes:
             h, hc               - total depth
 
         Grid identifiers
+            nbe    - ids of cells sharing a wall with each cell
             nbsn   - ids to nodes surrounding nodes
             nbve   - ids to cells surrounding nodes
             ntsn   - number of nodes surrounding nodes
@@ -114,12 +118,12 @@ Functions:
 
         Grid:
             .write_2dm()      - return mesh as a .2dm file that can be read to SMS
-            .get_obc()        - turns a .read_obc_nodes object to a .obc_nodes list, 
+            .get_obc()        - turns a .read_obc_nodes object to a .obc_nodes list,
                                 and optionally plots .obc-nodes
             .get_coast()      - returns coastline polygons (will also include the obc)
             .find_nearest()   - find nearest grid point (either an element (cell) or a node) to a point
             .isinside()       - find nodes inside a search area
- 
+
         Physics
             .get_coriolis()   - Computes the coriolis parameter
 
@@ -166,11 +170,12 @@ Reference:             {self.reference}
         '''
         if not hasattr(self, '_T'):
             self._T = tge.main(self, verbose = True)
-            self._nbsn = self._T.NBSN 
+            self._nbsn = self._T.NBSN
             self._nbve = self._T.NBVE
+            self._ntve = self._T.NTVE
             self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
         return self._T
-    
+
     @property
     def ctri(self):
         '''
@@ -213,13 +218,26 @@ Reference:             {self.reference}
         return self._tri_area
 
     @property
+    def nbe(self):
+        '''
+        nbe are the indices of cells sharing a wall with *this* cell
+        '''
+        if not hasattr(self, '_nbe'):
+            self._nbe = self.T.NBE
+        return self._nbe
+
+    @nbe.setter
+    def nbe(self, var):
+        self._nbe = var
+
+    @property
     def nbsn(self):
         '''
         nbsn is a reference to nodes surrounding each node
         '''
         if not hasattr(self, '_nbsn'):
             self._nbsn = self.T.NBSN
-        return self._nbsn 
+        return self._nbsn
 
     @nbsn.setter
     def nbsn(self, val):
@@ -258,6 +276,19 @@ Reference:             {self.reference}
         return self._nbse
 
     @property
+    def ntve(self):
+        '''
+        ntve is the number of triangles connected to this node
+        '''
+        if not hasattr(self, '_ntve'):
+            self._ntve = self.T.NTVE
+        return self._ntve
+
+    @ntve.setter
+    def ntve(self, var):
+        self._ntve = var
+
+    @property
     def siglev_c(self):
         if hasattr(self, 'siglev'):
             self._siglev_c = np.mean(self.siglev[self.tri,:], axis = 1)
@@ -267,7 +298,7 @@ Reference:             {self.reference}
 
     @siglev_c.setter
     def siglev_c(self, var):
-        self._siglev_c = var 
+        self._siglev_c = var
 
     @property
     def siglay_c(self):
@@ -291,7 +322,7 @@ Reference:             {self.reference}
     @property
     def siglay_center(self):
         return self.siglay_c
-    
+
     @property
     def node_volume(self):
         '''
@@ -347,10 +378,10 @@ Reference:             {self.reference}
             self._siglayz = self.h[:,None]*self.siglay
         return self._siglayz
 
-    @siglayz.setter 
+    @siglayz.setter
     def siglayz(self, var):
         self._siglayz = var
-    
+
     @property
     def siglevz(self):
         '''
@@ -360,7 +391,7 @@ Reference:             {self.reference}
             self._siglevz = self.h[:,None]*self.siglev
         return self._siglevz
 
-    @siglevz.setter 
+    @siglevz.setter
     def siglevz(self, var):
         self._siglevz = var
 
@@ -384,7 +415,7 @@ Reference:             {self.reference}
             self._siglevz_uv = np.mean(self._siglevz[self.tri,:], axis = 1)
         return self._siglevz_uv
 
-    @siglevz_uv.setter 
+    @siglevz_uv.setter
     def siglevz_uv(self, var):
         self._siglevz_uv = var
 
@@ -422,8 +453,8 @@ Reference:             {self.reference}
 
         self.xc = np.mean(self.x[self.tri], axis = 1)
         self.yc = np.mean(self.y[self.tri], axis = 1)
-        self.lon,  self.lat  = self.Proj(self.x, self.y, inverse=True)
-        self.lonc, self.latc = self.Proj(self.xc, self.yc, inverse=True)
+        self.lon = np.zeros(self.x.shape)
+        self.lat = np.copy(self.lon)
         self.casename = self.filepath.split('.2dm')[0]
 
     def _load_nc(self):
@@ -478,7 +509,7 @@ Reference:             {self.reference}
                     grid      = False,
                     transpose = False):
         """
-        Load ncdata from a fvcom-output formated file 
+        Load ncdata from a fvcom-output formated file
 
         Supports any file, both output and intended to force FVCOM.
         """
@@ -526,12 +557,10 @@ Reference:             {self.reference}
 
     # Functions that interpret more information about the grid than explicitly stored in the grid files
     # ----------------------------------------------------------------------------------------------------
-    def _get_proj(self, reference):
+    def _get_proj(self):
         '''
         return a Proj method
         '''
-        self.reference = reference
-
         # Unless there is a reference from BuildCase in the info dict
         # ----
         if hasattr(self, 'info'):
@@ -603,7 +632,7 @@ Reference:             {self.reference}
         self.read_obc_nodes = np.ndarray((1,nobc+1), dtype = object)
         for n in range(nobc+1):
             self.read_obc_nodes[0,n] = np.array([ron[n]])
-        
+
     def cell2node(self,fieldin):
         '''
         Move data from cells to nodes
@@ -667,7 +696,7 @@ Reference:             {self.reference}
         if grid == 'node':
             for xi, yi in zip(x, y):
                 ds = np.sqrt(np.square(self.x-xi) + np.square(self.y - yi))
-                indices.append(ds.argmin())   
+                indices.append(ds.argmin())
 
         elif grid == 'cell':
             for xi, yi in zip(x, y):
@@ -711,7 +740,7 @@ Reference:             {self.reference}
 
         return masked_ctris
 
-        
+
     # Routines often used for plotting
     # -----------------------------------------------------------------------------------------
     def plot_grid(self, c = 'g-'):
@@ -753,7 +782,7 @@ Reference:             {self.reference}
         plt.show(block = False)
         return cb
 
-    def plot_cvs(self, field, 
+    def plot_cvs(self, field,
                  cmap = 'jet', cmax = None, cmin = None, Norm = None,
                  edgecolor = 'face', verbose = True):
         '''
@@ -779,7 +808,7 @@ Reference:             {self.reference}
         # mask cvs with values below/above threshold
         # ------------------------------------
         if cmax is not None and cmin is None:
-            inds         = np.where(field<=cmax)[0]; 
+            inds         = np.where(field<=cmax)[0];
             full         = False
 
         elif cmin is not None and cmax is None:
@@ -889,7 +918,7 @@ Reference:             {self.reference}
     # Some methods Frank developed to interpolate data to a z-level. Similar functionality as used in interpolate_to_z
     # ----
     def make_interpolation_matrices_TS(self, interpolation_depths=[-5]):
-        ''' 
+        '''
         Make matrices (numpy arrays) that, when multiplied with fvcom T or S matrix,
         interpolates data to a given depth.
 
@@ -908,7 +937,7 @@ Reference:             {self.reference}
     def make_interpolation_matrices_uv(self, interpolation_depths=[-5]):
         '''
         Make matrices (numpy arrays) that, when multiplied with fvcom u or v matrix,
-        interpolates data to a given depth. 
+        interpolates data to a given depth.
 
         --> (adds a .interpolation_matrix_uv_{depth}_m to this instance)
 
@@ -1157,16 +1186,16 @@ Reference:             {self.reference}
     def subgrid(self, xlim, ylim, full = False):
         '''
         Create indices that crop your FVCOM grid to a smaller, more managable version
-    
+
         Input:
         ----
         xlim: x-limits of domain in same units as self.x
         ylim: y-limits of domain in same units as self.y
         full: Will update the all grid fields in the FVCOM_grid object with the new indices (default: False)
-        
+
         Output:
         ----
-        if: full = False: Adds cropped_nv, cropped_x, cropped_y, cropped_cells and cropped_nodes to the mesh instance.  
+        if: full = False: Adds cropped_nv, cropped_x, cropped_y, cropped_cells and cropped_nodes to the mesh instance.
             full = True:  Update all cell and node fields, adds cropped_cells and cropped_nodes to the instance,
                           removes fields (other than tri and nv) that reference grid ids
 
@@ -1197,6 +1226,10 @@ Reference:             {self.reference}
         self.cropped_cells = cell_ind
         self.cropped_nodes = node_ind
 
+        # Fields we will delete from the mesh when cropping (since they reference indexes, not numbers)
+        # ---
+        delete_these = ['_nbe', '_nbsn', '_nbve', '_ntsn', '_ntve', '_nbse', '_nese', '_ctri']
+
         # If doing a complete overhaul of the mesh info...
         # ----
         if full:
@@ -1214,12 +1247,12 @@ Reference:             {self.reference}
 
                 # Some fields must be removed to avoid confusion
                 # ----
-                if key in ['nbe', 'nbve', 'nbsn', 'ntsn', 'ntve', 'art1', 'art2']:
+                if key in delete_these:
                     delattr(self, key)
 
                 # Check if this field has a shape
                 # ----
-                try: 
+                try:
                     shape = getattr(self, key).shape
                 except:
                     continue
@@ -1298,7 +1331,7 @@ Reference:             {self.reference}
 
                 # equation for the straight line between points.
                 a = (y2-y1) / (x2-x1) # slope
-                b = y1 - a*x1 # intersection 
+                b = y1 - a*x1 # intersection
 
                 x_section = np.array([np.round(x1), np.round(x2)])
                 y_section = a*x_section + b

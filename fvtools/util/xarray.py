@@ -3,12 +3,12 @@ import xarray as xr
 import pandas as pd
 import netCDF4
 
-def load_fvcom_file_as_xarray(fname):
+def load_fvcom_file_as_xarray(fname, **kwarg):
     """
     Works around xarray limitation to load FVCOM grid data
     """
     with netCDF4.Dataset(fname) as f:
-        ds = xr.load_dataset(fname, decode_times=False, drop_variables=['siglay', 'siglev'])
+        ds = xr.load_dataset(fname, decode_times=False, drop_variables=['siglay', 'siglev'], **kwarg)
         if 'siglay' in ds.dims:
             ds = _rename_siglay(ds, f)
         if 'siglev' in ds.dims:
@@ -16,12 +16,12 @@ def load_fvcom_file_as_xarray(fname):
 
     return ds
 
-def open_fvcom_file_as_xarray(fname):
+def open_fvcom_file_as_xarray(fname, **kwarg):
     """
     Works around xarray limitation to load FVCOM grid data
     """
     with netCDF4.Dataset(fname) as f:
-        ds = xr.open_dataset(fname, decode_times=False, drop_variables=['siglay', 'siglev'])
+        ds = xr.open_dataset(fname, decode_times=False, drop_variables=['siglay', 'siglev'], **kwarg)
         if 'siglay' in ds.dims:
             ds = _rename_siglay(ds, f)
         if 'siglev' in ds.dims:

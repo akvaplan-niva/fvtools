@@ -2,8 +2,8 @@
 TGE is a function that computes grid metrics for your FVCOM grid
 
 version 0.2:
-- routines now run without failing. Some uncertainty with respect to how some 
-  functions work in parallell, and if the CVs are calculated correctly 
+- routines now run without failing. Some uncertainty with respect to how some
+  functions work in parallell, and if the CVs are calculated correctly
   (will be tested by computing art1)
 
 version 0.3:
@@ -33,7 +33,6 @@ import os
 import sys
 from numba import jit, prange
 from datetime import date
-verbose_g = False
 versionnr = 0.7
 
 def main(M, verbose = False):
@@ -61,7 +60,7 @@ def main(M, verbose = False):
     - NT              (number of elements)
     - MT              (number of nodes)
     - VX, VY [MT]     (node locations)
-    - XC, YC [NT]     (cell locations) 
+    - XC, YC [NT]     (cell locations)
     - NV     [NT,0:2] (triangulation)
 
     Element neighbor information
@@ -98,14 +97,14 @@ def main(M, verbose = False):
 
     Node neighbor information
     ------------------
-    - NTVE   [MT]           (total number of the surrounding triangles 
+    - NTVE   [MT]           (total number of the surrounding triangles
                              connected to the given node)
     - NBVE   [M, NTVE+1]    (the identification number of a given node over each
                              individual surrounding triangle (counted clockwise))
-    - NBVT   [M, NTVE[1:M]] (the identification number of a given node over each 
+    - NBVT   [M, NTVE[1:M]] (the identification number of a given node over each
                              individual surrounding triangle (counted clockwise))
     - NTSN   [M]            (total number of surrounding nodes)
-    - NBSN   [M, NTSN]      (the identification number of surrounding nodes 
+    - NBSN   [M, NTSN]      (the identification number of surrounding nodes
                              counted clockwise)
 
     Boundary information
@@ -116,22 +115,20 @@ def main(M, verbose = False):
     i_obc_n           (counter number of open boundary nodes)
     '''
     if verbose:
-        global verbose_g
-        verbose_g = verbose
         print('-------------------------------------------------------------------------------')
         print('                       Setting up TRIS/ELEMENTS/CVS')
         print('-------------------------------------------------------------------------------')
-    
+
     # Initialize output:
     out = TGE()
-        
+
     # ------------------------------------------------------------------------------------------------
     #                                       Input handling
     # ------------------------------------------------------------------------------------------------
     # Unpack obc nodes
     OBC_NODES  = get_obc(M)
     out.source = M.filepath
-    
+
     # Unpack dimensions
     out.NT = len(M.xc); out.MT = len(M.x)
 
@@ -140,16 +137,16 @@ def main(M, verbose = False):
     out.XC = M.xc; out.YC = M.yc # elements/cells
 
     # Unpack triangulation (+ see re-arange if needbe so that triangulation is clockwise)
-    out.NV = check_nv(M.tri, out.VX, out.VY)
-    
+    out.NV = check_nv(M.tri, out.VX, out.VY, verbose = verbose)
+
     # -----------------------------------------------------------------------------------------------
     #                         Domain information that require some computing
     # -----------------------------------------------------------------------------------------------
-    
-    # Get nearby elements  
+
+    # Get nearby elements
     out.NBE                = get_NBE(out.NT, out.MT, out.NV)
     if verbose: print('- Found nearby elements')
-        
+
     # Check if element is on boundary
     ISBCE, ISONB           = get_BOUNDARY(out.NT, out.MT, out.NBE, out.NV)
     if verbose: print('- Found and flagged boundary nodes and elements.')
@@ -157,7 +154,7 @@ def main(M, verbose = False):
     # Get max number of surrounding elements
     MAXNBR                 = np.max(get_MAXNBR(out.MT, out.NT, out.NV))
     if verbose: print(f'- Found max number of surrounding elements: {MAXNBR}')
-    
+
     # Get number of surrounding triangles to a given node
     NBVE, NBVT, out.NTVE   = get_NBVE_NBVT(out.MT, out.NT, out.NV, MAXNBR)
     if verbose: print('- Found number of elements surrounding nodes')
@@ -166,19 +163,19 @@ def main(M, verbose = False):
     out.NTSN, out.NBSN, out.NBVE, out.NBVT = get_NTSN_NBSN(NBVE, out.NTVE, NBVT, out.NBE,
                                                            out.NV, ISONB, MAXNBR, out.MT)
     if verbose: print('- Reordered elements surrounding nodes, found NTSN and NBSN')
-    
+
     # Control volume grid metrics
     out.NE, out.IEC, out.IENODE, out.ISBC  = get_TRI_EDGE_PARAM(out.NT, out.NBE, out.NV)
     if verbose: print('- Found CV connectivity')
-        
+
     # Get element wall positions, lengths and angles (return as dict)
     out.DLTXC, out.DLTYC, out.XIJC, out.YIJC, out.DLTXYC, out.SITAC = get_element_edge_metrics(out.VX, out.VY, out.IENODE, out.NE)
     if verbose: print('- CV distances computed. ')
-    
+
     # Set ISONB on open boundary nodes, determine if element on open boundary
     out.ISONB, out.ISBCE   = set_boundary(ISONB, ISBCE, out.NV, out.NBE, OBC_NODES, out.NT)
     if verbose: print('- Nodes and cells on the edge of the grid identified and tagged')
-    
+
     # Get more control volume wall positions, lengths and angles (return as dict)
     out.XIJE, out.YIJE, out.NTRG, out.NIEC, out.DLTXE, out.DLTYE, out.DLTXYE, out.SITAE, out.NCV = get_CV(out.XIJC, out.YIJC, out.XC, out.YC, \
                                                                                                           out.ISBC, out.IEC, out.IENODE, out.NE, out.NT, out.MT)
@@ -186,7 +183,7 @@ def main(M, verbose = False):
 
     # Get shape coefficients for gradient calculation
     out.A1U, out.A2U = shape_coefficients(out.NT, out.XC, out.YC, out.NBE, out.ISBCE)
-    
+
     # Construct a dict containing all fields and store to .npy
     out.write_data()
 
@@ -195,7 +192,7 @@ def main(M, verbose = False):
 
     # Compute CV area
     out.get_art1()
-    
+
     if verbose: print('-------------------------------------------------------------------------------')
     if verbose: print('                                   Fin')
     if verbose: print('-------------------------------------------------------------------------------')
@@ -232,7 +229,7 @@ def get_NBE(NT, MT, NV):
         # First nodes connected to the line segment N1, N2
         for J1 in range(CELLCNT[N1]):         # Loop over number of cells connected to node 1
             for J2 in range(CELLCNT[N2]):     # Loop over number of cells connected to node 2
-                if (CELLS[N1, J1] == CELLS[N2,J2]) and (CELLS[N1, J1] != I): 
+                if (CELLS[N1, J1] == CELLS[N2,J2]) and (CELLS[N1, J1] != I):
                     NBE[I,2] = CELLS[N1, J1]
 
         for J2 in range(CELLCNT[N2]):
@@ -298,7 +295,7 @@ def get_NBVE_NBVT(MT, NT, NV, MXNBR_ELEMS):
     NBVE = -1*np.ones((MT, MXNBR_ELEMS+1), np.int32) # Indices of neighboring elements of node I
     NBVT = -1*np.ones((MT, MXNBR_ELEMS+2), np.int32) # index of node I in neighboring element
     NTVE = np.zeros((MT), np.int32)                  # Counting function, numbers are equivalent to MATLAB or FORTRAN code
-    
+
     for I in prange(MT):
         NCNT = -1      # nodecount, negative by default
         for J in range(NT):
@@ -309,9 +306,9 @@ def get_NBVE_NBVT(MT, NT, NV, MXNBR_ELEMS):
                 for K in range(3):
                     if NV[J,K]-I == 0:
                         NBVT[I,NCNT] = K
-    
+
         NTVE[I]=NCNT+1 # +1 to adjust for the negative initial nodecount
-        
+
     return NBVE, NBVT, NTVE
 
 @jit(nopython = True)
@@ -323,9 +320,9 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
     NBSN   = -1*np.ones((MT, MXNBR+3), dtype = np.int64)      # Number of nodes surrounding a node (+1)
     NTSN   = -1*np.ones((MT), dtype = np.int64)               # Node indicies of nodes surrounding a node
     nearby_elements = np.zeros((MXNBR+1,2), dtype = np.int64) # Temporary storage of the two above (since we are rearranging)
-    
+
     for I in range(MT):                                # Loop over all nodes (as far as I can see, this is safe to paralellize)
-        if ISONB[I] == 0:                              # If we are in the interior 
+        if ISONB[I] == 0:                              # If we are in the interior
             nearby_elements[0,0] = NBVE[I,0]           # Indicies of neighboring elements of node I
             nearby_elements[0,1] = NBVT[I,0]           # Index (0,1,2) of node I in the neighboring element
 
@@ -357,12 +354,12 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
 
             NTSN[I]          += 1
             NBSN[I,NTSN[I]-1] = NBSN[I,0]
-            
+
         else:
             # We first identify the triangle facing land
             for J in range(NTVE[I]):
                 tri_corner = NBVT[I,J]
-                
+
                 # check to find the boundary side of triangle
                 if NBE[NBVE[I,J], np.int(tri_corner+2-np.floor((tri_corner+3)/4)*3)] == -1: # if cell in counterclockwise direction is boundart cell
                     nearby_elements[0, 0] = NBVE[I,J] # Store the triangle next to the boundary
@@ -379,12 +376,12 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
                     if NV[element, K] == I:
                         nearby_elements[J,1] = K
                         break
-                    
+
             # Update nearest element information with what we have just learned
             for J in range(NTVE[I]):
                 NBVE[I,J] = nearby_elements[J,0]
                 NBVT[I,J] = nearby_elements[J,1]
-            
+
             NBVE[I,NTVE[I]] = -1
             NTSN[I]   = NTVE[I]+1
             NBSN[I,0] = I
@@ -412,7 +409,7 @@ def get_TRI_EDGE_PARAM(NT, NBE, NV):
     # Allocate
     NE     = 0                                       # number of unique edges
     ISET   = np.zeros((NT, 3),  dtype = np.int32)    # temporary storage to check wether this edge has been considered
-    TEMP   = -1*np.zeros((3*NT,2), dtype = np.int32) # temporary storage for identification number for to connected cells 
+    TEMP   = -1*np.zeros((3*NT,2), dtype = np.int32) # temporary storage for identification number for to connected cells
     TEMP2  = -1*np.zeros((3*NT,2), dtype = np.int32) # temporary storage for identification number of nodes on
                                                      # edge between connected cells (left and right node corner)
 
@@ -434,10 +431,10 @@ def get_TRI_EDGE_PARAM(NT, NBE, NV):
                 # Update the nodes spanning the wall
                 TEMP2[NE,0] = NV[I, np.int(J+1-np.floor((J+2)/4)*3)]
                 TEMP2[NE,1] = NV[I, np.int(J+2-np.floor((J+3)/4)*3)]
-                
+
                 NE         += 1                # Count number of unique edges
 
-    # Allocate array for these 
+    # Allocate array for these
     IEC         = np.zeros((NE,2), dtype = np.int32)
     IENODE      = np.zeros((NE,2), dtype = np.int32)
 
@@ -511,11 +508,11 @@ def get_CV(XIJC, YIJC, XC, YC, ISBC, IEC, IENODE, NE, NT, MT):
     - IENODE     - Index of nodes on each element edge
     - NT         - Number of elements
 
-    Computes 
+    Computes
     - x, y-coordinates of start/end position of Control Volume (CV) edges
-    - niec 
+    - niec
         --> counting number of left and right nodes connected to this edge from start to end.
-    - dltxe, dltye, dltxye 
+    - dltxe, dltye, dltxye
         --> distance of each subsegment the CVs form
     - ntrg
         --> element associated with htis CV edge
@@ -525,7 +522,7 @@ def get_CV(XIJC, YIJC, XC, YC, ISBC, IEC, IENODE, NE, NT, MT):
     # Initialize data structures
     NCTMP  = -1 # For a seemless translation to python indexing
     NCETMP = -1
-    
+
     # Floats (since their units are grid coordinates)
     XIJE   = np.zeros((NT*3, 2), np.float64)
     YIJE   = np.zeros((NT*3, 2), np.float64)
@@ -533,7 +530,7 @@ def get_CV(XIJC, YIJC, XC, YC, ISBC, IEC, IENODE, NE, NT, MT):
     DLTYE  = np.zeros((NT*3), np.float64)
     DLTXYE = np.zeros((NT*3), np.float64)
     SITAE  = np.zeros((NT*3), np.float64)
-    
+
     # Integers, since they are indices
     NIEC   = np.zeros((NT*3, 2), np.int64)
     NTRG   = np.zeros((NT*3), np.int64)
@@ -633,7 +630,7 @@ def get_NBSE_NESE(NBVE, NTVE, NV, NT):
     # Temporary storage for use inside the loop
     NBSE   = -1*np.ones((NT, len(NBVE[0,:])+10), dtype = np.int64) # Number of cells surrounding a cell (+10) (neighboring surrounding)
     NESE   = -1*np.ones((NT), dtype = np.int64)                   # Node indicies of nodes surrounding a node
-    
+
     for I in range(NT):   # Loop over all cells
         count  = -1
         for J in NV[I,:]: # Check each node in each cell
@@ -643,7 +640,7 @@ def get_NBSE_NESE(NBVE, NTVE, NV, NT):
                 elif K == I:
                     continue
                 count += 1
-                NBSE[I,count] = K 
+                NBSE[I,count] = K
                 NESE[I]       = count
 
     return NBSE, NESE
@@ -731,7 +728,7 @@ def shape_coefficients(NT, XC, YC, NBE, ISBCE):
             a1u[I,2] = a1u[I,2]/delt
             a1u[I,3] = a1u[I,3]/delt
 
-            a2u[I,0] = a2u[I,0]/delt 
+            a2u[I,0] = a2u[I,0]/delt
             a2u[I,1] = a2u[I,1]/delt
             a2u[I,2] = a2u[I,2]/delt
             a2u[I,3] = a2u[I,3]/delt
@@ -766,7 +763,7 @@ def get_obc(M):
     return obc_nodes
 
 # Ensure that the triangulation we feed to TGE is oriented clockwise
-def check_nv(nv, x, y):
+def check_nv(nv, x, y, verbose = False):
     '''
     Based on code from stackoverflow:
     https://stackoverflow.com/questions/1165647/how-to-determine-if-a-list-of-polygon-points-are-in-clockwise-order
@@ -774,7 +771,7 @@ def check_nv(nv, x, y):
     neg = test_nv(x,y,nv)
 
     if neg.size == 0:
-        if verbose_g: print('- Triangulation from source file is clockwise')
+        if verbose: print('- Triangulation from source file is clockwise')
 
     elif neg.size>0:
         if len(neg) != len(nv[:,0]):
@@ -787,7 +784,7 @@ def check_nv(nv, x, y):
         if neg.size > 0:
             raise ValueError('*Something* went wrong when trying to re-arrange the triangulation to clockwise direction :(')
         else:
-            if verbose_g: print('- Triangulation from source was anti-clockwise, it has now been re-arranged to be clockwise')
+            if verbose: print('- Triangulation from source was anti-clockwise, it has now been re-arranged to be clockwise')
     return nv
 
 def test_nv(x,y,nv):
@@ -810,7 +807,7 @@ def test_nv(x,y,nv):
 def get_art(VX, VY, NV, NT):
     ART = np.zeros((NT), dtype = np.float64)
     for I in range(NT):
-        ART[I] = (VX[NV[I,1]]-VX[NV[I,0]])*(VY[NV[I,2]]-VY[NV[I,0]]) - (VX[NV[I,2]]-VX[NV[I,0]])*(VY[NV[I,1]]-VY[NV[I,0]]) 
+        ART[I] = (VX[NV[I,1]]-VX[NV[I,0]])*(VY[NV[I,2]]-VY[NV[I,0]]) - (VX[NV[I,2]]-VX[NV[I,0]])*(VY[NV[I,1]]-VY[NV[I,0]])
 
     return np.abs(0.5*ART)
 
@@ -842,15 +839,15 @@ def get_art1(NT, MT, VX, VY, XC, YC, NV, ISONB, NTVE, NBVE, NBVT, NBSN):
                 YY[2*J-2] = (VY[NV[II,J1]]+VY[NV[II,J2]])*0.5-VY[I] # dy to midpoint on triangle wall
                 XX[2*J-1] = XC[II]-VX[I] # dx from node to cell
                 YY[2*J-1] = YC[II]-VY[I] # dy from node to cell
-                
+
             XX[2*NTVE[I]] = XX[0]
             YY[2*NTVE[I]] = YY[0]
-            
+
             for J in range(1,2*NTVE[I]+1):
                 ART1[I] += 0.5*(XX[J]*YY[J-1]-XX[J-1]*YY[J])
-                
+
             ART1[I] = np.abs(ART1[I])
-            
+
         else: # for nodes that are connected to the boundary
             for J in range(1,NTVE[I]+1):
                 II = NBVE[I,J-1]
@@ -860,25 +857,25 @@ def get_art1(NT, MT, VX, VY, XC, YC, NV, ISONB, NTVE, NBVE, NBVT, NBSN):
                 YY[2*J-2] = (VY[NV[II,J1]]+VY[NV[II,J2]])*0.5-VY[I]
                 XX[2*J-1] = XC[II]-VX[I]
                 YY[2*J-1] = YC[II]-VY[I]
-       
+
             J  = NTVE[I]+1
             II = NBVE[I,J-2]
             J1 = NBVT[I, NTVE[I]-1]
             J2 = np.int(J1+2-np.floor((J1+3)/4)*3) # cycle counter-clockwise
-            
+
             XX[2*J-2] = (VX[NV[II,J1]]+VX[NV[II,J2]])*0.5-VX[I]
             YY[2*J-2] = (VY[NV[II,J1]]+VY[NV[II,J2]])*0.5-VY[I]
-            
+
             # this increment must be zero, I guess we just try to keep to the same routine as for CVs that don't connect to land
             XX[2*J-1] = 0 # VX(I)-VX(I)
             YY[2*J-1] = 0 # VY(I)-VY(I)
-            
+
             XX[2*J] = XX[0]
             YY[2*J] = YY[0]
 
             for J in range(1,2*NTVE[I]+3):
                 ART1[I] += 0.5*(XX[J]*YY[J-1]-XX[J-1]*YY[J])
-                
+
             ART1[I] = np.abs(ART1[I])
     return ART1
 
@@ -1069,14 +1066,14 @@ def fvcom_cell_gradients_speed(NT, NBE, a1u, a2u, U, V, grid_points):
         else:
             u1k2 = a1u[I,2]*U[NBE[I,1]]; u2k2 = a2u[I,2]*U[NBE[I,1]]
             v1k2 = a1u[I,2]*V[NBE[I,1]]; v2k2 = a2u[I,2]*V[NBE[I,1]]
-        
+
         if NBE[I,2] == -1:
             u1k3 = 0; u2k3 = 0
             v1k3 = 0; v2k3 = 0
         else:
             u1k3 = a1u[I,3]*U[NBE[I,2]]; u2k3 = a2u[I,3]*U[NBE[I,2]]
             v1k3 = a1u[I,3]*V[NBE[I,2]]; v2k3 = a2u[I,3]*V[NBE[I,2]]
-        
+
         # u-vel
         # ----
         grad_u[I,0] = a1u[I,0]*U[I] + u1k1 + u1k2 + u1k3
@@ -1086,7 +1083,7 @@ def fvcom_cell_gradients_speed(NT, NBE, a1u, a2u, U, V, grid_points):
         # ----
         grad_v[I,0] = a1u[I,0]*V[I] + v1k1 + v1k2 + v1k3
         grad_v[I,1] = a2u[I,0]*V[I] + v2k1 + v2k2 + v2k3
-        
+
     return grad_u, grad_v
 
 @jit(nopython = True)
@@ -1105,13 +1102,13 @@ def fvcom_cell_gradients_scalar(NT, NBE, a1u, a2u, F, grid_points):
             u1k2  = 0; u2k2 = 0
         else:
             u1k2  = a1u[I,2]*F[NBE[I,1]]; u2k2 = a2u[I,2]*F[NBE[I,1]]
-        
+
         if NBE[I,2] == -1:
             u1k3  = 0; u2k3 = 0
             v1k3  = 0; v2k3 = 0
         else:
             u1k3  = a1u[I,3]*F[NBE[I,2]]; u2k3 = a2u[I,3]*F[NBE[I,2]]
-        
+
         # field gradient
         # ----
         grad[I,0] = a1u[I,0]*F[I] + u1k1 + u1k2 + u1k3
@@ -1349,7 +1346,7 @@ class TGE():
         if verbose: print('  - Horizontal gradient')
         for i in range(len(sigma)):
             if verbose: print('   - in sigma layer: '+str(i))
-                
+
             # Find grad u, v and depth in constant sigma layers
             grad_uv    = self.fvcom_cell_gradient(u[i,:], v = v[i,:], grid_points = grid_points)
             grad_z     = self.fvcom_cell_gradient(z[i,:], grid_points = grid_points)
@@ -1435,7 +1432,7 @@ class TGE():
         # Return dict
         out       = {}
         out['OW'] = OW
-        out['eddies'] = eddies 
+        out['eddies'] = eddies
 
         return out
 
@@ -1443,8 +1440,8 @@ class TGE():
         '''
         Compute the streamfunction for a dataset
         '''
-        return streamfunction(self.MT, self.VX, self.VY, 
-                              self.NBSN, self.NTVE, self.NTSN, self.NBVE, self.NBVT, 
+        return streamfunction(self.MT, self.VX, self.VY,
+                              self.NBSN, self.NTVE, self.NTSN, self.NBVE, self.NBVT,
                               self.ISONB, u, v, threshold = threshold, boundary_conditions = boundary_conditions)
 
     # Needed to compute standard deviation:
@@ -1486,7 +1483,7 @@ def plot_CV_points(M, NBSN, NTSN, NBVE, NTVE, I):
         plt.scatter(M.x[NBSN[I,J],0], M.y[NBSN[I,J],0], c = 'b', label = 'node', zorder = 1000)
         plt.pause(0.1)
     plt.legend()
-    
+
 def plot_CV(M, NBSN, NTSN, NBVE, NTVE, I):
     M.plot_grid()
     plt.scatter(M.x[NBSN[I,:NTSN[I]-1],0], M.y[NBSN[I,:NTSN[I]-1],0],

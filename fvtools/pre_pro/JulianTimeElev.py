@@ -254,7 +254,7 @@ def visualize_amplitudes(M, amp, c, wewant = ['m2','s2', 'n2', 'k1'], verbose = 
     ylim = [ylim[0]-0.15*dy, ylim[1]+0.15*dy] 
 
     # Get georeference
-    gp   = geoplot(xlim, ylim)
+    gp   = geoplot(xlim, ylim, projection = M.reference)
 
     # Scatterplot
     fig, ax = plt.subplots(2, 2, figsize = [6.4, 4.8])

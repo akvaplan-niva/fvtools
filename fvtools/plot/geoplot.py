@@ -9,7 +9,7 @@ from pyproj import Proj, transform
 class geoplot():
     '''
     Downloads georeferenced images from OpenStreetMap.
-    Can read input as either UTM33 or latlon.
+    Can read input as either UTM or latlon.
 
     Mandatory:
     x:          vector for max/min boundary eastering
@@ -28,7 +28,7 @@ class geoplot():
         # Projections
         self.WGS84   = Proj('EPSG:4326')
         self.WebMerc = Proj('EPSG:3857')
-        self.UTM33W  = Proj('EPSG:32633')
+        self.UTM     = Proj(projection)
         
         # initialize offset
         self.offx    = 0
@@ -42,7 +42,7 @@ class geoplot():
 
         # Project to web mercurator
         if ll == False:
-            self.lon, self.lat = self.UTM33W(x, y, inverse=True)
+            self.lon, self.lat = self.UTM(x, y, inverse=True)
         else:
             self.lat = y
             self.lon = x
@@ -71,9 +71,9 @@ class geoplot():
         xe,ns      = transform(self.WGS84, self.WebMerc, lon, lat, always_xy = True)
         return xe,ns
 
-    def project_to_utm33(self, lon, lat):
+    def project_to_utm(self, lon, lat):
         '''
-        from wgs84 to utm33
+        from wgs84 to utm
         '''
-        x, y = self.UTM33W(lon, lat, inverse=False)
+        x, y = self.UTM(lon, lat, inverse=False)
         return x,y
