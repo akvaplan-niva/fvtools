@@ -10,23 +10,25 @@
 # hes@akvaplan.niva.no
 import sys
 import numpy as np
-import fvcom_pytools.grid.fvgrid as fvg
-from operator import add
-from scipy.spatial import KDTree
 
-def main(meshname,res,rows):
+from fvtools.grid.fvcom_grd import FVCOM_grid
+from scipy.spatial import cKDTree as KDTree
+from operator import add
+
+def main(meshname, res, rows):
     '''
     Build a nestzone-grid suitable for roms-fvcom nesting
     '''
-    print('Read: '+meshname)
+    print(f'Read: {meshname}')
     t, n, x, y, z, types, nstr = fvg.read_sms_mesh(meshname, nodestrings = True)
 
     print('\nMake the OBC mesh')
     p,tri = obcgridding(x, y, t, nstr, res, rows)
-
     new_name = meshname.split('.')[0]+'_with_nest.2dm'
-    print('\nThe new mesh file is called:  ' + new_name)
-    write_2dm(new_name, p, tri)
+
+    print(f'\nThe new mesh file is called: {new_name}')
+    fvg.write_2dm(new_name, p, tri, name = new_name, casename = 'obcgridding')
+
     print('Fin.')
     
     
@@ -46,7 +48,7 @@ def obcgridding(x, y, t, nstr, res, rows):
     
     # Supports multiple obcs.
     for i in range(len(nstr)):
-        print('- Nodestring: '+ str(i+1) +' of ' + str(len(nstr)))
+        print(f'- Nodestring: {i+1} of {len(nstr)}')
         if nstr[i][0] == nstr[i][-1]:
             print('-- identified circular OBC')
             circular = True
@@ -192,23 +194,6 @@ def obcgridding(x, y, t, nstr, res, rows):
 
     p = np.array((x,y)).T
     return p,t
-
-
-def write_2dm(fname,p,t):
-    fid     = open(fname,'w')
-    
-    # Go to sms indexing
-    t += 1
-
-    # write triangulation
-    for i in range(len(t[:,0])):
-        fid.write('E3T '+str(i+1)+' '+str(t[i,0])+' '+str(t[i,1])+' '+str(t[i,2])+' 1\n')
-        
-    # write node positions
-    for i in range(len(p[:,0])):
-        fid.write('ND '+str(i+1)+' '+str(p[i,0])+' '+str(p[i,1])+' 0.00000001\n')
-        
-    fid.close()
 
 def circular_adjustment(square_in, pos_in, old_pos):
     """

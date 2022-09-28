@@ -142,7 +142,6 @@ def main(M, verbose = False):
     # -----------------------------------------------------------------------------------------------
     #                         Domain information that require some computing
     # -----------------------------------------------------------------------------------------------
-
     # Get nearby elements
     out.NBE                = get_NBE(out.NT, out.MT, out.NV)
     if verbose: print('- Found nearby elements')
@@ -152,16 +151,24 @@ def main(M, verbose = False):
     if verbose: print('- Found and flagged boundary nodes and elements.')
 
     # Get max number of surrounding elements
-    MAXNBR                 = np.max(get_MAXNBR(out.MT, out.NT, out.NV))
-    if verbose: print(f'- Found max number of surrounding elements: {MAXNBR}')
+    #MAXNBR                 = np.max(get_MAXNBR(out.MT, out.NT, out.NV))
+    #if verbose: print(f'- Found max number of surrounding elements: {MAXNBR}')
+    MAXNBR = 20
 
     # Get number of surrounding triangles to a given node
     NBVE, NBVT, out.NTVE   = get_NBVE_NBVT(out.MT, out.NT, out.NV, MAXNBR)
     if verbose: print('- Found number of elements surrounding nodes')
 
     # Find number of nodes surrounding nodes, and elements surrounding nodes
-    out.NTSN, out.NBSN, out.NBVE, out.NBVT = get_NTSN_NBSN(NBVE, out.NTVE, NBVT, out.NBE,
-                                                           out.NV, ISONB, MAXNBR, out.MT)
+    out.NTSN, out.NBSN, out.NBVE, out.NBVT, invalid_nodes = get_NTSN_NBSN(NBVE, out.NTVE, NBVT, out.NBE,
+                                                                          out.NV, ISONB, MAXNBR, out.MT)
+    invalid_nodes = invalid_nodes.astype(bool)
+    if any(invalid_nodes):
+        M.plot_grid()
+        plt.scatter(M.x[invalid_nodes], M.y[invalid_nodes], c = 'r')
+        plt.draw()
+        raise Exception(f'{len(np.where(invalid_nodes)[0])} of the boundary nodes are invalid, see figure.')
+        
     if verbose: print('- Reordered elements surrounding nodes, found NTSN and NBSN')
 
     # Control volume grid metrics
@@ -255,7 +262,9 @@ def get_BOUNDARY(NT, MT, NBE, NV):
 
     # Determine the index of the three surrounding elementsa
     # Note that it is important that the nodes are arranged CLOCKWISE in this routine
+    # ----
     for I in prange(NT):
+        JJB = 0
         if np.min(NBE[I,:]) == -1:
             ISBCE[I] = 1
             if NBE[I,0] == -1:
@@ -302,7 +311,6 @@ def get_NBVE_NBVT(MT, NT, NV, MXNBR_ELEMS):
             if np.float(NV[J,0] - I)*np.float(NV[J,1] - I)*np.float(NV[J,2] - I) == 0:
                 NCNT         += 1
                 NBVE[I,NCNT]  = J
-
                 for K in range(3):
                     if NV[J,K]-I == 0:
                         NBVT[I,NCNT] = K
@@ -320,7 +328,7 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
     NBSN   = -1*np.ones((MT, MXNBR+3), dtype = np.int64)      # Number of nodes surrounding a node (+1)
     NTSN   = -1*np.ones((MT), dtype = np.int64)               # Node indicies of nodes surrounding a node
     nearby_elements = np.zeros((MXNBR+1,2), dtype = np.int64) # Temporary storage of the two above (since we are rearranging)
-
+    invalid_nodes = np.zeros((MT,), dtype = np.int64)
     for I in range(MT):                                # Loop over all nodes (as far as I can see, this is safe to paralellize)
         if ISONB[I] == 0:                              # If we are in the interior
             nearby_elements[0,0] = NBVE[I,0]           # Indicies of neighboring elements of node I
@@ -356,14 +364,21 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
             NBSN[I,NTSN[I]-1] = NBSN[I,0]
 
         else:
+            JJB = 0
+
             # We first identify the triangle facing land
             for J in range(NTVE[I]):
                 tri_corner = NBVT[I,J]
 
                 # check to find the boundary side of triangle
-                if NBE[NBVE[I,J], np.int(tri_corner+2-np.floor((tri_corner+3)/4)*3)] == -1: # if cell in counterclockwise direction is boundart cell
+                if NBE[NBVE[I,J], np.int(tri_corner+2-np.floor((tri_corner+3)/4)*3)] == -1: # if cell in counterclockwise direction is boundary cell
+                    JJB +=1
                     nearby_elements[0, 0] = NBVE[I,J] # Store the triangle next to the boundary
                     nearby_elements[0, 1] = NBVT[I,J] # And the corner counter-clockwise to land
+
+            if JJB != 1:
+                print('--> Invalid boundary at node '+str(I))
+                invalid_nodes[I] = 1
 
             # And loop over the other triangles around the node
             for J in range(1, NTVE[I]):
@@ -399,7 +414,7 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
             NTSN[I]   += 2
             NBSN[I,NTSN[I]-1] = I
 
-    return NTSN, NBSN, NBVE, NBVT
+    return NTSN, NBSN, NBVE, NBVT, invalid_nodes
 
 @jit(nopython = True, parallel = True)
 def get_TRI_EDGE_PARAM(NT, NBE, NV):

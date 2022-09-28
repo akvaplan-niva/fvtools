@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-import pickle
 import fvtools.grid.tge as tge
 import fvtools.grid.fvgrid as fvgrid
 import fvtools.grid.tools as tools
@@ -16,480 +15,17 @@ import progressbar as pb
 from pyproj import Proj
 from scipy.io import loadmat
 
+from functools import cached_property
 from netCDF4 import Dataset
 from matplotlib.patches import Polygon as mPolygon
 from matplotlib.collections import PatchCollection
 from scipy.spatial import cKDTree as KDTree
 from numba import njit
 
-class FVCOM_grid():
-    '''Represents FVCOM grid
-
-    Will automatically assume that you want to use UTM33W coordinates. If your mesh input file contains a
-    reference to a UTM coordinate, it will use that instead.
+class GridLoader:
     '''
-    def __init__(self,
-                 pathToFile,
-                 reference = 'epsg:32633',
-                 verbose   = False):
-        '''
-        Create the fields we expect in a FVCOM-grid object
-        '''
-        self.filepath       = pathToFile
-        self.reference      = reference
-        self.cropped_object = False
-        global verbose_g
-        verbose_g   = verbose
-
-        if pathToFile[-3:] == 'mat':
-            self._load_mat()
-
-        elif pathToFile[-3:] == 'npy':
-            self._load_npy()
-
-        elif pathToFile[-3:] == '2dm':
-            self._load_2dm()
-
-        elif pathToFile[-3:] == '.nc':
-            self._load_nc()
-
-        else:
-            raise InputError(f'{self.filepath} can not be read by FVCOM_grid')
-
-        # Set the projection
-        # ----
-        self.Proj = self._get_proj()
-
-        # For the case where the input file does not contain x,y or lon,lat data
-        # ----
-        if np.count_nonzero(self.x) == 0:
-            self.x,  self.y  = self.Proj(self.lon, self.lat)
-            self.xc, self.yc = self.Proj(self.lonc, self.latc)
-
-        if np.count_nonzero(self.lon) == 0:
-            self.lon,   self.lat   = self.Proj(self.x,  self.y,  inverse=True)
-            self.lonc,  self.latc  = self.Proj(self.xc, self.yc,  inverse=True)
-
-    def __str__(self):
-        return f'''
-Attributes:
-        Position data
-            x, y   (lon, lat)   - node position
-            xc, yc (lonc, latc) - cell position
-            tri                 - triangulation
-            siglay, siglay_c    - middle of sigma box (scalar variables are stored)
-            siglev, siglev_c    - top and bottom of sigma layer top and bottom interfaces
-            siglayz, sialayz_uv - depth of sigma layer mid-points (where u,v are stored)
-            siglevz, siglevz_uv - depth of sigma layer top and bottom interfaces (where w is stored)
-            h, hc               - total depth
-
-        Grid identifiers
-            nbe    - ids of cells sharing a wall with each cell
-            nbsn   - ids to nodes surrounding nodes
-            nbve   - ids to cells surrounding nodes
-            ntsn   - number of nodes surrounding nodes
-            ntve   - number of cells surrounding nodes
-            nbse   - cells surrounding cells
-            nese   - number of cells surrounding cells
-
-        Grid details:
-            grid_res    - array with minimum resolution in each triangle
-            grid_angles - array with the angle of each corner in each triangle
-
-        Grid area
-            art1     - area of node-based control volume (CV)
-            tri_area - area of triangles
-
-        Grid volume
-            node_volume - volume connected to the data on nodes (and sigma layer)
-            cell_volume - volume connected to the data at cells (and sigma layer)
-
-        Open boundary identifiers
-            read_obc_nodes - numpy object with nodes in each obc
-            obc_nodes      - simple list of all obc nodes
-            obc_type       - identifier saying which type of OBC condition was used
-                             (will only be read from {self.casename}_restart_****.nc files)
-
-Functions:
-        Plotting:
-            .plot_grid()      - plots a grid
-            .plot_cvs(data)   - plots the CV-based data on CV-patches
-            .plot_field(data) - plots data over triangles
-
-        Grid:
-            .write_2dm()      - return mesh as a .2dm file that can be read to SMS
-            .get_obc()        - turns a .read_obc_nodes object to a .obc_nodes list,
-                                and optionally plots .obc-nodes
-            .get_coast()      - returns coastline polygons (will also include the obc)
-            .find_nearest()   - find nearest grid point (either an element (cell) or a node) to a point
-            .isinside()       - find nodes inside a search area
-
-        Physics
-            .get_coriolis()   - Computes the coriolis parameter
-
-        Data extraction
-            .interpolate_to_z(field)  - Interpolates input-field to z-depth
-            .get_section_data(field)  - Interpolates input field along a section
-            .smooth(field)            - smooths an input-field
-            .make_interpolation_matrices_TS() - creates a matrix to interpolate node data to z-depth
-            .make_interpolation_matrices_uv() - creates a matrix to interpolate cell data to z-depth
-
-        Mesh cropping
-            .subgrid()        - crops the mesh object and returns a smaller object with indexing
-                                to the original mesh (usefull to reduce size of the data being handled)
-
-Extended features through the mesh-connectivity TGE (.T) class:
-        -> This contains functions to compute some heavier stuffs (will take a minute or two to set-up)
-            - .T.node_gradient()     - Gradient of data stored on nodes
-            - .T.cell_gradient()     - Gradient of data stored on cells
-            - .T.vertical_gradient() - Vertical gradient of data
-            - .T.vorticity()         - vorticity of depth-averaged currents
-            - .T.vorticity_3D()      - vorticity of 3D-currents
-            - .T.okubo_weiss()       - okubo weiss parameter (for eddy detection)
-
-
--------------------------------------------------------------------------------------------------------
-Short summary of this mesh:
-----
-Grid read from:        {self.filepath}
-Number of nodes:       {len(self.x)}
-Number of triangles:   {len(self.xc)}
-Grid resolution:       min: {np.min(self.grid_res):.2f} m, max: {np.max(self.grid_res):.2f} m
-Grid angles (degrees): min: {np.min(self.grid_angles):.2f}, max: {np.max(self.grid_angles):.2f}
-Casename:              {self.casename}
-Reference:             {self.reference}
-'''
-
-    # Some grid properties we can't always read from files, and may need to compute.
-    # ----
-    @property
-    def T(self):
-        '''
-        T computes the same grid connectivity metrics as tge.F
-        Does also include routines to compute gradients, vorticity and okubo weiss parameter.
-        '''
-        if not hasattr(self, '_T'):
-            self._T = tge.main(self, verbose = True)
-            self._nbsn = self._T.NBSN
-            self._nbve = self._T.NBVE
-            self._ntve = self._T.NTVE
-            self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
-        return self._T
-
-    @property
-    def ctri(self):
-        '''
-        Triangulation using xc, yc as nodes and with land masked.
-        '''
-        if not hasattr(self, '_ctri'):
-            self._ctri = self.cell_tri()
-        return self._ctri
-
-    @ctri.setter
-    def ctri(self, var):
-        self._ctri = var
-
-    @property
-    def art1(self):
-        '''
-        art1 is the control volume (node centered) area
-        '''
-        if not hasattr(self, '_art1'):
-            self.T.get_art1()
-            self._art1 = self.T.art1
-        return self._art1
-
-    @art1.setter
-    def art1(self, val):
-        self._art1 = val
-
-    @property
-    def tri_area(self):
-        '''
-        tri area is the area of the triangles
-        '''
-        if not hasattr(self, '_tri_area'):
-            self._tri_area = self.calculate_tri_area()
-        return self._tri_area
-
-    @tri_area.setter
-    def tri_area(self, val):
-        self._tri_area = val
-        return self._tri_area
-
-    @property
-    def nbe(self):
-        '''
-        nbe are the indices of cells sharing a wall with *this* cell
-        '''
-        if not hasattr(self, '_nbe'):
-            self._nbe = self.T.NBE
-        return self._nbe
-
-    @nbe.setter
-    def nbe(self, var):
-        self._nbe = var
-
-    @property
-    def nbsn(self):
-        '''
-        nbsn is a reference to nodes surrounding each node
-        '''
-        if not hasattr(self, '_nbsn'):
-            self._nbsn = self.T.NBSN
-        return self._nbsn
-
-    @nbsn.setter
-    def nbsn(self, val):
-        self._nbsn = val
-
-    @property
-    def nbve(self):
-        '''
-        nbve is a reference to the elements surrounding each node
-        '''
-        if not hasattr(self, '_nbve'):
-            self._nbve = self.T.NBVE
-        return self._nbve
-
-    @nbve.setter
-    def nbve(self, val):
-        self._nbve = val
-
-    @property
-    def nese(self):
-        '''
-        nese is the number of elements surrounding each element
-        '''
-        if not hasattr(self, '_nese'):
-            self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
-
-        return self._nese
-
-    @property
-    def nbse(self):
-        '''
-        nbse is a list referencing the ids of nearby elements surrounding each element
-        '''
-        if not hasattr(self, '_nbse'):
-            self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
-        return self._nbse
-
-    @property
-    def ntve(self):
-        '''
-        ntve is the number of triangles connected to this node
-        '''
-        if not hasattr(self, '_ntve'):
-            self._ntve = self.T.NTVE
-        return self._ntve
-
-    @ntve.setter
-    def ntve(self, var):
-        self._ntve = var
-
-    @property
-    def siglev_c(self):
-        if hasattr(self, 'siglev'):
-            self._siglev_c = np.mean(self.siglev[self.tri,:], axis = 1)
-        else:
-            self._siglev_c = None
-        return self._siglev_c
-
-    @siglev_c.setter
-    def siglev_c(self, var):
-        self._siglev_c = var
-
-    @property
-    def siglay_c(self):
-        '''
-        sigma layer at cells
-        '''
-        if hasattr(self, 'siglay'):
-            self._siglay_c = np.mean(self.siglay[self.tri,:], axis = 1)
-        else:
-            self._siglay_c = None
-        return self._siglay_c
-
-    @siglay_c.setter
-    def siglay_c(self, var):
-        self._siglay_c = var
-
-    @property
-    def siglev_center(self):
-        return self.siglev_c
-
-    @property
-    def siglay_center(self):
-        return self.siglay_c
-
-    @property
-    def node_volume(self):
-        '''
-        Volume (m^3) of a node-based control volume
-        '''
-        if not hasattr(self, '_node_volume'):
-            self._node_volume = -np.diff(self.siglevz) * self.art1[:, None]
-        return self._node_volume
-
-    @property
-    def cell_volume(self):
-        '''
-        Volume (m^3) of a cell-based control volume
-        '''
-        if not hasattr(self, '_cell_volume'):
-            self._cell_volume = -np.diff(self.siglevz_uv) * self.tri_area[:, None]
-        return self._cell_volume
-
-    @property
-    def hc(self):
-        '''
-        depth at cell center
-        '''
-        if not hasattr(self, '_hc'):
-            if hasattr(self, 'h'):
-                self._hc = np.mean(self.h[self.tri], axis = 1)
-            else:
-                raise ValueError(f'- {self.filepath} does not contain depth info')
-        return self._hc
-
-    @hc.setter
-    def hc(self, var):
-        self._hc  = var
-
-    @property
-    def h_uv(self):
-        '''
-        depth at cell center, will return same value as hc
-        '''
-        if hasattr(self, 'h'):
-            self._hc = np.mean(self.h[self.tri], axis = 1)
-        else:
-            raise InputError(f'- {self.filepath} does not contain depth info')
-        return self._hc
-
-    @h_uv.setter
-    def h_uv(self, var):
-        self._hc = var
-
-    @property
-    def siglayz(self):
-        if not hasattr(self, '_siglayz'):
-            self._siglayz = self.h[:,None]*self.siglay
-        return self._siglayz
-
-    @siglayz.setter
-    def siglayz(self, var):
-        self._siglayz = var
-
-    @property
-    def siglevz(self):
-        '''
-        sigma level surfaces depth below mean sea surface at nodes
-        '''
-        if not hasattr(self, '_siglevz'):
-            self._siglevz = self.h[:,None]*self.siglev
-        return self._siglevz
-
-    @siglevz.setter
-    def siglevz(self, var):
-        self._siglevz = var
-
-    @property
-    def siglayz_uv(self):
-        '''Siglay depths at cells'''
-        if not hasattr(self, '_siglayz_uv'):
-            self._siglayz_uv = np.mean(self.siglayz[self.tri,:], axis = 1)
-        return self._siglayz_uv
-
-    @siglayz_uv.setter
-    def siglayz_uv(self,var):
-        self._siglayz_uv = var
-
-    @property
-    def siglevz_uv(self):
-        '''
-        sigma level depth below mean sea surface at cells
-        '''
-        if not hasattr(self, '_siglevz_uv'):
-            self._siglevz_uv = np.mean(self._siglevz[self.tri,:], axis = 1)
-        return self._siglevz_uv
-
-    @siglevz_uv.setter
-    def siglevz_uv(self, var):
-        self._siglevz_uv = var
-
-    @property
-    def grid_angles(self):
-        '''
-        Angles of triangle corners
-        '''
-        return self._get_angles()
-
-    @property
-    def grid_res(self):
-        '''
-        resolution (minimum length of triangle walls in each triangle)
-        '''
-        return self._get_res()
-
-    # Functions we use to load relevant grid data to be used as instance attributes
-    # ----------------------------------------------------------------------------------
-    def _load_2dm(self):
-        '''
-        Grid parameters from a .2dm file
-        '''
-        self.tri, self.nodes, self.x, self.y, _, _, self.types \
-                    = fvgrid.read_sms_mesh(self.filepath, nodestrings = True)
-
-        ron = np.ndarray((1,len(self.types)), dtype = object)
-        for n in range(len(self.types)):
-            ron[0,n] = np.array([self.types[n]], dtype = np.int32)
-
-        self.read_obc_nodes = ron
-        self.num_obc = 0
-        for i in range(len(self.read_obc_nodes[0,:])):
-            self.num_obc += len(self.read_obc_nodes[0,i][0])
-
-        self.xc = np.mean(self.x[self.tri], axis = 1)
-        self.yc = np.mean(self.y[self.tri], axis = 1)
-        self.lon = np.zeros(self.x.shape)
-        self.lat = np.copy(self.lon)
-        self.casename = self.filepath.split('.2dm')[0]
-
-    def _load_nc(self):
-        '''
-        Grid parameters from .nc file
-        '''
-        self._add_nc_grid(['x', 'y', 'lon', 'lat', 'xc', 'yc', 'lonc', 'latc', 'h'])
-        self._add_nc_grid(['nbe', 'nbve', 'nv', 'nbsn','ntsn', 'ntve'], grid = True, transpose = True)
-        self._add_nc_grid(['art1', 'art2'])
-        self._add_nc_grid(['siglev_center', 'siglay_center', 'siglev', 'siglay'], transpose = True)
-        self._add_nc_grid(['obc_nodes', 'obc_type'], grid = True)
-        self.__dict__['tri'] = self.__dict__.pop('nv')
-
-        if hasattr(self, 'obc_nodes'):
-            self._get_read_obc_nodes()
-
-    def _load_mat(self):
-        '''
-        Grid parameters from .mat file (legacy)
-        '''
-        self._add_grid_parameters(['x', 'y', 'lon', 'lat', 'h', 'hraw', 'xc', 'yc','tri',\
-                                  'siglayz','siglay','siglev','ntsn','nbsn','nObs',\
-                                  'nObcNodes','obc_nodes','read_obc_nodes'])
-        self.tri   = np.array(self.tri)-1
-        self.nbsn -= 1
-        self.read_obc_nodes -= 1
-
-    def _load_npy(self):
-        '''Grid parameters from M.npy file'''
-        self._add_grid_parameters_npy(['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'xc', 'yc','nv',\
-                                      'siglay','siglev','ntsn','nbsn','read_obc_nodes',\
-                                      'siglayz','siglevz', 'info', 'nbsn', 'ntsn', 'ts'])
-
-    # Routines add data from input files to the instance
-    # ----
+    Loads relevant grid data to be used as instance attributes
+    '''
     def _add_grid_parameters(self, names):
         '''
         Read grid attributes from matlab grid file and add them to the FVCOM_grid instance
@@ -542,7 +78,7 @@ Reference:             {self.reference}
         Load grid information stored in a M.npy file
         '''
         grid = np.load(self.filepath, allow_pickle=True).item()
-        for key in grid:
+        for key in names:
             if key == 'nv':
                 setattr(self, 'tri', grid[key][:])
 
@@ -555,6 +91,500 @@ Reference:             {self.reference}
         if hasattr(self, 'info'):
             self.casename = self.info['casename']
 
+
+class FVCOM_grid(GridLoader):
+    '''Represents FVCOM grid
+
+    Will automatically assume that you want to use UTM33W coordinates. If your mesh input file contains a
+    reference to a UTM coordinate, it will use that instead.
+    '''
+    def __init__(self,
+                 pathToFile,
+                 reference = 'epsg:32633',
+                 verbose   = False):
+        '''
+        Create the fields we expect in a FVCOM-grid object
+        '''
+        self.filepath       = pathToFile
+        self.reference      = reference
+        self.cropped_object = False
+        global verbose_g
+        verbose_g   = verbose
+
+        if pathToFile[-3:] == 'mat':
+            self._load_mat()
+
+        elif pathToFile[-3:] == 'npy':
+            self._load_npy()
+
+        elif pathToFile[-3:] == '2dm':
+            self._load_2dm()
+
+        elif pathToFile[-3:] == '.nc':
+            self._load_nc()
+
+        elif pathToFile[-3:] == 'txt':
+            self._load_txt()
+
+        else:
+            raise InputError(f'{self.filepath} can not be read by FVCOM_grid')
+
+        # Set the projection
+        # ----
+        self.Proj = self._get_proj()
+
+        # For the case where the input file does not contain x,y or lon,lat data
+        # ----
+        if np.count_nonzero(self.x) == 0:
+            self.x,  self.y  = self.Proj(self.lon, self.lat)
+
+        if np.count_nonzero(self.lon) == 0:
+            self.lon,   self.lat   = self.Proj(self.x,  self.y,  inverse=True)
+            self.lonc,  self.latc  = self.Proj(self.xc, self.yc,  inverse=True)
+
+    # Specific to FVCOM_grid (variable names not the same in NEST_grid)
+    def _load_2dm(self):
+        '''
+        Grid parameters from a .2dm file
+        '''
+        self.tri, self.nodes, self.x, self.y, _, _, self.types \
+                    = fvgrid.read_sms_mesh(self.filepath, nodestrings = True)
+
+        ron = np.ndarray((1,len(self.types)), dtype = object)
+        for n in range(len(self.types)):
+            ron[0,n] = np.array([self.types[n]], dtype = np.int32)
+
+        self.read_obc_nodes = ron
+        self.num_obc = 0
+        for i in range(len(self.read_obc_nodes[0,:])):
+            self.num_obc += len(self.read_obc_nodes[0,i][0])
+
+        self.lon = np.zeros(self.x.shape)
+        self.lat = np.copy(self.lon)
+        self.casename = self.filepath.split('.2dm')[0]
+
+    def _load_nc(self):
+        '''
+        Grid parameters from .nc file
+        '''
+        self._add_nc_grid(['x', 'y', 'lon', 'lat', 'h'])
+        self._add_nc_grid(['nbe', 'nbve', 'nv', 'nbsn','ntsn', 'ntve'], grid = True, transpose = True)
+        self._add_nc_grid(['art1'])
+        self._add_nc_grid(['siglev', 'siglay'], transpose = True)
+        self._add_nc_grid(['obc_nodes', 'obc_type'], grid = True)
+        self.__dict__['tri'] = self.__dict__.pop('nv')
+
+        if hasattr(self, 'obc_nodes'):
+            self._get_read_obc_nodes()
+
+    def _load_mat(self):
+        '''
+        Grid parameters from .mat file (legacy)
+        '''
+        self._add_grid_parameters(['x', 'y', 'lon', 'lat', 'h', 'hraw','tri',\
+                                   'siglay', 'siglev','ntsn','nbsn','nObs',\
+                                   'nObcNodes','obc_nodes','read_obc_nodes'])
+        self.tri   = np.array(self.tri)-1
+        self.nbsn -= 1
+        self.read_obc_nodes -= 1
+
+    def _load_npy(self):
+        '''Grid parameters from M.npy file'''
+        self._add_grid_parameters_npy(['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'nv',\
+                                      'siglay','siglev','ntsn','nbsn','read_obc_nodes',\
+                                      'info', 'nbsn', 'ntsn', 'ts'])
+
+    def _load_txt(self):
+        with open(self.filepath) as f:
+            nodenum = int(f.readline())
+            points  = np.loadtxt(f, delimiter = ' ', max_rows = nodenum)
+            trinum  = int(f.readline())
+            tri     = np.loadtxt(f, delimiter = ' ', max_rows = trinum, dtype=int)
+        self.tri = tri
+        self.x = points[:,0]
+        self.y = points[:,1]
+        self.lon = np.zeros(self.x.shape)
+        self.lat = np.zeros(self.y.shape)
+        
+
+    def __str__(self):
+        return f'''
+Attributes:
+        Position data
+            x, y   (lon, lat)   - node position
+            xc, yc (lonc, latc) - cell position
+            tri                 - triangulation
+            siglay, siglay_c    - middle of sigma box (tracers, u and v are computed here)
+            siglev, siglev_c    - sigma layer top and bottom interfaces (w is computed here)
+            siglayz, sialayz_uv - depth of sigma layer mid-points
+            siglevz, siglevz_uv - depth of sigma layer top and bottom interfaces
+            h, hc               - total depth
+
+        Grid identifiers
+            nbe    - ids of cells sharing a wall with each cell
+            nbsn   - ids to nodes surrounding nodes
+            nbve   - ids to cells surrounding nodes
+            ntsn   - number of nodes surrounding nodes
+            ntve   - number of cells surrounding nodes
+            nbse   - cells surrounding cells
+            nese   - number of cells surrounding cells
+
+        Grid details:
+            grid_res    - array with minimum resolution in each triangle
+            grid_angles - array with the angle of each corner in each triangle
+
+        Grid area
+            art1     - area of node-based control volume (CV)
+            tri_area - area of triangles
+
+        Grid volume
+            node_volume - volume connected to the data on nodes (and sigma layer)
+            cell_volume - volume connected to the data at cells (and sigma layer)
+
+        Open boundary identifiers
+            read_obc_nodes - numpy object with nodes in each obc
+            obc_nodes      - simple list of all obc nodes
+            obc_type       - identifier saying which type of OBC condition was used
+                             (will only be read from {self.casename}_restart_****.nc files)
+
+        Mesh boundary (including land)
+            model_boundary - shapely polygon (linestring) bounding the model domain (on both obc and mainland)
+
+Functions:
+        Plotting:
+            .plot_grid()        - plots the grid
+            .plot_cvs(data)     - plots node based data on CV-patches
+            .plot_field(data)   - plots node based data over triangles
+            .plot_contour(data) - contour plots any data
+
+        Grid:
+            .write_2dm()      - return mesh as a .2dm file that can be read to SMS
+            .get_obc()        - turns a .read_obc_nodes object to a .obc_nodes list,
+                                and optionally plots .obc-nodes
+            .get_coast()      - returns coastline polygons (will also include the obc)
+            .get_land_polygons() - same as get_coast, but faster (and returns shapely polygons)
+            .find_nearest()   - find nearest grid point (either a cell or a node) to a point
+            .isinside()       - find nodes inside a search area
+
+        Physics
+            .get_coriolis()   - Computes the coriolis parameter
+
+        Data extraction
+            .interpolate_to_z(data) - Interpolates input-data to z-depth
+            .get_section_data(data) - Interpolates input data along a section
+            .smooth(data)           - Smooths input-data
+
+        Mesh cropping
+            .subgrid()        - crops the mesh object and returns a smaller object with indexing
+                                to the original mesh (usefull to reduce size of the data being handled)
+
+Extended features through the mesh-connectivity TGE (.T) class:
+    -> This contains functions to compute some heavier stuffs (will take a minute or two to set-up)
+        - .T.node_gradient()     - Gradient of data stored on nodes
+        - .T.cell_gradient()     - Gradient of data stored on cells
+        - .T.vertical_gradient() - Vertical gradient of data
+        - .T.vorticity()         - vorticity of depth-averaged currents
+        - .T.vorticity_3D()      - vorticity of 3D-currents
+        - .T.okubo_weiss()       - okubo weiss parameter (for eddy detection)
+
+
+-------------------------------------------------------------------------------------------------------
+Short summary of this mesh:
+----
+Grid read from:        {self.filepath}
+Number of nodes:       {len(self.x)}
+Number of triangles:   {len(self.xc)}
+Grid resolution:       min: {np.min(self.grid_res):.2f} m, max: {np.max(self.grid_res):.2f} m
+Grid angles (degrees): min: {np.min(self.grid_angles):.2f}, max: {np.max(self.grid_angles):.2f}
+Casename:              {self.casename}
+Reference:             {self.reference}
+'''
+    # Grid positions
+    @property
+    def xc(self):
+        return np.mean(self.x[self.tri], axis = 1)
+
+    @property
+    def yc(self):
+        return np.mean(self.y[self.tri], axis = 1)
+    
+    @property
+    def latc(self):
+        if not hasattr(self, '_latc'):
+            self._latc = np.mean(self.lat[self.tri], axis = 1)
+        return self._latc
+
+    @latc.setter 
+    def latc(self, var):
+        self._latc = var
+
+    @property
+    def lonc(self):
+        if not hasattr(self, '_lonc'):
+            self._lonc = np.mean(self.lon[self.tri], axis = 1)
+        return self._lonc
+
+    @lonc.setter 
+    def lonc(self, var):
+        self._lonc = var
+
+    # Some grid properties we can't always read from files, and may need to compute.
+    # ----
+    @property
+    def T(self):
+        '''
+        T computes the same grid connectivity metrics as tge.F
+        Does also include routines to compute gradients, vorticity and okubo weiss parameter.
+        '''
+        if not hasattr(self, '_T'):
+            self._T = tge.main(self, verbose = True)
+            self._nbsn = self._T.NBSN
+            self._nbve = self._T.NBVE
+            self._ntve = self._T.NTVE
+            self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
+        return self._T
+
+    @property
+    def obc_nodes(self):
+        if not hasattr(self, '_obc_nodes'):
+            self._obc_nodes = []
+            for n in range(len(self.x_obc)):
+                self._obc_nodes.extend(self.obcnodes[n])
+
+        return self._obc_nodes
+    
+    @obc_nodes.setter 
+    def obc_nodes(self, var):
+        self._obc_nodes = var
+
+    @property
+    def ctri(self):
+        '''
+        Triangulation using xc, yc as nodes and with land masked.
+        '''
+        if not hasattr(self, '_ctri'):
+            self._ctri = self.cell_tri()
+        return self._ctri
+
+    @ctri.setter
+    def ctri(self, var):
+        self._ctri = var
+
+    @property
+    def art1(self):
+        '''
+        art1 is the control volume (node centered) area
+        '''
+        if not hasattr(self, '_art1'):
+            self.T.get_art1()
+            self._art1 = self.T.art1
+        return self._art1
+
+    @art1.setter
+    def art1(self, val):
+        self._art1 = val
+
+    @property
+    def tri_area(self):
+        '''
+        tri area is the area of the triangles
+        '''
+        return self.calculate_tri_area()
+
+    @property
+    def nbe(self):
+        '''
+        nbe are the indices of cells sharing a wall with *this* cell
+        '''
+        if not hasattr(self, '_nbe'):
+            self._nbe = self.T.NBE
+        return self._nbe
+
+    @nbe.setter
+    def nbe(self, var):
+        self._nbe = var
+
+    @property
+    def nbe(self):
+        '''
+        nbe are the indices of cells sharing a wall with *this* cell
+        '''
+        if not hasattr(self, '_nbe'):
+            self._nbe = self.T.NBE
+        return self._nbe
+
+    @nbe.setter
+    def nbe(self, var):
+        self._nbe = var
+
+    @property
+    def nbsn(self):
+        '''
+        nbsn is a reference to nodes surrounding each node
+        '''
+        if not hasattr(self, '_nbsn'):
+            self._nbsn = self.T.NBSN
+        return self._nbsn
+
+    @nbsn.setter
+    def nbsn(self, val):
+        self._nbsn = val
+
+    @property
+    def nbve(self):
+        '''
+        nbve is a reference to the elements surrounding each node
+        '''
+        if not hasattr(self, '_nbve'):
+            self._nbve = self.T.NBVE
+        return self._nbve
+
+    @nbve.setter
+    def nbve(self, val):
+        self._nbve = val
+
+    @property
+    def nese(self):
+        '''
+        nese is the number of elements surrounding each element
+        '''
+        if not hasattr(self, '_nese'):
+            self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
+        return self._nese
+
+    @property
+    def nbse(self):
+        '''
+        nbse is a list referencing the ids of nearby elements surrounding each element
+        '''
+        if not hasattr(self, '_nbse'):
+            self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
+        return self._nbse
+
+    @property
+    def ntve(self):
+        '''
+        ntve is the number of triangles connected to this node
+        '''
+        if not hasattr(self, '_ntve'):
+            self._ntve = self.T.NTVE
+        return self._ntve
+
+    @ntve.setter
+    def ntve(self, var):
+        self._ntve = var
+
+    # Properties dealing with the vertical coordinate
+    @property
+    def cell_volume(self):
+        '''
+        Volume (m^3) of a cell-based control volume
+        '''
+        return -np.diff(self.siglevz_uv) * self.tri_area[:, None]
+
+    @property
+    def node_volume(self):
+        '''
+        Volume (m^3) of a node-based control volume
+        '''
+        return -np.diff(self.siglevz) * self.art1[:, None]
+
+    @property
+    def siglev_c(self):
+        return np.mean(self.siglev[self.tri,:], axis = 1)
+
+    @property
+    def siglay_c(self):
+        '''
+        sigma layer at cells
+        '''
+        return np.mean(self.siglay[self.tri,:], axis = 1)
+
+    @property
+    def siglev_center(self):
+        return self.siglev_c
+
+    @property
+    def siglay_center(self):
+        return self.siglay_c
+
+    @property
+    def hc(self):
+        '''
+        depth at cell center
+        '''
+        return np.mean(self.h[self.tri], axis = 1)
+
+    @property
+    def obc_nodes(self):
+        if not hasattr(self, '_obc_nodes'):
+            self._obc_nodes = []
+            for n in range(len(self.x_obc)):
+                self._obc_nodes.extend(self.obcnodes[n])
+
+        return self._obc_nodes
+    
+    @obc_nodes.setter 
+    def obc_nodes(self, var):
+        self._obc_nodes = var
+
+    @property
+    def h_uv(self):
+        '''
+        depth at cell center, will return same value as hc
+        '''
+        return np.mean(self.h[self.tri], axis = 1)
+
+    @property
+    def siglayz(self):
+        return self.h[:,None]*self.siglay
+
+    @property
+    def siglevz(self):
+        '''
+        sigma level surfaces depth below mean sea surface at nodes
+        '''
+        return self.h[:,None]*self.siglev
+
+    @property
+    def siglayz_uv(self):
+        '''Siglay depths at cells'''
+        return np.mean(self.siglayz[self.tri,:], axis = 1)
+
+    @property
+    def siglevz_uv(self):
+        '''
+        sigma level depth below mean sea surface at cells
+        '''
+        return np.mean(self._siglevz[self.tri,:], axis = 1)
+
+    @property
+    def grid_angles(self):
+        '''
+        Angles of triangle corners
+        '''
+        return self._get_angles()
+
+    @property
+    def grid_res(self):
+        '''
+        resolution (minimum length of triangle walls in each triangle)
+        '''
+        return self._get_res()
+
+    @cached_property
+    def model_boundary(self):
+        '''
+        boundary of this model domain (x,y)
+        '''
+        polygons = self.get_land_polygons()
+
+        # Find the one with biggest area (from trigrid)
+        areas = [p.area for p in polygons]
+        polygon = [l for l, a in zip(polygons, areas) if a==max(areas)]
+        assert len(polygon) == 1
+        return polygon[0].exterior
+
     # Functions that interpret more information about the grid than explicitly stored in the grid files
     # ----------------------------------------------------------------------------------------------------
     def _get_proj(self):
@@ -566,7 +596,6 @@ Reference:             {self.reference}
         if hasattr(self, 'info'):
             if 'reference' in self.info:
                 self.reference = self.info['reference']
-
         return Proj(self.reference)
 
     def _get_res(self):
@@ -758,16 +787,25 @@ Reference:             {self.reference}
 
     def plot_contour(self, field, *args, **kwargs):
         '''
-        autofill standard parameters
+        Plot contour of node- or cell data, basically just a shortcut for pyplot.tricontourf()
         '''
         f = np.squeeze(field)
-        if np.isnan(f).any():
-            mask = np.isnan(f)[self.tri].any(axis=1)
-            plt.tricontourf(self.x, self.y, self.tri, f, mask = mask, *args, **kwargs)
+        if len(f) == len(self.x):
+            x = self.x; y = self.y; tri = self.tri
         else:
-            plt.tricontourf(self.x, self.y, self.tri, f, *args, **kwargs)
+            x = self.xc; y = self.yc; tri = self.ctri
+
+        if np.isnan(f).any():
+            mask = np.isnan(f)[tri].any(axis=1)
+            self._plot_contour(x, y, tri, f, mask = mask, *args, **kwargs)
+        else:
+            self._plot_contour(x, y, tri, f, *args, **kwargs)
+
+    @staticmethod
+    def _plot_contour(x, y, tri, field, *args, **kwargs):
+        plt.tricontourf(x, y, tri, field, *args, **kwargs)
         plt.axis('equal')
-        plt.show(block = False)
+        plt.show(block=False)
 
     def plot_field(self, field):
         '''
@@ -801,9 +839,10 @@ Reference:             {self.reference}
         '''
         # Load control volume patches
         # ----
-        cv    = self._load_cvs(verbose)
+        if not hasattr(self, 'cv'):
+            self._load_cvs(verbose)
         full  = True
-        inds  = np.arange(0,len(field))
+        inds  = np.arange(0, len(field))
 
         # mask cvs with values below/above threshold
         # ------------------------------------
@@ -821,21 +860,19 @@ Reference:             {self.reference}
             inds_bigger  = np.where(field>=cmin)
             inds         = np.array([[a for a in inds_bigger[0] if a in inds_smaller[0]]])[0]
 
-        # plot the patches
+        # Make matplotlib patches for each control volume
         # ----
-        if verbose: print('Plotting the patches')
         if full:
-            collection   = PatchCollection(self.cv, cmap=cmap, edgecolor=edgecolor, norm = Norm)
+            collection = PatchCollection(self.cv, cmap=cmap, edgecolor=edgecolor, norm=Norm)
 
         else:
-            cv           = [self.cv[int(a)] for a in inds]
-            collection   = PatchCollection(cv, cmap=cmap, edgecolor=edgecolor, norm = Norm)
+            collection = PatchCollection([self.cv[int(a)] for a in inds], cmap=cmap, edgecolor=edgecolor, norm=Norm)
 
         # Add values to the patches
         # ----
         collection.set_array(field[inds.astype(int)])
-        ax               = plt.gca()
-        _ret             = ax.add_collection(collection)
+        ax   = plt.gca()
+        _ret = ax.add_collection(collection)
 
         # Center the axis over the area covered with patches and return
         # ----
@@ -847,27 +884,10 @@ Reference:             {self.reference}
         '''
         Check if we already have the cv-patches
         '''
-        if hasattr(self,'cv'):
-            if verbose:
-                print('CVs already calculated.')
-            return self.cv
-
-        else:
-            try:
-                if verbose:
-                    print('try to load cvs.npy from the working directory')
-                cv        = np.load('cvs.npy', allow_pickle = True)
-                self.cv   = cv
-                if verbose:
-                    print('sucess\n')
-
-            except:
-                if verbose:
-                    print('\nFailure.')
-                    print('We need to calculate the control volume edges for each node\n'+\
-                          'to continue. This must only be done once for each M-instance.')
-                cv       = self._get_cvs() # create CV polygons
-        return cv
+        try:
+            self.cv = np.load('cvs.npy', allow_pickle = True)
+        except:
+            self._get_cvs() # create CV polygons
 
     def _get_cvs(self, nodes = None):
         '''
@@ -888,7 +908,7 @@ Reference:             {self.reference}
 
         # Find the positions that correspond to each controlvolume in the selected nodes
         # ----
-        cv = []
+        self.cv = []
         for i, node in enumerate(nodes):
             bar.update(i)
             # nodes surrounding node
@@ -898,22 +918,21 @@ Reference:             {self.reference}
             # elements surrounding node
             # -------
             elemshere = self.nbve[node,np.where(self.nbve[node,:]>=0)][0]
-            xmid      = (np.tile(self.x[node],len(nbsnhere))+self.x[nbsnhere])/2
-            ymid      = (np.tile(self.y[node],len(nbsnhere))+self.y[nbsnhere])/2
-            xcell     = self.xc[elemshere]; ycell     = self.yc[elemshere]
+            xmid  = (np.tile(self.x[node],len(nbsnhere))+self.x[nbsnhere])/2
+            ymid  = (np.tile(self.y[node],len(nbsnhere))+self.y[nbsnhere])/2
+            xcell = self.xc[elemshere]; 
+            ycell = self.yc[elemshere]
 
             # connect xc and yc to draw the control volume
             # ------
             xcv, ycv = self._connect_cv_walls(xmid, ymid, xcell, ycell, self.x, self.y, nbsnhere, elemshere, node)
 
-            cv.append(mPolygon(np.array([xcv,ycv]).transpose(), True))
+            self.cv.append(mPolygon(np.array([xcv,ycv]).transpose(), True))
 
         bar.finish()
-        self.cv = cv
 
         if verbose_g: print('Success! These cvs will be stored in your working directory as cvs.npy for future use')
-        np.save('cvs.npy',cv)
-        return cv
+        np.save('cvs.npy', self.cv)
 
     # Some methods Frank developed to interpolate data to a z-level. Similar functionality as used in interpolate_to_z
     # ----
@@ -1089,45 +1108,15 @@ Reference:             {self.reference}
         # ----
         self._check_nv()
 
-        if verbose:
-            print('- Find neighbors to each triangle')
-
-        neighbors         = tri.Triangulation(self.x, self.y, self.tri).neighbors
-
+        # Find triangle wall (pairs of nodes) connected to land
         # ----
-        if verbose:
-            print('- Identify nodes near land')
-
-        identify          = np.where(neighbors == -1)  # Identify triangles that are adjacent to land
-        boundary_elements = identify[0]                # Index of triangle next to land
-
-
-        nodes_1       = identify[1]                    # Corner at land
-        nodes_2       = (nodes_1+1)%3                  # Next corner at land (each node in triangulation is
-                                                       # counted clockwise)
-
-        boundary_nodes_1  = self.tri[boundary_elements, nodes_1] # Node if the first corner
-        boundary_nodes_2  = self.tri[boundary_elements, nodes_2] # Node in the second corner
-        boundary_nodes    = np.append(boundary_nodes_1,boundary_nodes_2) # Create a full node list
-        boundary_nodes    = np.unique(boundary_nodes)  # To remove duplicates
-
-        # Connect boundary nodes to segment
-        nodes_from_tri    = self.tri[identify[0],:]
-
-        # Send nodes in boundary_nodes to a list
-        line_segment   = []
-        for n in nodes_from_tri:
-            here = []
-            for m in n:
-                if m in boundary_nodes:
-                    here.append(m)
-            line_segment.append(here)
+        boundary_nodes = self._get_land_segments() 
 
         # Connect line_segments to return separate boundary/islands polygons
         # ----
         if verbose:
             print('- connect nodes near land to segments')
-        node, n_pol = tools.coast_segments(line_segment)
+        node, n_pol = tools.coast_segments(boundary_nodes.tolist())
 
         self.coast_node  = np.array(node)
         self.n_pol       = np.array(n_pol)
@@ -1140,6 +1129,58 @@ Reference:             {self.reference}
             for pol in unique:
                 nodes = self.coast_node[self.n_pol == pol]
                 plt.plot(self.x[nodes], self.y[nodes], '.')
+
+    def get_land_polygons(self):
+        '''
+        the same way as done in trigrid
+        '''
+        self._check_nv()
+
+        # Get triangle wall (pairs of nodes) connected to land
+        boundary_nodes = self._get_land_segments() 
+
+        # Construct polygons from the segments
+        # ----
+        from shapely.ops import polygonize
+        polygons = list(polygonize(
+            (n1, n2) for n1, n2 in zip(np.array([self.x[boundary_nodes][:,0], self.y[boundary_nodes][:,0]]).T, 
+                                             np.array([self.x[boundary_nodes][:,1], self.y[boundary_nodes][:,1]]).T)))
+        return polygons
+
+    def _get_land_segments(self):
+        '''
+        Construct segments connected to land
+        '''
+        # Identify which side of triangles faces land
+        # ----
+        neighbors = tri.Triangulation(self.x, self.y, self.tri).neighbors
+        identify  = np.where(neighbors == -1)
+        boundary_elements = identify[0]  # Index of triangle next to land
+
+        # Get index of triangle corners facing land in each triangle
+        # ----
+        nodes_1 = identify[1]   # index at first node next to land
+        nodes_2 = (nodes_1+1)%3 # Next corner at land (each node in triangulation is counted clockwise)
+
+        return np.array([self.tri[boundary_elements, nodes_1], self.tri[boundary_elements, nodes_2]]).transpose()
+
+    # write land-ocean interface (mainland and islands)
+    # ----
+    def write_coast(self, outfolder=None):
+        '''
+        Identifies coast, writes to boundary.txt and islands.txt
+        '''
+        if outfolder is None:
+            outfolder = os.getcwd()
+        import fvtools.gridding.coast as coast 
+        self.get_coast()
+        self.get_obc()
+        x = self.x[np.squeeze(self.coast_node[:])]
+        y = self.y[np.squeeze(self.coast_node[:])]
+        coast.separate_polygons(x, y, self.n_pol,
+                                bpath = outfolder+'/boundary.txt', 
+                                ipath = outfolder+'/islands.txt') 
+        print('Open file in SMS and edit the outer boundary (remove obc, convert mainland to "island" manually)')
 
     # Write a new .2dm file
     # ----
@@ -1198,19 +1239,10 @@ Reference:             {self.reference}
         if: full = False: Adds cropped_nv, cropped_x, cropped_y, cropped_cells and cropped_nodes to the mesh instance.
             full = True:  Update all cell and node fields, adds cropped_cells and cropped_nodes to the instance,
                           removes fields (other than tri and nv) that reference grid ids
-
-        Nb! I hope to turn full = True to default some time in the future.
         '''
         # Find triangles within the scope and crop the triangulation
         # ----
-        xm   = self.xc <= max(xlim); xp = self.xc >= min(xlim)
-        xind = np.logical_and(xm, xp)
-
-        ym   = self.yc <= max(ylim); yp = self.yc >= min(ylim)
-        yind = np.logical_and(ym, yp)
-
-        cells    = np.arange(len(self.xc))
-        cell_ind = cells[np.logical_and(xind, yind)]
+        cell_ind = self._find_cells_in_box(xlim, ylim)
         nv       = self.tri[cell_ind,:]
 
         # Unique nodes
@@ -1284,6 +1316,19 @@ Reference:             {self.reference}
         # ----
         self.xlim = xlim
         self.ylim = ylim
+
+    def _find_cells_in_box(self, xlim, ylim):
+        '''
+        find triangles in scope
+        '''
+        xm   = self.xc <= max(xlim); xp = self.xc >= min(xlim)
+        xind = np.logical_and(xm, xp)
+
+        ym   = self.yc <= max(ylim); yp = self.yc >= min(ylim)
+        yind = np.logical_and(ym, yp)
+
+        cells    = np.arange(len(self.xc))
+        return cells[np.logical_and(xind, yind)]
 
     def _check_nv(self):
         '''
@@ -1411,14 +1456,109 @@ Reference:             {self.reference}
           - dst: distance along transect
           - transect of field you gave the routine
         '''
-        # Check that input dimensions are compatible with what the routine expects
+        # Check which type of sigma data we got
         # ----
+        sigma = self._check_if_sigma_or_siglev(data)
+
+        # Check to see if we have node or cell data
+        # ----
+        grid = self._check_if_cell_or_node(data)
+
+        # Initialize section we want to extract
+        # ----
+        self.initialize_section(section_file, res, store_transect_img, sigma, grid)
+
+        # Interpolate data to the section
+        # ----
+        out = {}
+        if len(data.shape)>1:
+            out['transect'] = self._interpolate_3D(data)
+        else:
+            out['transect'] = self._interpolate_2D(data)
+
+        # Store depth and positions
+        # ----
+        out['h'] = self.dpt_sec
+        out['x'] = self.x_sec; out['y'] = self.y_sec
+
+        # Remove nans, otherwise contourf won't accept the input!
+        # ----
+        if np.isnan(out['transect']).any():
+            not_horizontal = ~np.isnan(out['transect'][:,0])
+            for key in out.keys():
+                if key in ['x', 'y']:
+                    out[key] = out[key][not_horizontal]
+                else:
+                    out[key] = out[key][not_horizontal, :]
+
+        # Remove nans, otherwise contourf won't accept the input!
+        # ----
+        if np.isnan(out['transect']).any():
+            not_horizontal = ~np.isnan(out['transect'][:,0])
+            for key in out.keys():
+                if key in ['x', 'y']:
+                    out[key] = out[key][not_horizontal]
+                else:
+                    out[key] = out[key][not_horizontal, :]
+
+        # Store transect distance
+        # ----
+        dx = np.diff(out['x'], prepend = out['x'][0])/1000 # since we count starting with the first segment position
+        dy = np.diff(out['y'], prepend = out['y'][0])/1000 # dive by 1000 to get distance in kilometers
+        dst_seg = np.sqrt(dx**2 + dy**2)
+
+        # Create total distance along transect vector
+        # ----
+        if len(data.shape)>1:
+            out['dst'] = np.repeat(np.cumsum(dst_seg)[:,None], data.shape[1], axis = 1)
+        else:
+            out['dst'] = np.cumsum(dst_seg)
+
+        return out
+
+    def _initialize_section(self, section_file, res, store_transect_img, sigma, grid):
+        # Just for the first call. Can be changed by calling prepare_section separately
+        if not hasattr(self, 'x_sec') and not hasattr(self, 'y_sec'):
+            self.prepare_section(section_file = section_file, res = res, store_transect_img = store_transect_img)
+
+        # Initialize interpolator
+        if not hasattr(self, 'trs') or self.fresh_section:
+            self.trs =  tri.Triangulation(getattr(self, 'x'+grid), getattr(self, 'y'+grid), triangles = getattr(self, grid+'tri'))
+            if grid == '':
+                self.dpt_sec = tri.LinearTriInterpolator(self.trs, getattr(self, 'h')).__call__(self.x_sec,  self.y_sec)[:, None]*getattr(self, sigma)[0,:]
+            else:
+                self.dpt_sec = tri.LinearTriInterpolator(self.trs, getattr(self, 'hc')).__call__(self.x_sec, self.y_sec)[:, None]*getattr(self, sigma)[0,:]
+
+    def _interpolate_2D(self, field):
+        '''
+        Interpolate 2D data
+        '''
+        out_field = tri.LinearTriInterpolator(self.trs, field).__call__(self.x_sec, self.y_sec)
+        return out_field
+
+    def _interpolate_3D(self, field):
+        out_field = np.zeros((len(self.x_sec), field.shape[1]))
+        for sigma in range(field.shape[1]):
+            out_field[:, sigma] = tri.LinearTriInterpolator(self.trs, field[:, sigma]).__call__(self.x_sec, self.y_sec)
+        return out_field
+
+    def _check_if_cell_or_node(self, data):
+        '''check if some data field is stored on nodes or cells'''
+        if data.shape[0] == len(self.x):
+            grid = ''
+        elif data.shape[0] == len(self.xc):
+            grid = 'c'
+        else:
+            raise InputError('Your data somehow does not match with node or cell dimensions. Do the grid and data dimensions match?')
+        return grid
+
+    def _check_if_siglay_or_siglev(self, data):
+        '''check if some data field is vertically spaced on siglay or siglev points'''
+        sigma = 'siglev' # by default (to get z = 0 at surface, z = -h at bottom, valid for horizontal data)
         if len(data.shape) == 2:
-            # Force the grid to be of the same shape as sigma-coordinates
             if data.shape[1] != self.siglev.shape[1] and data.shape[1] != self.siglay.shape[1]:
                 data = data.T
 
-            # Thereafter see if we are dealing with sigma or siglev
             if data.shape[1] == self.siglay.shape[1]:
                 sigma = 'siglay'
 
@@ -1434,81 +1574,7 @@ Reference:             {self.reference}
 
         elif len(data.shape) == 3:
             raise InputError('Sorry, field can only be provided in 2D arrays or 1D arrays, time must be looped over externally.')
-
-        else:
-            sigma = 'siglev'
-
-        # Thereafter identify if we have node or cell data
-        # ----
-        if data.shape[0] == len(self.x):
-            grid = ''
-
-        elif data.shape[0] == len(self.xc.shape):
-            grid = 'c'
-            # Then we also need cell triangles
-            if not hasattr(self, 'ctri'):
-                self.cell_tri()
-        else:
-            raise InputError('Your data somehow does not match with node or cell dimensions. Do the grid and data dimensions match?')
-
-        # Just for the first call. Can be changed by calling prepare_section separately
-        if not hasattr(self, 'x_sec') and not hasattr(self, 'y_sec'):
-            self.prepare_section(section_file = section_file, res = res, store_transect_img = store_transect_img)
-
-        if not hasattr(self, 'trs') or self.fresh_section:
-            self.trs     =  tri.Triangulation(getattr(self, 'x'+grid), getattr(self, 'y'+grid), triangles = getattr(self, grid+'tri'))
-            if grid == '':
-                self.dpt_sec = tri.LinearTriInterpolator(self.trs, getattr(self, 'h')).__call__(self.x_sec,  self.y_sec)[:, None]*getattr(self, sigma)[0,:]
-            else:
-                self.dpt_sec = tri.LinearTriInterpolator(self.trs, getattr(self, 'hc')).__call__(self.x_sec, self.y_sec)[:, None]*getattr(self, sigma)[0,:]
-
-        # Interpolate data to the section
-        # ----
-        out = {}
-        if len(data.shape)>1:
-            out['transect'] = self._interpolate_3D(data)
-        else:
-            out['transect'] = self._interpolate_2D(data)
-
-        # Store depth and positions
-        out['h'] = self.dpt_sec
-        out['x'] = self.x_sec
-        out['y'] = self.y_sec
-
-        # Remove nans, otherwise contourf won't accept the input!
-        # ----
-        if np.isnan(out['transect']).any():
-            not_horizontal = ~np.isnan(out['transect'][:,0])
-            for key in out.keys():
-                if key in ['x', 'y']:
-                    out[key] = out[key][not_horizontal]
-                else:
-                    out[key] = out[key][not_horizontal, :]
-
-        # Store transect distance
-        dx = np.diff(out['x'], prepend = out['x'][0])/1000 # since we count starting with the first segment position
-        dy = np.diff(out['y'], prepend = out['y'][0])/1000 # dive by 1000 to get distance in kilometers
-        dst_seg = np.sqrt(dx**2 + dy**2)
-
-        if len(data.shape)>1:
-            out['dst'] = np.repeat(np.cumsum(dst_seg)[:,None], data.shape[1], axis = 1)
-        else:
-            out['dst'] = np.cumsum(dst_seg)
-
-        return out
-
-    def _interpolate_2D(self, field):
-        '''
-        Interpolate 2D data
-        '''
-        out_field = tri.LinearTriInterpolator(self.trs, field).__call__(self.x_sec, self.y_sec)
-        return out_field
-
-    def _interpolate_3D(self, field):
-        out_field = np.zeros((len(self.x_sec), field.shape[1]))
-        for sigma in range(field.shape[1]):
-            out_field[:, sigma] = tri.LinearTriInterpolator(self.trs, field[:, sigma]).__call__(self.x_sec, self.y_sec)
-        return out_field
+        return sigma
 
     def get_coriolis(self, cell = False):
         '''
@@ -1529,6 +1595,9 @@ Reference:             {self.reference}
     # ----------------------------------------------------------------------------
     @staticmethod
     def _test_nv(x,y,nv):
+        '''
+        checks if the triangles are sorted clockwise or anti clockwise (anti clockwise = True)
+        '''
         # Triangle corners
         xpts  = x[nv]
         ypts  = y[nv]
@@ -1600,9 +1669,9 @@ Reference:             {self.reference}
 
         return xcv, ycv
 
-class NEST_grid():
+class NEST_grid:
     '''
-    Object containing information about the FVCOM grid
+    Object containing information about the nestingzone grid
     '''
     def __init__(self, path_to_nest, M = None, proj='epsg:32633'):
         """
@@ -1610,7 +1679,10 @@ class NEST_grid():
         """
 
         self.filepath = path_to_nest
-        self.Proj     = Proj(proj)
+        if M is None:
+            self.Proj = Proj(proj)
+        else:
+            self.Proj = M.Proj
 
         if self.filepath[-3:] == 'mat':
             self.add_grid_parameters_mat(['xn', 'yn', 'h', 'nv', 'fvangle', 'xc',
@@ -1623,28 +1695,17 @@ class NEST_grid():
         elif self.filepath[-3:] == 'npy':
             self.add_grid_parameters_npy(['xn','yn','nv','xc','yc','lonn',
                                           'latn','lonc','latc','nid','cid'], add = True)
-            self.add_grid_parameters_npy(['nv'], add = False)
 
-            # The width of nestingzone
-            try:
-                self.oend1 = nest.item()['oend1'] # Matlab legacy
-                self.oend2 = nest.item()['oend2'] # Matlab legacy
-                self.R     = [[nest.item()['R']]] # Matlab legacy
+            self.add_grid_parameters_npy(['nv', 'oend1', 'oend2', 'R'], add = False)
 
-            except:
-                print('detected fvcom-fvcom nesting')
+            self.add_grid_parameters_npy(['h_mother', 'hc_mother', 'siglev_mother', 'siglay_mother',
+                                          'siglev_center_mother', 'siglay_center_mother', 'siglayz_mother',
+                                          'siglayz_uv_mother'], add = False)
+            
+            self.add_grid_parameters_npy(['h', 'hc', 'siglev', 'siglay','siglev_center', 'siglay_center',
+                                          'siglayz', 'siglayz_uv'], add = False)
 
-            # Read depth info
-            try:
-                self.add_grid_parameters_npy(['h_mother', 'hc_mother', 'siglev_mother', 'siglay_mother',
-                                              'siglev_center_mother', 'siglay_center_mother', 'siglayz_mother',
-                                              'siglayz_uv_mother'], add = False)
-                self.add_grid_parameters_npy(['h', 'hc', 'siglev', 'siglay','siglev_center', 'siglay_center',
-                                              'siglayz', 'siglayz_uv'], add = False)
-            except:
-                print('detected roms-fvcom nesting')
-
-        # Add information from full fvcom grid (M), vertical coords and OBS-nodes
+        # Add information from full fvcom grid (M), vertical coords and OBC-nodes
         # ----
         if M is not None:
             self.siglay  = M.siglay[:len(self.xn), :]
@@ -1662,8 +1723,7 @@ class NEST_grid():
                 + self.siglev[self.nv[:,1], :]
                 + self.siglev[self.nv[:,2], :]
             )/3
-
-            self.calcWeights(M)
+            
 
     def add_grid_parameters_mat(self, names):
         '''
@@ -1681,21 +1741,21 @@ class NEST_grid():
         self.nid = self.nid -1
         self.cid = self.cid-1
         self.nv  = self.nv-1
+        self.R   = self.R[0][0]
 
     def add_grid_parameters_npy(self, names, add=None):
-        if add is None:
-            raise ValueError('For the moment, you must explicitly say wether or not you want to add a dimension')
+        '''
+        add means "add dimension"
+        '''
         nest = np.load(self.filepath, allow_pickle=True)
         for key in names:
-            if add:
-                setattr(self, key, nest.item()[key][:,None])
-            else:
-                setattr(self, key, nest.item()[key])
-
-        # Parameters
-        # Discussion: I will not change nid (as it is not used) nor will i change
-        #             cid, as it seems to have been wrongly used in the original
-        #             input from matlab-implementation of this routine.
+            try:
+                if add:
+                    setattr(self, key, nest.item()[key][:,None])
+                else:
+                    setattr(self, key, nest.item()[key])
+            except:
+                continue
 
     def calcWeights(self, M, w1=2.5e-4, w2=2.5e-5):
         '''
@@ -1705,127 +1765,81 @@ class NEST_grid():
         By default (matlab legacy):
         w1  = 2.5e-4
         w2  = 2.5e-5
-
-        This routine differs from the matlab sibling since the matlab version
-        didn't work well for grids with several obcs.
-
-        The ROMS model will be weighted less near the land than elsewhere (except
-        at the outermost obc-row)
         '''
-        M.get_obc()
+        M = self.crop_nest_grid_corners(M)
+        nest_width = self.find_max_width(M)
+        self._compute_weights(nest_width, w1, w2)
+        self.get_obc_nodes(M)
+        self.get_cube_connected_to_obc()
+        self.set_weights_in_obc_cube_to_one()
 
+    def crop_nest_grid_corners(self, M):
+        M.get_obc()
         # Find the max radius- and node distance vector
         # ----
         if self.oend1 == 1:
             for n in range(len(M.x_obc)):
                 dist       = np.sqrt((M.x_obc[n]-M.x_obc[n][0])**2+(M.y_obc[n] - M.y_obc[n][0])**2)
-                i          = np.where(dist>self.R[0][0])
+                i          = np.where(dist>self.R)
                 M.x_obc[n] = M.x_obc[n][i]
                 M.y_obc[n] = M.y_obc[n][i]
 
         if self.oend2 == 1:
             for n in range(len(M.x_obc)):
                 dist       = np.sqrt((M.x_obc[n]-M.x_obc[n][-1])**2+(M.y_obc[n]-M.y_obc[n][-1])**2)
-                i          = np.where(dist>self.R[0][0])
+                i          = np.where(dist>self.R)
                 M.x_obc[n] = M.x_obc[n][i]
                 M.y_obc[n] = M.y_obc[n][i]
+        return M
 
-        # Find the distances between the nesting zone and the obc
-        # ----
+    def find_max_width(self, M):
+        '''
+        Find the distance between the obc and outer perimiter of the nestingzone
+        '''
         # 1. Gather the obc nodes in one vector
-        xo = []; yo = []
+        self._xo = []; self._yo = []
         for n in range(len(M.x_obc)):
-            xo.extend(M.x_obc[n])
-            yo.extend(M.y_obc[n])
+            self._xo.extend(M.x_obc[n])
+            self._yo.extend(M.y_obc[n])
 
-        R = []; d_node = []
+        R = []; self.d_node = []
         for n in range(len(self.xn)):
-            d_node.append(np.min(np.sqrt((xo-self.xn[n])**2+(yo-self.yn[n])**2)))
+            self.d_node.append(np.min(np.sqrt((self._xo-self.xn[n])**2+(self._yo-self.yn[n])**2)))
+        return max(self.d_node)
 
-        R = max(d_node)
+    def _compute_weights(self, nest_width, w1, w2):
+        distance_range = [0, nest_width]
+        weight_range   = [w1, w2]
 
-        # Define the interpolation values
-        # ----
-        distance_range = [0,R]
-        weight_range   = [w1,w2]
-
-        # Do the same for the cell values
-        # ----
         d_cell = []
         for n in range(len(self.xc)):
-            d_cell.append(min(np.sqrt((xo-self.xc[n])**2+(yo-self.yc[n])**2)))
+            d_cell.append(min(np.sqrt((self._xo-self.xc[n])**2+(self._yo-self.yc[n])**2)))
 
-        # Estimate the weight coefficients
-        # ==> Kan det hende at disse må være lik for vektor og skalar?
-        # ----
-        weight_node = np.interp(d_node, distance_range, weight_range)
-        weight_cell = np.interp(d_cell, distance_range, weight_range)
+        self.weight_node = np.interp(self.d_node, distance_range, weight_range)
+        self.weight_cell = np.interp(d_cell, distance_range, weight_range)
 
-        if np.argwhere(weight_node<0).size != 0:
-            weight_node[np.where(weight_node)]=min(weight_range)
+        if np.argwhere(self.weight_node<0).size != 0:
+            self.weight_node[np.where(self.weight_node)]=min(weight_range)
 
-        if np.argwhere(weight_cell<0).size != 0:
-            weight_cell[np.where(weight_cell)]=min(weight_range)
+        if np.argwhere(self.weight_cell<0).size != 0:
+            self.weight_cell[np.where(self.weight_cell)]=min(weight_range)
 
-        # ======================================================================================
-        # The weights are calculated, now we need to overwrite some of them to get a full row of
-        # forced values
-        # ======================================================================================
-        # Force the weight at the open boundary to be 1
-        # ----
-        # 1. reload the full obc
-        M.get_obc()
-        for n in range(len(M.x_obc)):
-            xo.extend(M.x_obc[n])
-            yo.extend(M.y_obc[n])
-
-        # 2. Find the nesting nodes on the boundary
-        node_obc_in_nest = [];
-        for x,y in zip(xo,yo):
+    def get_obc_nodes(self, M):
+        self.node_obc_in_nest = [];
+        for x, y in zip(M.x[M.obc_nodes], M.y[M.obc_nodes]):
             dst_node = np.sqrt((self.xn-x)**2+(self.yn-y)**2)
-            node_obc_in_nest.append(np.where(dst_node==dst_node.min())[0][0])
+            self.node_obc_in_nest.append(np.where(dst_node==dst_node.min())[0][0])
+        self.node_obc_in_nest = np.array(self.node_obc_in_nest).astype(int)
 
-        # 3. Find the cells connected to these nodes
-        cell_obc_in_nest = []
-        nv               = self.nv
-        nest_nodes       = np.array([node_obc_in_nest[:-1],\
-                                     node_obc_in_nest[1:]]).transpose()
+    def get_cube_connected_to_obc(self):
+        obc_here = np.zeros((len(self.xn[:,0],)))
+        obc_here[self.node_obc_in_nest] = 1
+        self.cell_obc_to_one = np.where(np.sum(obc_here[self.nv], axis=1)>0)[0]
+        self.node_obc_to_one = np.unique(self.nv[self.cell_obc_to_one])
 
-        # If you want a qube as the outer row
-        # ===========================================================================
-        for i, nest_pair in enumerate(nest_nodes):
-            cells = [ind for ind, corners in enumerate(nv) if nest_pair[0] in \
-                     corners or nest_pair[1] in corners]
-            cell_obc_in_nest.extend(cells)
-
-        cell_obc_to_one = np.unique(cell_obc_in_nest)
-
-        # 4. Get all of the nodes in this list (builds the nodes one row outward)
-        node_obc_to_one = np.unique(nv[cell_obc_to_one].ravel())
-
-        # If you want triangles as the outer row
-        # ---------------------------------------------------------------------------
-        #for i, nest_pair in enumerate(nest_nodes):
-        #    cells = [ind for ind, corners in enumerate(nv) if nest_pair[0] in \
-        #             corners and nest_pair[1] in corners]
-        #    cell_obc_in_nest.extend(cells)
-
-        #cell_obc_to_one = np.unique(cell_obc_in_nest)
-        #node_obc_to_one = np.unique(node_obc_in_nest)
-
-        # 5. Finally force the weight at the outermost OBC-row
-        weight_node[node_obc_to_one] = 1.0
-        weight_cell[cell_obc_to_one] = 1.0
-
-        #weight_node[node_obc_2ndrow] = 0.02
-        #weight_cell[node_obc_2ndrow] = 0.02
-
-        # --> Store everything in the NEST object
-        # ----
-        self.weight_node = weight_node
-        self.weight_cell = weight_cell
-        self.obc_nodes   = node_obc_to_one
-        self.obc_cells   = cell_obc_to_one
+    def set_weights_in_obc_cube_to_one(self):
+        self.weight_node[self.node_obc_to_one] = 1.0
+        self.weight_cell[self.cell_obc_to_one] = 1.0
 
 class InputError(Exception):
     pass

@@ -4,12 +4,12 @@
 # ---------------------------------------------------------------------
 import numpy as np
 import sys
-import fvcom_pytools.grid.fvgrid as fvg
+import fvtools.grid.fvgrid as fvg
 import matplotlib.pyplot as plt
 from pyproj import Proj, transform
-from fvcom_pytools.grid.fvcom_grd import FVCOM_grid
 from scipy.spatial import cKDTree as KDTree
-from fvcom_pytools.gridding.prepare_inputfiles import write_FVCOM_bath
+from fvtools.grid.fvcom_grd import FVCOM_grid
+from fvtools.gridding.prepare_inputfiles import write_FVCOM_bath
 
 def main(mesh,
          fvcom_mother, 
@@ -30,6 +30,7 @@ def main(mesh,
     debug:         True
     '''
     print('\nLoad mother and child grid')
+
     # Store the stuff we need to create a nestingfile in this dict
     # ----
     print('- child:  '+mesh)
@@ -247,8 +248,8 @@ def add_depth_info(NEST, M):
     NEST['siglay_mother']        = M.siglay[NEST['nid'], :]
     NEST['siglev_center_mother'] = M.siglev_c[NEST['cid'], :]
     NEST['siglay_center_mother'] = M.siglay_c[NEST['cid'], :]
-    NEST['siglayz_mother']       = M.h[NEST['nid']][:, None]*NEST['siglay_mother']
-    NEST['siglayz_uv_mother']    = NEST['hc_mother'][:, None]*NEST['siglay_center_mother']
+    NEST['siglayz_mother']       = M.h[NEST['nid']][:,None]*NEST['siglay_mother']
+    NEST['siglayz_uv_mother']    = NEST['hc_mother']*NEST['siglay_center_mother']
     
     return NEST
 

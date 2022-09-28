@@ -14,7 +14,7 @@ from shapely.ops import polygonize
 from shapely.geometry import LineString
 
 
-import process_coastline as pc
+import fvtools.gridding.process_coastline as pc
 
 from matplotlib.widgets import Slider, TextBox
 
@@ -173,12 +173,12 @@ def separate_polygons(x, y, npol, bpath = os.getcwd()+'/boundary.txt',
     else:
         write_bound_isl(0,0,0,path=ipath)
         
-def find_boundary(boundaryfile = os.getcwd()+'boundary.txt'):
+def find_boundary(boundaryfile = f'{os.getcwd()}boundary.txt'):
     xb, yb, db, mb, ob = read_boundary(boundaryfile)
     fig, ax = plt.subplots()
     plt.subplots_adjust(bottom=0.25)
     plt.plot(xb, yb, '.k')
-    l,         = plt.plot(xb, yb, '.r')
+    l, = plt.plot(xb, yb, '.r')
     
     plt.xticks(([]))
     plt.yticks(([]))
@@ -197,11 +197,10 @@ def find_boundary(boundaryfile = os.getcwd()+'boundary.txt'):
     def update(val):
         big   = int(sbig.val)
         small = int(ssmall.val)
-        #plt.plot(xb, yb, '.k')
         if big>small:
-            l.set_data(xb[small:big],yb[small:big])
+            l.set_data(xb[small:big], yb[small:big])
         else:
-            l.set_data(xb[big:small],yb[big:small])
+            l.set_data(xb[big:small], yb[big:small])
         fig.canvas.draw_idle()
 
     def submit(text):
@@ -211,9 +210,9 @@ def find_boundary(boundaryfile = os.getcwd()+'boundary.txt'):
         sbig.val = big
         ssmall.val = small
         if big>small:
-            l.set_data(xb[small:big],yb[small:big])
+            l.set_data(xb[small:big], yb[small:big])
         else:
-            l.set_data(xb[big:small],yb[big:small])
+            l.set_data(xb[big:small], yb[big:small])
         fig.canvas.draw_idle()
         
     sbig.on_changed(update)
@@ -221,7 +220,7 @@ def find_boundary(boundaryfile = os.getcwd()+'boundary.txt'):
     text_box.on_submit(submit)
     plt.show(block=True)
 
-    print('Found that the indices '+str(int(ssmall.val))+' to ' + str(int(sbig.val)) + ' covers the boundary')
+    print(f'Found that the indices {int(ssmall.val)} to {int(sbig.val)} covers the boundary')
     return int(ssmall.val), int(sbig.val)
 
 def read_smscoast(coast_file):
@@ -797,7 +796,7 @@ def find_polygons(mapfile='Polylines.map'):
     areas      = polygonize(lines)
     return areas
 
-def grabPolylines(mapfile = 'Polylines.map'):
+def grabPolylines(mapfile = 'Polylines.map', return_polygons = False):
     '''
     Identifies the sub-polygons in the domain
     '''
@@ -809,35 +808,46 @@ def grabPolylines(mapfile = 'Polylines.map'):
     ypoly      = np.empty(0)
     polynum    = np.empty(0, int)
     
-
+    # Get centroids
+    # ----
     for (index,area) in enumerate(areas):
         feature   = dict(type='Feature', properties = dict(index=index))
         feature['geometry'] = area.__geo_interface__
         output['features'].append(feature)
         centroids.append(area.centroid)
 
-    # Draw the polygons and label them
-    fig, ax = plt.subplots()
-    plt.axis('equal')
-    for n in range(pnl.astype('int').max()):
-        ax.plot(xpl[pnl == n+1], ypl[pnl == n+1], 'k')
-
+    # get polygons
+    # ----
+    polygons = []
     for n in range(output['features'][-1]['properties']['index']+1):
         coordinates = np.array(output['features'][n]['geometry']['coordinates'])
         poly        = np.empty([len(coordinates[0,:,0]),2])
         poly[:,0]   = coordinates[0,:,0]
         poly[:,1]   = coordinates[0,:,1]
-        polygons    = []
-            
         polygons.append(mPolygon(poly))
-        p = PatchCollection(polygons, alpha=0.4)
-        ax.add_collection(p)
-
         xpoly   = np.append(xpoly, coordinates[0,:,0])
         ypoly   = np.append(ypoly, coordinates[0,:,1])
         polynum = np.append(polynum, output['features'][n]['properties']['index']*np.ones(len(poly[:,0]))+1)
-        plt.text(centroids[n].x, centroids[n].y, output['features'][n]['properties']['index'])
 
-    plt.show()    
-    
-    return xpoly, ypoly, polynum
+    plotPolylines(xpoly, ypoly, polynum, centroids, polygons)
+
+    if return_polygons:
+        return xpoly, ypoly, polynum, centroids, polygons
+    else:
+        return xpoly, ypoly, polynum
+
+def plotPolylines(xpoly, ypoly, polynum, centroids, polygons):
+    '''
+    Plots polygons and labels them accordingly
+    '''
+    fig, ax = plt.subplots()
+    plt.axis('equal')
+    for n in range(polynum.astype('int').max()):
+        ax.plot(xpoly[polynum == n+1], ypoly[polynum == n+1], 'k')
+
+    p = PatchCollection(polygons, alpha=0.4)
+    ax.add_collection(p)
+    for n in range(len(polygons)):
+        plt.text(centroids[n].x, centroids[n].y, f'{n}')
+
+    plt.show(block=False)
