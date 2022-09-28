@@ -30,7 +30,6 @@ def main(dmfile,
          dptfile,
          casename  = os.getcwd().split('/')[-1],
          reference = 'epsg:32633',
-         nesting   = 'fvcom',
          rx0max    = 0.2,
          min_depth = 5.0,
          sponge_radius = 8000.0,
@@ -45,7 +44,6 @@ def main(dmfile,
     dmfile:    .2dm file containing the mesh info (type: string)
     dptfile:   .txt or .npy file containing the raw bathymetry (type: string)
                or just a number for constant depth
-    nesting:   'fvcom' or 'roms'
     rx0max:    smoothing target
     min_depth: minimum depth to be fed to FVCOM
     casename:  Name of the _sigma.dat file in the input folder

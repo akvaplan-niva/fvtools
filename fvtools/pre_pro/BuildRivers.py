@@ -72,7 +72,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = False):
     M = FVCOM_grid(mesh_dict)
 
     print('----------------------------------------------------------------------------')
-    print('                       BuildRivers: ' + M.info['casename'])
+    print(f'                       BuildRivers: {M.info["casename"]}')
     print('----------------------------------------------------------------------------')
 
     if info is None:
@@ -507,9 +507,9 @@ class RiverTemperatures():
                 minutes = int(tid.split(' ')[1].split(':')[1])
                 date.append(datetime(year, month, day, hour, minutes))
             except:
-                day    = int(tid.split('.')[0])
+                day     = int(tid.split('.')[0])
                 month   = int(tid.split('.')[1])
-                year     = int(tid.split('.')[2].split(' ')[0])
+                year    = int(tid.split('.')[2].split(' ')[0])
                 hour    = int(tid.split(' ')[1].split(':')[0])
                 minutes = int(tid.split(' ')[1].split(':')[1])
                 date.append(datetime(year, month, day, hour, minutes))
@@ -600,18 +600,6 @@ class LargeRivers():
         To get a reasonable estimate of the total runoff that goes through the main river
         """
         self.Vfrac = self.areal/self.landareal
-
-    def move_river(self, Forcing):
-        """
-        Some times, NVE will have placed rivers at inconvenient places
-        An example is "Namsen" in Trøndelag. This class lets you adjust such rivers.
-        """
-        i = 1
-        #river = self.info['move']
-        #plt.figure()
-        #plt.scatter(self.x_land, self.y_land)
-        #plt.scatter(self.x, self.y)
-        #plt.close()
 
 class SmallRivers():
     """

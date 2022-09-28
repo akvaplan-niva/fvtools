@@ -8,19 +8,21 @@ import pyproj
 import progressbar as pb
 import matplotlib.pyplot as plt
 import time as time_mod
+import warnings
+warnings.filterwarnings("ignore")
 
-from fvcom_pytools.grid.fvcom_grd import FVCOM_grid
+from fvtools.grid.fvcom_grd import FVCOM_grid # objects that load what we need to know about the FVCOM grid
+from fvtools.grid.arome_grid import AROME_grid, newAROME_grid # objects that load arome grid data
+from fvtools.interpolators.nearest4 import N4 # base-class for nearest 4 interpolation
+
 from time import gmtime, strftime
 from datetime import datetime, timedelta
 from netCDF4 import Dataset
+from functools import cached_property
+from numba import njit
+from scipy.spatial import cKDTree as KDTree
 
-# Routines for extracting AROME atmospheric data from the met OPeNDAP server, extracting
-# the part of the data covering the model domain, interpolating these data to the FVCOM
-# grid and finally storing it in a FVCOM friendly netCDF forcing file.
-
-# See the MetCoOp Forcing manual for instructions on how to use this routine.
-
-def main(grd_file, outfile, start_time, stop_time):
+def main(grd_file, outfile, start_time, stop_time, nearest4=None):
     '''
     Create AROME atmospheric forcing file for FVCOM 
 
@@ -30,174 +32,66 @@ def main(grd_file, outfile, start_time, stop_time):
     outfile:     name of netcdf output
     start_time: 'yyyy-mm-dd-hh'
     stop_time:  'yyyy-mm-dd-hh'
+    nearest4:   'nearest4arome.npy' file if you have already made an _atm file for this mesh (=None by default)
     '''
+    print(f'Create an atmospheric forcing file')
+
     # initialize
-    Arome_grid = None; N4    = None
-    new_Arome  = None; newN4 = None
+    Arome_grid = None; N4A    = None
+    new_Arome  = None; newN4A = None
     
-    Mobj           = FVCOM_grid(grd_file)
-    startnum       = start_time.split('-')
-    stopnum        = stop_time.split('-')
-    startdate      = datetime(int(startnum[0]), int(startnum[1]), int(startnum[2]))
-    stopdate       = datetime(int(stopnum[0]), int(stopnum[1]), int(stopnum[2]))
+    print(f'- Load {grd_file}')
+    Mobj       = FVCOM_grid(grd_file)
+    startnum   = start_time.split('-')
+    stopnum    = stop_time.split('-')
+    startdate  = datetime(int(startnum[0]), int(startnum[1]), int(startnum[2]))
+    stopdate   = datetime(int(stopnum[0]), int(stopnum[1]), int(stopnum[2]))
+
+    # The arome grid changed feb. 5 2020, we need to know both if the model period crosses feb 5th
+    print('- Load AROME grid')
     if startdate < datetime(2020, 2, 5):
         Arome_grid = AROME_grid()        
 
     if stopdate >= datetime(2020, 2, 5):
-        new_Arome  = new_AROME_grid()
+        new_Arome  = newAROME_grid()
 
-    print('\nCreating empty output file.')
+    print('- Create an empty output file.')
     create_nc_forcing_file(outfile, Mobj)
 
-    print('\nCreating file-list')
+    print('- Make a filelist')
     time, path, path_acc, path_rad, index = metcoop_make_fileList(start_time, stop_time)
 
-    print('\nCreating nearest4 interpolation coefficients.')
+    print('\nCompute nearest4 interpolation coefficients.')
     if Arome_grid is not None:
-        if new_Arome is not None:
-            print('Old Arome grid')
-        N4 = nearest4(Mobj, Arome_grid)
+        N4A = N4AROME(Mobj, Arome_grid)
+
+        if nearest4 is not None:
+            N4A.load_nearest4(nearest4)
+
+        else:
+            N4A.compute_nearest4()
 
     if new_Arome is not None:
-        if Arome_grid is not None:
-            print('New Arome grid')
-        newN4 = nearest4(Mobj, new_Arome)
+        newN4A = N4AROME(Mobj, new_Arome)
+        if nearest4 is not None:
+            newN4A.load_nearest4(nearest4)
+        else:
+            newN4A.compute_nearest4()
 
-    print('\nRead data from cloud and dump non-accumulated data to file\n')
-    arome2fvcom(outfile, N4, newN4, time, path, path_acc, path_rad, index, stopdate)
-
-class AROME_grid():
-    '''
-    Object containing grid information about AROME atmospheric model grid.
-    '''
-
-    def __init__(self):
-        """
-        Read grid coordinates from nc-files.
-        A bit of a mess since pp files uses a snipped version of the extracted grid.
-        """
-        # Assuming that the grid is unchanged, will probably lead to crashes in the future - but those are
-        # problems we need to think about anyways, and in such we welcome them...
-        # --------------
-        year     = '2020'#str(date.year)
-        month    = '01'#'{:02d}'.format(date.month)
-        day      = '30'#'{:02d}'.format(date.day)
-        pathToEX = 'https://thredds.met.no/thredds/dodsC/meps25epsarchive/' + year + '/' + month + '/' +\
-                   day + '/meps_mbr0_extracted_backup_2_5km_' + year + month + day + 'T00Z.nc'
-
-        
-
-        pathToPP = 'https://thredds.met.no/thredds/dodsC/meps25epsarchive/' + year + '/' + month + '/' +\
-                   day + '/meps_mbr0_pp_2_5km_' + year + month + day + 'T00Z.nc'
-
-        self.ncpp  = pathToPP
-        self.ncex  = pathToEX
-        self.name  = pathToPP.split('/')[-1].split('.')[0]
-        self.naex  = pathToEX.split('/')[-1].split('.')[0]
-
-        ncdata     = Dataset(pathToPP, 'r')
-        self.lonpp = ncdata.variables.get('longitude')[:]
-        self.latpp = ncdata.variables.get('latitude')[:]
-
-        # MetCoOp fractional landmask (from pp file). Let "1" indicate ocean. We only use this to avoid
-        # land radiation to the ocean model. Should be avoided and replaced with an albedo adjustment at
-        # for shortwave. Not sure if longwave behaves similarly.
-        self.landmask = (ncdata.variables.get('land_area_fraction')[:]-1.0)*-1.0
-
-        ncdata.close()
-
-        ncdata     = Dataset(pathToEX, 'r')
-        self.lonex = ncdata.variables.get('longitude')[:]
-        self.latex = ncdata.variables.get('latitude')[:]
-        ncdata.close()
-
-        UTM33W = pyproj.Proj(proj='utm', zone='33', ellps='WGS84')
-        self.x, self.y = UTM33W(self.lonpp, self.latpp, inverse=False)
-        self.xex, self.yex = UTM33W(self.lonex, self.latex, inverse=False)
-
-    def crop_grid(self, xlim, ylim):
-        """Find indices of grid points inside specified domain"""
-
-        ind1 = np.logical_and(self.x >= xlim[0], self.x <= xlim[1])
-        ind2 = np.logical_and(self.y >= ylim[0], self.y <= ylim[1])
-        return np.logical_and(ind1, ind2)
-
-    def crop_extended(self,xlim,ylim):
-        """ 
-        The use of this will _only_ be correct if the the pp- and extended files share the same grid, but
-        one of them are a cropped version of the other!
-        """
-        ind1 = np.logical_and(self.xex >= xlim[0], self.xex <= xlim[1])
-        ind2 = np.logical_and(self.yex >= ylim[0], self.yex <= ylim[1])
-        return np.logical_and(ind1, ind2)
-
-class new_AROME_grid():
-    """
-    Arome included new partners in February 2020. The computational domain was extended in the process.
-    This class reads grids from that period.
-    """
-    def __init__(self):
-        """
-        Read grid coordinates from nc-files.
-        A bit of a mess since pp files uses a snipped version of the extracted grid.
-        """
-        # Assuming that the grid is unchanged, will probably lead to crashes in the future - but those are
-        # problems we need to think about anyways, and in such we welcome them...
-        # --------------
-
-        self.nc    = 'https://thredds.met.no/thredds/dodsC/meps25epsarchive/2020/10/30/meps_det_2_5km_20201030T00Z.nc'
-        self.name  = self.nc.split('/')[-1].split('.')[0]
-        self.na    = self.nc.split('/')[-1].split('.')[0]
-
-        ncdata     = Dataset(self.nc, 'r')
-
-        # MetCoOp fractional landmask. Let "1" indicate ocean. We only use this to avoid
-        # land radiation to the ocean model. Should be avoided and replaced with an albedo adjustment at
-        # for shortwave. Not sure if longwave behaves similarly.
-        self.landmask = (ncdata.variables.get('land_area_fraction')[0,0,:]-1.0)*-1.0
-
-        ncdata   = Dataset(self.nc, 'r')
-        self.lon = ncdata.variables.get('longitude')[:]
-        self.lat = ncdata.variables.get('latitude')[:]
-        ncdata.close()
-
-        UTM33W = pyproj.Proj(proj='utm', zone='33', ellps='WGS84')
-        self.x, self.y     = UTM33W(self.lon, self.lat, inverse=False)
-
-        # To work together with the rest of the routine
-        self.xex = np.copy(self.x)
-        self.yex = np.copy(self.y)
-
-    def crop_grid(self, xlim, ylim):
-        """
-        Find indices of grid points inside specified domain
-        """
-
-        ind1 = np.logical_and(self.x >= xlim[0], self.x <= xlim[1])
-        ind2 = np.logical_and(self.y >= ylim[0], self.y <= ylim[1])
-        return np.logical_and(ind1, ind2)
-
-    def crop_extended(self,xlim,ylim):
-        """ 
-        The use of this will _only_ be correct if the the pp- and extended files share the same grid, but
-        one of them are a cropped version of the other!
-        """
-        ind1 = np.logical_and(self.xex >= xlim[0], self.xex <= xlim[1])
-        ind2 = np.logical_and(self.yex >= ylim[0], self.yex <= ylim[1])
-        return np.logical_and(ind1, ind2)
+    print(f'\nRead data from cloud, interpolate to FVOM mesh, prepare units in FVCOM readable format and dump data to {outfile}')
+    arome2fvcom(outfile, N4A, newN4A, time, path, path_acc, path_rad, index, stopdate)
 
 def metcoop_make_fileList(start_time, stop_time):
     '''
     Go through MetCoop thredds server and link points in time to files.
     format: yyyy-mm-dd-hh
     '''
-    
+    # AROME grid and this routine should be modified in the same way as ROMS_grid and roms_nesting_fg if we continue to use this script
     start     = datetime(int(start_time.split('-')[0]), int(start_time.split('-')[1]), int(start_time.split('-')[2]))
     stop      = datetime(int(stop_time.split('-')[0]), int(stop_time.split('-')[1]), int(stop_time.split('-')[2]))
     dates     = pd.date_range(start, stop)
     
     thredds_folder = 'https://thredds.met.no/thredds/dodsC/'
-    k         = 0
     
     # non-accumulated values
     time      = np.empty(0)
@@ -205,12 +99,12 @@ def metcoop_make_fileList(start_time, stop_time):
     path_acc  = []
     path_rad  = []
     index     = []
-    missing_flag = []
 
     # Temperature, wind and pressure
     # ----------------------------------------------------------------------------------
-    accdelay  = 2    # Since we can't read the last hour in the day before, and since the first value is masked sometimes. That is only true
-                     # in the case of to full_backup files, but I am in too much of a hurry to make it more general this time around.
+    accdelay  = 2    # Since we can't read the last hour in the day before, and since the first value is masked in full_backup files.
+
+    # Number of missing dates (keeping track of this since the forecast completely covers 3 days and part of the fourth)
     missing   = 0
     for date in dates:
         year     = str(date.year)
@@ -221,79 +115,70 @@ def metcoop_make_fileList(start_time, stop_time):
         # --------------------------------------------------
         if date < datetime(2020,2,5):
             try:
-                file = thredds_folder + 'meps25epsarchive/' + year + '/' + month + '/' +\
-                       day + '/meps_mbr0_pp_2_5km_' + year + month + day + 'T00Z.nc'
+                file = f'{thredds_folder}meps25epsarchive/{year}/{month}/{day}/meps_mbr0_pp_2_5km_{year}{month}{day}T00Z.nc'
                 d    = Dataset(file, 'r')
             
             except:
                 try:
-                    file = thredds_folder + 'meps25epsarchive/' + year + '/' + month + '/' +\
-                           day + '/meps_mbr0_extracted_2_5km_' + year + month + day + 'T00Z.nc'
+                    file = f'{thredds_folder}meps25epsarchive/{year}/{month}/{day}/meps_mbr0_extracted_2_5km_{year}{month}{day}T00Z.nc'
                     d    = Dataset(file, 'r')
                     missing = 0
 
                 except:
                     try:
-                        file = thredds_folder + 'meps25epsarchive/' + year + '/' + month + '/' +\
-                               day + '/meps_subset_2_5km_' + year + month + day + 'T00Z.nc'
+                        file = f'{thredds_folder}meps25epsarchive/{year}/{month}/{day}/meps_subset_2_5km_{year}{month}{day}T00Z.nc'
                         d    = Dataset(file, 'r')
                         missing = 0
 
                     except:
                         missing += 1
                         if missing == 1:
-                            print('- ' + str(date) + ' - not available.')
+                            pass
                             
                         elif missing == 2:
-                            print('- ' + str(date) + ' - not available.')
+                            pass
                     
                         elif missing == 3:
-                            print('- ' + str(date) + ' - not available, and will not be completely covered in the forcing file!')
+                            print(f'  - {date} - will not be completely covered in the forcing file!')
                         else:
-                            print('- ' + str(date) + ' - not available, and not enough forecast to be in the forcing')
+                            print(f'  - {date} - is unavailable')
 
                         continue
     
             # check that files for non-accumulated values are there. We prefer to use extracted files, but will use full_backup files if needbe
             # ----------------------------------------------------------------------------------------------------------------------------------
             try:
-                file_acc = thredds_folder + 'meps25epsarchive/' + year + '/' + month + '/' +\
-                           day + '/meps_mbr0_extracted_2_5km_' + year + month + day + 'T00Z.nc'
+                file_acc = f'{thredds_folder}meps25epsarchive/{year}{month}/{day}/meps_mbr0_extracted_2_5km_{year}{month}{day}T00Z.nc'
                 d        = Dataset(file_acc, 'r')
                 file_rad = file_acc
             
             except:
                 try:
-                    file_acc = thredds_folder + 'meps25epsarchive/' + year + '/' + month + '/' +\
-                               day + '/meps_mbr0_full_backup_2_5km_' + year + month + day + 'T00Z.nc'
+                    file_acc = f'{thredds_folder}meps25epsarchive/{year}/{month}/{day}/meps_mbr0_full_backup_2_5km_{year}{month}{day}T00Z.nc'
                     d        = Dataset(file_acc, 'r')
 
-                    file_rad = thredds_folder + 'meps25epsarchive/' + year + '/' + month + '/' +\
-                               day + '/meps_subset_2_5km_' + year + month + day + 'T00Z.nc'
-                    
+                    file_rad = f'{thredds_folder}meps25epsarchive/{year}/{month}/{day}/meps_subset_2_5km_{year}{month}{day}T00Z.nc'
                     d        = Dataset(file_rad, 'r')
+
                 except:
-                    print('- '+str(date)+' - not available')
+                    print(f'  - {date} - not available')
                     continue
 
         else:
             try:
-                file = thredds_folder + 'meps25epsarchive/' + year + '/' + month + '/' +\
-                       day + '/meps_det_2_5km_'+year+month+day+'T00Z.nc'
-                file_rad = file
-                file_acc = file
+                file_rad = file_acc = file = f'{thredds_folder}meps25epsarchive/{year}/{month}/{day}/meps_det_2_5km_{year}{month}{day}T00Z.nc'
                 d    = Dataset(file)
 
             except:
-                print('- '+str(date)+' - not available')
+                print(f'  - {date} - not available')
                 continue
 
         # We can't use the first two indexes due to accumulated values and NaNs at the beginning
         # of some of the files.
         # ----
-        t         = d.variables['time'][accdelay:-2]
-        if len(d.variables['time'][:])==0: # Check to see if empty
-            print('- '+str(date) + ' - not available')
+        t = d.variables['time'][accdelay:-2]
+        if len(d.variables['time'][:]) == 0: # Check to see if empty
+            print(f'  - {date} - not available')
             continue
 
         time     = np.append(time, t)
@@ -301,7 +186,7 @@ def metcoop_make_fileList(start_time, stop_time):
         path_acc = path_acc + [file_acc]*len(t)
         path_rad = path_rad + [file_rad]*len(t)
         index.extend(list(range(accdelay, len(t)+accdelay)))
-        print('- '+str(date))
+        print(f'  - {date}')
 
     # Remove overlap
     # ----
@@ -320,6 +205,432 @@ def metcoop_make_fileList(start_time, stop_time):
             index_no_overlap.insert(0, index[n-1])
 
     return np.array(time_no_overlap), path_no_overlap, path_acc_no_overlap, path_rad_no_overlap, index_no_overlap
+
+
+class N4AROME(N4):
+    '''
+    Object with indices and coefficients for AROME to FVCOM interpolation
+    - note: radiation fields will only use ocean points, if land in radiation square, we will mask it.
+            squares with full-land coverage will use nearest ocean neighbor
+    '''
+    def __init__(self, FVCOM_grd, AROME_grd):
+        self.FVCOM_grd = FVCOM_grd
+        self.AROME_grd = AROME_grd
+        self.ncoef  = np.empty([len(self.FVCOM_grd.x), 4])
+        self.nindex = np.empty([len(self.FVCOM_grd.x), 4])
+        self.ccoef  = np.empty([len(self.FVCOM_grd.xc), 4])
+        self.cindex = np.empty([len(self.FVCOM_grd.xc), 4])
+
+    def load_nearest4(self, infile):
+        '''
+        Load an already computed nearest4.
+        '''
+        nearest4 = np.load(infile, allow_pickle=True).item()
+        for field in ['nindex', 'ncoef', 'cindex', 'ccoef', 'nindex_rad', 'ncoef_rad', 'cindex_rad', 'ccoef_rad']:
+            setattr(self, field, nearest4[field])
+
+    def compute_nearest4(self, nearest4filename = 'nearest4arome.npy'):
+        '''
+        Create nearest four indices and weights for all of the fields
+        '''
+        assert all(self.x_arome == self.AROME_grd.xex[self.fv_domain_mask_ex]), f"(parts) of your FVCOM grid seems to be outside of the AROME domain"
+
+        print('  - Find cluster of 4 surrounding')
+        _4node_inds, _4cell_inds = self._find_clusters_of_4_points()      # find the nearest 4 points to this FVCOM node
+
+        print('  - Compute interpolation coefficients')
+        self.nindex, self.ncoef = self._compute_interpolation_coefficients(
+                                                self.FVCOM_grd.x, self.FVCOM_grd.y, 
+                                                _4node_inds,
+                                                self.arome_tree.data, 
+                                                self.nindex, self.ncoef,
+                                                widget_title = 'node'
+                                                )
+
+        self.cindex, self.ccoef = self._compute_interpolation_coefficients(
+                                                self.FVCOM_grd.xc, self.FVCOM_grd.yc, 
+                                                _4cell_inds,
+                                                self.arome_tree.data, 
+                                                self.cindex, self.ccoef,
+                                                widget_title = 'cell'
+                                                )
+
+        print('  - Adjust radiation interpolation to avoid using land points')
+        self.nindex_rad, self.ncoef_rad = self._remove_land_points(self.nindex, self.ncoef)
+        self.cindex_rad, self.ccoef_rad = self._remove_land_points(self.cindex, self.ccoef)
+
+        print(f'  - Save coefficients and indices for later as {nearest4filename}')
+        out = {}
+        for field in ['nindex', 'ncoef', 'cindex', 'ccoef', 'nindex_rad', 'ncoef_rad', 'cindex_rad', 'ccoef_rad']:
+            out[field] = getattr(self, field)
+        np.save(nearest4filename, out)
+
+    @cached_property
+    def fv_domain_mask(self):
+        '''
+        Reduces the number of AROME points we take in to consideration when computing the interpolation coefficients
+        '''
+        return self.AROME_grd.crop_grid(xlim=[self.FVCOM_grd.x.min() - 3000, self.FVCOM_grd.x.max() + 3000],
+                                        ylim=[self.FVCOM_grd.y.min() - 3000, self.FVCOM_grd.y.max() + 3000])
+
+    @cached_property
+    def fv_domain_mask_ex(self):
+        '''
+        crops the ex-domain to the smaller arome domain found in other files
+        '''
+        return self.AROME_grd.crop_extended(xlim=[self.FVCOM_grd.x.min() - 3000, self.FVCOM_grd.x.max() + 3000],
+                                            ylim=[self.FVCOM_grd.y.min() - 3000, self.FVCOM_grd.y.max() + 3000])
+
+    @cached_property
+    def xy_center_mask(self):
+        '''
+        mask centre-poitns (used to find nearest4) to the fv_domain_mask
+        '''
+        return np.logical_and(self.fv_domain_mask[1:, 1:], self.fv_domain_mask[:-1, :-1])
+
+    @property
+    def LandMask(self):
+        '''
+        1 = ocean
+        0 = land
+        '''
+        return self.AROME_grd.landmask[self.fv_domain_mask].astype(int)
+    
+    @property
+    def x_arome(self):
+        return self.AROME_grd.x[self.fv_domain_mask]
+    
+    @property
+    def y_arome(self):
+        return self.AROME_grd.y[self.fv_domain_mask]
+
+    @property
+    def x_arome_center(self):
+        return self.AROME_grd.x_center[self.xy_center_mask]
+    
+    @property
+    def y_arome_center(self):
+        return self.AROME_grd.y_center[self.xy_center_mask]
+
+    @property
+    def fv_nodes(self):
+        return np.array([self.FVCOM_grd.x, self.FVCOM_grd.y]).transpose()
+
+    @property
+    def fv_cells(self):
+        return np.array([self.FVCOM_grd.xc, self.FVCOM_grd.yc]).transpose()
+
+    @property
+    def ball_radius(self):
+        '''
+        We make use of the staggering of the source grid to find clusters of 4 indices covering each FVCOM point
+        '''
+        dst = np.sqrt((self.x_arome - self.x_arome_center[0])**2 + (self.y_arome - self.y_arome_center[0])**2)
+        return 1.3*dst[dst.argsort()[0]] # 1.3 was arbitrary, but turns ot to make sure that we only find the points we need
+
+    @property
+    def arome_tree(self):
+        return KDTree(np.array([self.x_arome, self.y_arome]).transpose())
+
+    @property
+    def arome_centre_tree(self):
+        return KDTree(np.array([self.x_arome_center, self.y_arome_center]).transpose())
+
+    @property
+    def fv2arome_node(self):
+        '''
+        Figure out which square each FVCOM point should be connected to (centre points is at the centre of squares...)
+        '''
+        _, fv2arome_node = self.arome_centre_tree.query(self.fv_nodes)
+        return fv2arome_node
+
+    @property
+    def fv2arome_cell(self):
+        _, _fv2arome_cell = self.arome_centre_tree.query(self.fv_cells)
+        return _fv2arome_cell
+
+    def _find_clusters_of_4_points(self):
+        '''
+        Find the 4 source points around each centre-point
+        '''
+        _arome_node_inds = self.arome_tree.query_ball_point(self.arome_centre_tree.data[self.fv2arome_node], r = self.ball_radius)
+        _arome_cell_inds = self.arome_tree.query_ball_point(self.arome_centre_tree.data[self.fv2arome_cell], r = self.ball_radius)
+        return _arome_node_inds, _arome_cell_inds
+
+    def _remove_land_points(self, index, coef):
+        '''
+        Identify where we need to remove land
+        '''
+        newindex = np.copy(index)
+        newcoef  = np.copy(coef)
+
+        # 1. set weight of land points to zero
+        landbool = self.LandMask[newindex]==0
+        newcoef[landbool] = 0
+
+        # 2. re-normalize
+        newcoef = newcoef/np.sum(newcoef,axis=1)[:,None]
+
+        # 3. find the nearest neighbour where all points are landpoints
+        points_on_arome_land = np.where(np.isnan(newcoef[:,0]))[0]  # points completely covered by arome land
+        nearest_arome_ocean  = self._find_nearest_ocean_neighbor(index, coef)
+
+        # 4. Overwrite indices at points completely covered by arome land
+        newindex[points_on_arome_land, :] = nearest_arome_ocean[points_on_arome_land][:,None]
+        newcoef[points_on_arome_land, :]  = 0.25 # just weight the same point = 0.25 for 4 times
+
+        return newindex, newcoef
+
+    def _find_nearest_ocean_neighbor(self, index, coef):
+        '''
+        replace land point with nearest ocean neighbor
+        '''
+        # Points we need to change
+        fvcom_x = np.sum(self.x_arome[index]*coef, axis=1)
+        fvcom_y = np.sum(self.y_arome[index]*coef, axis=1)
+
+        # Create a tree referencing ocean points
+        ocean_tree = KDTree(np.array([self.x_arome[self.LandMask==1], self.y_arome[self.LandMask==1]]).transpose())
+
+        # Nearest ocean point
+        _, _nearest_ocean = ocean_tree.query(np.array([fvcom_x, fvcom_y]).transpose())
+        nearest_ocean_x = self.x_arome[self.LandMask==1][_nearest_ocean]
+        nearest_ocean_y = self.y_arome[self.LandMask==1][_nearest_ocean]
+
+        # With same indexing as the rest of AROME
+        _, nearest_arome_ocean = self.arome_tree.query(np.array([nearest_ocean_x, nearest_ocean_y]).transpose())
+        return nearest_arome_ocean
+
+def arome2fvcom(outfile, oldNearest4, newNearest4, arome_time, path, path_acc, path_rad, index, stop): 
+    '''
+    Read AROME-data, interpolate to FVCOM-grid and export to nc-file.
+
+    Due to the messy nature of MetCoOp data storage, we have to do this in two steps.
+    The first loop handles data that do not have NaNs in their first column, while
+    the second handles data where we use the forecast 2 hours into the next day to be
+    able to give a good estimate of the average based on the accumulated value.
+    '''
+    print('- Interpolating MetCoOp data: ')
+    dates        = netCDF4.num2date(arome_time, 'seconds since 1970-01-01 00:00:00')
+    out          = Dataset(outfile, 'r+', format = 'NETCDF4')
+
+    # Loop through file list and add data to nc-file
+    first_time   = 1
+    already_read = ' '
+    # -----------------------------------------------------------------------------------------
+    for counter, (time, dtime, path, path_acc, path_rad, index) in enumerate(zip(arome_time, dates, path, path_acc, path_rad, index)):
+        if dtime > stop:
+            print('Finished.')
+            break
+
+        if path.find('_det_') > 0:
+            Nearest4 = newNearest4
+
+        else:
+            Nearest4 = oldNearest4
+    
+        if first_time:
+            out.variables['lat'][:]  = Nearest4.FVCOM_grd.y
+            out.variables['lon'][:]  = Nearest4.FVCOM_grd.x
+            out.variables['x'][:]    = Nearest4.FVCOM_grd.x
+            out.variables['y'][:]    = Nearest4.FVCOM_grd.y
+            out.variables['latc'][:] = Nearest4.FVCOM_grd.yc
+            out.variables['lonc'][:] = Nearest4.FVCOM_grd.xc
+            out.variables['yc'][:]   = Nearest4.FVCOM_grd.yc
+            out.variables['xc'][:]   = Nearest4.FVCOM_grd.xc
+            tris                     = Nearest4.FVCOM_grd.tri+1
+            out.variables['nv'][:]   = tris.transpose()
+
+        # Data at thredds is sometimes unavailable. We wait for it to come back online.
+        # ----
+        unavailable = True
+        while unavailable:
+            try:
+                if first_time:
+                    fvcom_time, SwD, andLw, evap, precip, caf, relative_humidity, spechum, Pair, Tair, Vwind, Uwind, nc, nc_a, nc_r, already_read =\
+                    read_data(Nearest4, time, dtime, path, path_acc, path_rad, index, already_read)
+                    first_time  = 0
+                    unavailable = False
+
+                else:
+                    fvcom_time, SwD, andLw, evap, precip, caf, relative_humidity, spechum, Pair, Tair, Vwind, Uwind, nc, nc_a, nc_r, already_read =\
+                    read_data(Nearest4, time, dtime, path, path_acc, path_rad, index, already_read, nc = nc, nc_a = nc_a, nc_r = nc_r)
+                    unavailable = False
+
+            except:
+                print('\n--------------------------------------\n '+\
+                      'The data is unavailable at the moment.\n '+\
+                      'We wait five minutes and try again.'+\
+                      '\n--------------------------------------\n')
+                time_mod.sleep(300)
+                already_read     = ' '
+                first_time       = 1
+
+        # Interpolation to FVCOM grid after data is read
+        # ----
+        caf               = np.sum(caf[Nearest4.nindex] * Nearest4.ncoef, axis=1)
+        Pair              = np.sum(Pair[Nearest4.nindex] * Nearest4.ncoef, axis=1)
+        relative_humidity = np.sum(relative_humidity[Nearest4.nindex] * Nearest4.ncoef, axis=1)
+        spechum           = np.sum(spechum[Nearest4.nindex] * Nearest4.ncoef, axis=1)
+        Tair              = np.sum(Tair[Nearest4.nindex] * Nearest4.ncoef, axis=1)
+        Vwind             = np.sum(Vwind[Nearest4.cindex] * Nearest4.ccoef, axis=1)
+        Uwind             = np.sum(Uwind[Nearest4.cindex] * Nearest4.ccoef, axis=1)
+        evap              = np.sum(evap[Nearest4.nindex] * Nearest4.ncoef, axis=1)
+        precip            = np.sum(precip[Nearest4.nindex] * Nearest4.ncoef, axis=1)
+
+        # Radiation is gathered from closest ocean points, hence own interpolation method
+        andLw             = np.sum(andLw[Nearest4.nindex_rad] * Nearest4.ncoef_rad, axis=1)
+        SwD               = np.sum(SwD[Nearest4.nindex_rad] * Nearest4.ncoef_rad, axis=1)
+
+        # Store the data
+        # - Consult Qin: Do we need the duplicates of temperature and wind speeds anymore? FVCOM3/4 and FABM changes...
+        out.variables['time'][counter]                 = fvcom_time
+        out.variables['Itime'][counter]                = np.floor(fvcom_time)
+        out.variables['Itime2'][counter]               = (fvcom_time - np.floor(fvcom_time)) * 24 * 60 * 60 * 1000
+        out.variables['short_wave'][counter, :]        = SwD
+        out.variables['long_wave'][counter, :]         = andLw
+        out.variables['evap'][counter, :]              = evap
+        out.variables['precip'][counter, :]            = precip
+        out.variables['cloud_cover'][counter, :]       = caf
+        out.variables['relative_humidity'][counter, :] = relative_humidity*100.0 # from kg/kg fraction to percentage
+        out.variables['air_pressure'][counter, :]      = Pair
+        out.variables['SAT'][counter, :]               = Tair-273.15 # Kelvin to C
+        out.variables['air_temperature'][counter, :]   = Tair-273.15 # Kelvin to C
+        out.variables['SPQ'][counter, :]               = spechum   # decimal fraction kg/kg
+        out.variables['V10'][counter, :]               = Vwind
+        out.variables['vwind_speed'][counter, :]       = Vwind
+        out.variables['U10'][counter, :]               = Uwind
+        out.variables['uwind_speed'][counter, :]       = Uwind
+
+    # Close netCDF handles
+    out.close()
+    try:
+        nc.close()
+        nc_r.close()
+        nc_a.close()
+    except:
+        pass
+
+def read_data(Nearest4, time, dtime, path, path_acc, path_rad, index, already_read, nc = ' ', nc_a = ' ', nc_r = ' '):
+    '''
+    Routine that reads raw meps data covering the the model domain.
+    '''
+    if path != already_read:
+        print(' ')
+        print('  Reading data from:')
+        print(f'   - {path}')
+        try:
+            nc.close()
+        except:
+            pass
+        nc   = Dataset(path,'r')
+        
+        # No need to download the same thing twice
+        # ----
+        if path.find('_det_')==-1:
+            if path != path_acc:
+                try:
+                    nc_a.close()
+                except:
+                    pass
+                print(f'   - {path_acc}')
+                nc_a = Dataset(path_acc,'r')
+            else:
+                nc_a = nc
+
+            if path != path_rad:
+                print(f'   - {path_rad}')
+                try:
+                    nc_r.close()
+                except:
+                    pass
+                nc_r = Dataset(path_rad,'r')
+            else:
+                nc_r = nc
+
+        else:
+            nc_a = ' '
+            nc_r = ' '
+
+    print(f'  timestep: {dtime}')
+
+    already_read          = path
+    fvcom_time            = netCDF4.date2num(dtime, units = 'days since 1858-11-17 00:00:00')
+
+    # Indices to be read by accumulated value files
+    read_inds             = [index-1,index]
+
+    if path.find('_pp_') >= 0:
+        Uwind             = nc.variables.get('x_wind_10m')[index, :, :][Nearest4.fv_domain_mask]
+        Vwind             = nc.variables.get('y_wind_10m')[index, :, :][Nearest4.fv_domain_mask]
+        Tair              = nc.variables.get('air_temperature_2m')[index, 0, :, :][Nearest4.fv_domain_mask]
+        Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, :, :][Nearest4.fv_domain_mask]
+        relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, :, :][Nearest4.fv_domain_mask]
+        caf               = nc.variables.get('cloud_area_fraction')[index, :, :][Nearest4.fv_domain_mask]*0.01 # convert from percent to fraction
+        precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask]
+
+    elif path.find('extracted') >= 0:
+        Uwind             = nc.variables.get('x_wind_10m')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
+        Vwind             = nc.variables.get('y_wind_10m')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
+        Tair              = nc.variables.get('air_temperature_2m')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
+        Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
+        relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
+        caf               = nc.variables.get('cloud_area_fraction')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
+        precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask_ex]
+
+    elif path.find('subset') >= 0:
+        Uwind             = nc.variables.get('x_wind_10m')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
+        Vwind             = nc.variables.get('y_wind_10m')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
+        Tair              = nc.variables.get('air_temperature_2m')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
+        Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
+        relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
+        caf               = nc.variables.get('cloud_area_fraction')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
+        precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, 0, :, :][:,Nearest4.fv_domain_mask_ex]
+
+    elif path.find('_det_') >= 0:
+        Uwind             = nc.variables.get('x_wind_10m')[index, 0, :, :][Nearest4.fv_domain_mask]
+        Vwind             = nc.variables.get('y_wind_10m')[index, 0, :, :][Nearest4.fv_domain_mask]
+        Tair              = nc.variables.get('air_temperature_2m')[index, 0, :, :][Nearest4.fv_domain_mask]
+        Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, :, :][Nearest4.fv_domain_mask]
+        relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, :, :][Nearest4.fv_domain_mask]
+        caf               = nc.variables.get('cloud_area_fraction')[index, 0, :, :][Nearest4.fv_domain_mask]
+        precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask]
+
+    # Switching to _full_backup_ and _subset_ if extended is not available
+    if path_acc.find('_full_') >= 0:
+        # Load data centered above this timestep
+        evap    = nc_a.variables.get('water_evaporation_amount')[read_inds, 0, 0, :, :][:, Nearest4.fv_domain_mask_ex]
+        spechum = nc_a.variables.get('specific_humidity_2m')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
+        SwD     = nc_r.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, 0, :, :][:,Nearest4.fv_domain_mask_ex]
+        andLw   = nc_r.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, 0, :, :][:,Nearest4.fv_domain_mask_ex]
+
+    elif path_acc.find('_det_') >= 0:
+        evap    = nc.variables.get('water_evaporation_amount')[read_inds, 0, :, :][:, Nearest4.fv_domain_mask]
+        spechum = nc.variables.get('specific_humidity_2m')[index, 0, :, :][Nearest4.fv_domain_mask]
+        SwD     = nc.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask]
+        andLw   = nc.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask]
+
+    else:
+        # Load data centered above this timestep
+        # full_backup
+        evap    = nc_a.variables.get('water_evaporation_amount')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask_ex]
+        spechum = nc_a.variables.get('specific_humidity_2m')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
+
+        if path_rad.find('_extracted_') >= 0:
+            SwD     = nc_r.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask_ex]
+            andLw   = nc_r.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask_ex]
+        else:
+            SwD     = nc_r.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, 0, :, :][:,Nearest4.fv_domain_mask_ex]
+            andLw   = nc_r.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, 0, :, :][:,Nearest4.fv_domain_mask_ex]
+
+    # "remove accumulation"
+    SwD     = (SwD[1,:]    - SwD[0,:])/(3600.0)
+    andLw   = (andLw[1,:]  - andLw[0,:])/(3600.0)
+
+    evap    = (evap[1,:] - evap[0,:])/(1000.0*3600.0)     # from (kg m-2) accumulated over 1h to m s-1
+    precip  = (precip[1,:] - precip[0,:])/(1000.0*3600.0) # from (kg m-2) accumulated over 1h to m s-1
+
+    return fvcom_time, SwD, andLw, evap, precip, caf, relative_humidity, spechum, Pair, Tair, Vwind, Uwind, nc, nc_a, nc_r, already_read
 
 def create_nc_forcing_file(name, FVCOM_grd):
     '''
@@ -492,323 +803,3 @@ def create_nc_forcing_file(name, FVCOM_grd):
     vwind_speed.type         = 'data'
 
     nc.close()
-
-
-def nearest4(FVCOM_grd, AROME_grd):
-    '''
-    Create nearest four indices and weights.
-    '''
-    widget   = ['Finding nearest 4 and weights: ', pb.Percentage(), pb.BouncingBar()]
-    bar      = pb.ProgressBar(widgets=widget, maxval=len(FVCOM_grd.x)+len(FVCOM_grd.xc))
-    N4       = N4AROME(FVCOM_grd, AROME_grd)
-
-    # Find mask for extracing AROME-points limited by FVCOM grid domain
-    N4.fv_domain_mask    = AROME_grd.crop_grid(xlim=[FVCOM_grd.x.min() - 800, FVCOM_grd.x.max() + 800],
-                                               ylim=[FVCOM_grd.y.min() - 800, FVCOM_grd.y.max() + 800])
-
-    N4.fv_domain_mask_ex = AROME_grd.crop_extended(xlim=[FVCOM_grd.x.min() - 800, FVCOM_grd.x.max() + 800],
-                                                   ylim=[FVCOM_grd.y.min() - 800, FVCOM_grd.y.max() + 800])
-
-    LandMask = AROME_grd.landmask[N4.fv_domain_mask]
-    x_arome  = AROME_grd.x[N4.fv_domain_mask]
-    y_arome  = AROME_grd.y[N4.fv_domain_mask]
-
-    widget   = ['Finding nearest 4 and weights: ', pb.Percentage(), pb.BouncingBar()]
-    bar      = pb.ProgressBar(widgets=widget, maxval=len(FVCOM_grd.x)+len(FVCOM_grd.xc))
-
-    # Nodes
-    bcnt = 0
-    bar.start()
-    for i, (x, y) in enumerate(zip(FVCOM_grd.x, FVCOM_grd.y)):
-        bar.update(bcnt)
-        distance = np.sqrt((x_arome - x)**2 + (y_arome - y)**2)
-        
-        # For wind, temperature and precipitation fields
-        # ----
-        indices_sorted_according_to_distance = distance.argsort()[0:4]
-        nearest_distances = distance[indices_sorted_according_to_distance]
-        nearest_distances = 1.0/nearest_distances
-        sum_of_distances  = np.sum(nearest_distances)
-        N4.nindex[i,:]    = indices_sorted_according_to_distance
-        N4.ncoef[i,:]     = nearest_distances/sum_of_distances
-        
-        # For radiation fields
-        # ------------------------------------------------------------------
-        land_value        = LandMask[indices_sorted_according_to_distance] # Local (nearest 4) landmask
-        distance[np.where(LandMask<1.0)] = 1000000000.0 # We don't want to use areas influenced by land, hence we "move" the land far away
-        closest_ocean     = distance.argsort()[0:4]
-            
-        # check if land has snuck into our nearest 4, remove it if so
-        if land_value.max()==1.0:
-            nearest_distances[np.where(land_value!=1.0)] = 0.0
-
-        elif land_value.max()<1.0:
-            # Use closest_ocean, and fill the rest of the vector with dummies
-            nearest_distances[:] = 0.0
-            nearest_distances[0:4] = distance[closest_ocean]
-            indices_sorted_according_to_distance[0:4] = closest_ocean
-            
-        sum_of_distances   = np.sum(nearest_distances)
-        N4.nindex_rad[i,:] = indices_sorted_according_to_distance
-        N4.ncoef_rad[i,:]  = nearest_distances/sum_of_distances
-
-        bcnt             += 1
-
-    # Elements
-    for i, (x, y) in enumerate(zip(FVCOM_grd.xc, FVCOM_grd.yc)):
-        bar.update(bcnt)
-        distance = np.sqrt((x_arome - x)**2 + (y_arome - y)**2)
-        indices_sorted_according_to_distance = distance.argsort()[0:4]
-        nearest_distances = distance[indices_sorted_according_to_distance]
-        nearest_distances = 1.0/nearest_distances
-        sum_of_distances  = nearest_distances.sum()
-
-        N4.cindex[i,:]    = indices_sorted_according_to_distance
-        N4.ccoef[i,:]     = nearest_distances/sum_of_distances
-        bcnt += 1
-
-    bar.finish()
-
-    N4.nindex     = N4.nindex.astype(int)
-    N4.cindex     = N4.cindex.astype(int)
-    N4.nindex_rad = N4.nindex_rad.astype(int)
-    N4.FVCOM_grd  = FVCOM_grd
-    N4.AROME_grd  = AROME_grd
-    
-    return N4
-
-class N4AROME():
-    '''
-    Object with indices and coefficients for AROME to FVCOM interpolation
-    '''
-
-    def __init__(self, FVCOM_grd, AROME_grd):
-        '''Initialize empty attributes'''
-        # For all fields except shortwave radiation
-        self.ncoef         = np.empty([len(FVCOM_grd.x),  4])
-        self.nindex        = np.empty([len(FVCOM_grd.x),  4])
-        self.ccoef         = np.empty([len(FVCOM_grd.xc), 4])
-        self.cindex        = np.empty([len(FVCOM_grd.xc), 4])
-        self.cdistance     = np.empty([len(FVCOM_grd.xc), 4])
-
-        # For shortwave radiation
-        self.ncoef_rad     = np.empty([len(FVCOM_grd.x),  4])
-        self.nindex_rad    = np.empty([len(FVCOM_grd.x),  4])
-        self.ccoef_rad     = np.empty([len(FVCOM_grd.xc), 4])
-        self.cindex_rad    = np.empty([len(FVCOM_grd.xc), 4])
-        self.cdistance_rad = np.empty([len(FVCOM_grd.xc), 4])
-
-    def save(self, name="Nearest4"):
-        '''Save object to file.'''
-        pickle.dump(self, open( name + ".p", "wb" ) )
-
-def arome2fvcom(outfile, oldNearest4, newNearest4, arome_time, path, path_acc, path_rad, index, stop): 
-    '''
-    Read AROME-data, interpolate to FVCOM-grid and export to nc-file.
-
-    Due to the messy nature of MetCoOp data storage, we have to do this in two steps.
-    The first loop handles data that do not have NaNs in their first column, while
-    the second handles data where we use the forecast 2 hours into the next day to be
-    able to give a good estimate of the average based on the accumulated value.
-    '''
-    print('Interpolating MetCoOp data: ')
-    dates        = netCDF4.num2date(arome_time, 'seconds since 1970-01-01 00:00:00')
-    out          = Dataset(outfile, 'r+', format = 'NETCDF4')
-
-    # Loop through file list and add data to nc-file
-    first_time   = 1
-    already_read = ' '
-    # -----------------------------------------------------------------------------------------
-    for counter, (time, dtime, path, path_acc, path_rad, index) in enumerate(zip(arome_time, dates, path, path_acc, path_rad, index)):
-        if dtime > stop:
-            print('Finished.')
-            break
-
-        if path.find('_det_') > 0:
-            Nearest4 = newNearest4
-
-        else:
-            Nearest4 = oldNearest4
-    
-        if first_time:
-            out.variables['lat'][:]  = Nearest4.FVCOM_grd.y
-            out.variables['lon'][:]  = Nearest4.FVCOM_grd.x
-            out.variables['x'][:]    = Nearest4.FVCOM_grd.x
-            out.variables['y'][:]    = Nearest4.FVCOM_grd.y
-            out.variables['latc'][:] = Nearest4.FVCOM_grd.yc
-            out.variables['lonc'][:] = Nearest4.FVCOM_grd.xc
-            out.variables['yc'][:]   = Nearest4.FVCOM_grd.yc
-            out.variables['xc'][:]   = Nearest4.FVCOM_grd.xc
-            tris                     = Nearest4.FVCOM_grd.tri+1
-            out.variables['nv'][:]   = tris.transpose()
-
-        # Data at thredds is sometimes unavailable. We wait for it to come back online in such situations.
-        # ----
-        unavailable = True
-        while unavailable:
-            try:
-                if first_time:
-                    fvcom_time, SwD, andLw, evap, precip, caf, relative_humidity, spechum, Pair, Tair, Vwind, Uwind, nc, nc_a, nc_r, already_read =\
-                    read_data(Nearest4, time, dtime, path, path_acc, path_rad, index, already_read)
-                    first_time  = 0
-                    unavailable = False
-
-                else:
-                    fvcom_time, SwD, andLw, evap, precip, caf, relative_humidity, spechum, Pair, Tair, Vwind, Uwind, nc, nc_a, nc_r, already_read =\
-                    read_data(Nearest4, time, dtime, path, path_acc, path_rad, index, already_read, nc = nc, nc_a = nc_a, nc_r = nc_r)
-                    unavailable = False
-
-            except:
-                print('\n--------------------------------------\n '+\
-                      'The data is unavailable at the moment.\n '+\
-                      'We wait five minutes and try again.'+\
-                      '\n--------------------------------------\n')
-                time_mod.sleep(300)
-                already_read     = ' '
-                first_time       = 1
-
-        # Interpolation to FVCOM grid after data is read
-        # ----
-        caf               = np.sum(caf[Nearest4.nindex] * Nearest4.ncoef, axis=1)
-        Pair              = np.sum(Pair[Nearest4.nindex] * Nearest4.ncoef, axis=1)
-        relative_humidity = np.sum(relative_humidity[Nearest4.nindex] * Nearest4.ncoef, axis=1)
-        spechum           = np.sum(spechum[Nearest4.nindex] * Nearest4.ncoef, axis=1)
-        Tair              = np.sum(Tair[Nearest4.nindex] * Nearest4.ncoef, axis=1)
-        Vwind             = np.sum(Vwind[Nearest4.cindex] * Nearest4.ccoef, axis=1)
-        Uwind             = np.sum(Uwind[Nearest4.cindex] * Nearest4.ccoef, axis=1)
-        evap              = np.sum(evap[Nearest4.nindex] * Nearest4.ncoef, axis=1)
-        precip            = np.sum(precip[Nearest4.nindex] * Nearest4.ncoef, axis=1)
-
-        # Radiation is gathered from closest ocean points, hence own interpolation method
-        andLw             = np.sum(andLw[Nearest4.nindex_rad] * Nearest4.ncoef_rad, axis=1)
-        SwD               = np.sum(SwD[Nearest4.nindex_rad] * Nearest4.ncoef_rad, axis=1)
-
-        # Store the data
-        out.variables['time'][counter]                 = fvcom_time
-        out.variables['Itime'][counter]                = fvcom_time # np.floor(fvcom_time)?
-        out.variables['Itime2'][counter]               = (fvcom_time - np.floor(fvcom_time)) * 24 * 60 * 60 * 1000
-        out.variables['short_wave'][counter, :]        = SwD
-        out.variables['long_wave'][counter, :]         = andLw
-        out.variables['evap'][counter, :]              = evap
-        out.variables['precip'][counter, :]            = precip
-        out.variables['cloud_cover'][counter, :]       = caf
-        out.variables['relative_humidity'][counter, :] = relative_humidity*100.0 # from kg/kg fraction to percentage
-        out.variables['air_pressure'][counter, :]      = Pair
-        out.variables['SAT'][counter, :]               = Tair-273.15
-        out.variables['air_temperature'][counter, :]   = Tair-273.15
-        out.variables['SPQ'][counter, :]               = spechum                 # decimal fraction kg/kg
-        out.variables['V10'][counter, :]               = Vwind
-        out.variables['vwind_speed'][counter, :]       = Vwind
-        out.variables['U10'][counter, :]               = Uwind
-        out.variables['uwind_speed'][counter, :]       = Uwind
-
-    out.close()
-
-def read_data(Nearest4, time, dtime, path, path_acc, path_rad, index, already_read, nc = ' ', nc_a = ' ', nc_r = ' '):
-    '''
-    Routine that reads raw meps data covering the the model domain.
-    '''
-    if path != already_read:
-        print(' ')
-        print('Reading data from:')
-        print(path)
-        nc   = Dataset(path,'r')
-        
-        # No need to download the same thing twice
-        # ----
-        if path.find('_det_')==-1:
-            if path != path_acc:
-                print(path_acc)
-                nc_a = Dataset(path_acc,'r')
-            else:
-                nc_a = nc
-
-            if path != path_rad:
-                print(path_rad)
-                nc_r = Dataset(path_rad,'r')
-            else:
-                nc_r = nc
-
-        else:
-            nc_a = ' '
-            nc_r = ' '
-
-    print('- timestep: '+str(dtime))
-
-    already_read          = path
-    fvcom_time            = netCDF4.date2num(dtime, units = 'days since 1858-11-17 00:00:00')
-
-    # Indices to be read by accumulated value files
-    read_inds             = [index-1,index+1]
-
-    if path.find('_pp_')>=0:
-        Uwind             = nc.variables.get('x_wind_10m')[index, :, :][Nearest4.fv_domain_mask]
-        Vwind             = nc.variables.get('y_wind_10m')[index, :, :][Nearest4.fv_domain_mask]
-        Tair              = nc.variables.get('air_temperature_2m')[index, 0, :, :][Nearest4.fv_domain_mask]
-        Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, :, :][Nearest4.fv_domain_mask]
-        relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, :, :][Nearest4.fv_domain_mask]
-        caf               = nc.variables.get('cloud_area_fraction')[index, :, :][Nearest4.fv_domain_mask]*0.01 # due to stupid inconsistency
-        precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask]
-
-    elif path.find('extracted') >= 0:
-        Uwind             = nc.variables.get('x_wind_10m')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
-        Vwind             = nc.variables.get('y_wind_10m')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
-        Tair              = nc.variables.get('air_temperature_2m')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
-        Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
-        relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
-        caf               = nc.variables.get('cloud_area_fraction')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
-        precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask_ex]
-
-    elif path.find('subset') >= 0:
-        Uwind             = nc.variables.get('x_wind_10m')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
-        Vwind             = nc.variables.get('y_wind_10m')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
-        Tair              = nc.variables.get('air_temperature_2m')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
-        Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
-        relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
-        caf               = nc.variables.get('cloud_area_fraction')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
-        precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, 0, :, :][:,Nearest4.fv_domain_mask_ex]
-
-    elif path.find('_det_') >= 0:
-        Uwind             = nc.variables.get('x_wind_10m')[index, 0, :, :][Nearest4.fv_domain_mask]
-        Vwind             = nc.variables.get('y_wind_10m')[index, 0, :, :][Nearest4.fv_domain_mask]
-        Tair              = nc.variables.get('air_temperature_2m')[index, 0, :, :][Nearest4.fv_domain_mask]
-        Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, :, :][Nearest4.fv_domain_mask]
-        relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, :, :][Nearest4.fv_domain_mask]
-        caf               = nc.variables.get('cloud_area_fraction')[index, 0, :, :][Nearest4.fv_domain_mask]
-        precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask]
-
-    # Switching to _full_backup_ and _subset_ if extended is not available
-    if path_acc.find('_full_')>=0:
-        # Load data centered above this timestep
-        evap    = nc_a.variables.get('water_evaporation_amount')[read_inds, 0, 0, :, :][:, Nearest4.fv_domain_mask_ex]
-        spechum = nc_a.variables.get('specific_humidity_2m')[index, 0, 0, :, :][Nearest4.fv_domain_mask_ex]
-        SwD     = nc_r.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, 0, :, :][:,Nearest4.fv_domain_mask_ex]
-        andLw   = nc_r.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, 0, :, :][:,Nearest4.fv_domain_mask_ex]
-
-    elif path_acc.find('_det_')>=0:
-        evap    = nc.variables.get('water_evaporation_amount')[read_inds, 0, :, :][:, Nearest4.fv_domain_mask]
-        spechum = nc.variables.get('specific_humidity_2m')[index, 0, :, :][Nearest4.fv_domain_mask]
-        SwD     = nc.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask]
-        andLw   = nc.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask]
-
-    else:
-        # Load data centered above this timestep
-        # full_backup
-        evap    = nc_a.variables.get('water_evaporation_amount')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask_ex]
-        spechum = nc_a.variables.get('specific_humidity_2m')[index, 0, :, :][Nearest4.fv_domain_mask_ex]
-
-        if path_rad.find('_extracted_')>=0:
-            SwD     = nc_r.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask_ex]
-            andLw   = nc_r.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, :, :][:,Nearest4.fv_domain_mask_ex]
-        else:
-            SwD     = nc_r.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, 0, :, :][:,Nearest4.fv_domain_mask_ex]
-            andLw   = nc_r.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, 0, :, :][:,Nearest4.fv_domain_mask_ex]
-
-    # interpolate to this timestep
-    SwD     = (SwD[1,:]    - SwD[0,:])/(2.0*3600.0)
-    andLw   = (andLw[1,:]  - andLw[0,:])/(2.0*3600.0)
-
-    evap    = (evap[1,:] - evap[0,:])/(1000.0*2.0*3600.0)     # from 2h*(kg m-2) to m s-1
-    precip  = (precip[1,:] - precip[0,:])/(1000.0*2.0*3600.0) # from 2h*(kg m-2) to m s-1
-
-    return fvcom_time, SwD, andLw, evap, precip, caf, relative_humidity, spechum, Pair, Tair, Vwind, Uwind, nc, nc_a, nc_r, already_read

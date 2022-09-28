@@ -2,38 +2,28 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sys
 
-import grid.fvgrid as fvgrd
-import gridding.coast as coast
+import fvtools.grid.fvgrid as fvgrd
+import fvtools.gridding.coast as coast
 import scipy.interpolate as scint
 import scipy.ndimage as ndimage
 import pandas as pd
 import math
-import gridding.coast as coast
+import fvtools.gridding.coast as coast
 import warnings
 import subprocess
 import os
 from matplotlib.path import Path
 from matplotlib.widgets import Slider, Button, RadioButtons, TextBox
 from matplotlib.path import Path
-from scipy.spatial import KDTree
+from scipy.spatial import cKDTree as KDTree
 
 def read_mesh(meshfile):
-    ''' '''
     with open(meshfile) as f:
-        data = f.readlines()
-    data = list(map(str.rstrip, data))
-    nn = int(data[0])
-    nc = int(data[nn+1])
-    p_data = list(map(str.split, data))
-    p = p_data[1:nn+1]
-    points = np.array(p)
-    points = points.astype('float')
-    t = p_data[nn+2:]
-    tri = np.array(t)
-    tri = tri.astype('int')
-
-    return points, tri
-
+        nodenum = int(f.readline())
+        points  = np.loadtxt(f, delimiter = ' ', max_rows = nodenum)
+        trinum  = int(f.readline())
+        tri     = np.loadtxt(f, delimiter = ' ', max_rows = trinum, dtype=int)
+    return points, tri 
 
 def plot_mesh(points, triangles):
     # remove triangles outside bounds
@@ -74,7 +64,10 @@ def distfunc(rfact    = 35.0,
              maxres   = None, 
              strres   = None, 
              obcnodes = None,
-             resfield = None):
+             resfield = None,
+             polyparam='PolyParameters.txt',
+             boundaryfile='output/boundary.txt', 
+             islandfile='output/islands.txt'):
     '''
     Testing distance resolution function, plus estimate of necessary number of nodes
     All values except for rmax, Ld and rcoast can be adjusted within the widget.
@@ -88,17 +81,16 @@ def distfunc(rfact    = 35.0,
     dev2   - (what is this then?)
     strres - Resolution of the structured grid used to estimate the necessary number of nodes
     '''
-
     # Finding the stuff neaded to estimate the number of nodes
     if strres is None:
-        par    = pd.read_csv('PolyParameters.txt',sep=';')
+        par    = pd.read_csv(polyparam, sep=';')
         strres = (par['max_res'].max()+par['min_res'].min())/2
 
     if maxres is None:
-        par    = pd.read_csv('PolyParameters.txt',sep=';')
+        par    = pd.read_csv(polyparam, sep=';')
         maxres = par['max_res'].max()
 
-    grid                  = make_structgrid(strres, obcnodes)
+    grid = make_structgrid(strres, obcnodes, boundaryfile='output/boundary.txt', islandfile='output/islands.txt')
 
     # Check if there is a resolution field in the input folder
     grid['resolution_field'] = None
@@ -107,8 +99,8 @@ def distfunc(rfact    = 35.0,
         if resfield is not None:
             grid = add_resfield_data(grid, resfield)
 
-    nodenum, dum          = get_numberofnodes(dfact/2, rfact/2, dev1/2, dev2/2, 
-                                              Ld/2, grid, maxres, strres)
+    nodenum, dum  = get_numberofnodes(dfact/2, rfact/2, dev1/2, dev2/2, 
+                                      Ld/2, grid, maxres, strres)
 
     fig, ax = plt.subplots()
     plt.subplots_adjust(bottom=0.40)
@@ -139,7 +131,7 @@ def distfunc(rfact    = 35.0,
     axnodenr = plt.axes([0.02,0.9,0.2,0.03])
     giver    = Button(axnodenr,'Nodes needed:')
     
-    ax.set_title('You need ca. '+ str(nodenum)+' nodes.')    
+    ax.set_title(f'You need ca. {int(nodenum)} nodes.')    
 
     # Creating the functions for updating the figure
     def update(val):
@@ -162,13 +154,12 @@ def distfunc(rfact    = 35.0,
     def nodenr(event):
         nodenum,theres = get_numberofnodes(sdfact.val, srfact.val, sdev1.val, 
                                            sdev2.val, sLd.val, grid, maxres, strres)
-        ax.set_title('You need ca. '+ str(nodenum)+' nodes.')
+        ax.set_title(f'You need ca. {int(nodenum)} nodes.')
 
         plt.figure()
         plt.hist(theres,bins=150)
         plt.title('Histogram of the resolution used to get the estimate')
-
-        plt.show()
+        plt.show(block=False)
     
     # Redrawing the figure when the slider is used
     srfact.on_changed(update)
@@ -180,7 +171,7 @@ def distfunc(rfact    = 35.0,
     giver.on_clicked(nodenr)
     plt.show(block=True)
 
-def make_structgrid(res, obcnodes, boundaryfile='input/boundary.txt', islandfile='input/islands.txt'):
+def make_structgrid(strres, obcnodes, boundaryfile='output/boundary.txt', islandfile='output/islands.txt'):
     '''
     Creates structured grids with resolution res covering the part of the domain 
     which is not covered by land.
@@ -208,22 +199,23 @@ def make_structgrid(res, obcnodes, boundaryfile='input/boundary.txt', islandfile
     grid['coast_res'] = np.append(di, db)
 
     # 2. Create structured mesh covering everything
-    tmp    = np.array(np.meshgrid(np.arange(xb.min(),xb.max()+res,res),
-                                  np.arange(yb.min(),yb.max()+res,res)))
+    tmp    = np.array(np.meshgrid(np.arange(xb.min(),xb.max()+strres, strres),
+                                  np.arange(yb.min(),yb.max()+strres, strres)))
     xarr   = np.ravel(tmp[0,:,:])
     yarr   = np.ravel(tmp[1,:,:])
 
     # 3. Remove points falling outside the domain or within islands
     #    i.  Outside the outer boundary
-    p      = Path(zip(xb,yb))
-    flags  = p.contains_points(zip(xarr,yarr))
-    xarr   = xarr[flags]; yarr = yarr[flags]
+    p      = Path(np.array([xb,yb]).T)
+    flags  = p.contains_points(np.array([xarr,yarr]).T)
+    xarr   = xarr[flags]
+    yarr   = yarr[flags]
     
     #    ii. Points inside islands
     pi = np.array(pi)
     for i in np.unique(pi):
-        p     = Path(zip(xi[pi==i],yi[pi==i]))
-        flags = p.contains_points(zip(xarr,yarr))
+        p     = Path(np.array([xi[pi==i],yi[pi==i]]).T)
+        flags = p.contains_points(np.array([xarr,yarr]).T)
         xarr  = xarr[flags==False]; yarr = yarr[flags==False]
 
     grid['x'] = xarr
@@ -310,8 +302,6 @@ def get_numberofnodes(dfact, rfact, dev1, dev2, Ld, grid, rmax, resolution):
 
     # Develop: Adjustable colorbar
     # --------------------------------------------------------------------
-    #fig, ax = plt.subplots()
-    #plt.subplots_adjust(bottom = 0.15)
     plt.figure()
     plt.scatter(grid['x'],grid['y'],1,theres)
     plt.axis('equal')
@@ -319,26 +309,11 @@ def get_numberofnodes(dfact, rfact, dev1, dev2, Ld, grid, rmax, resolution):
     plt.xticks([])
     plt.yticks([])
     plt.colorbar(label='resolution [m]')
+    plt.show(block=False)
 
-    # Prepare the textbox
-    # ----
-    #axcolor = 'lightgoldenrodyellow'
-    #axtext  = plt.axes([0.35,0.07,0.45,0.05], facecolor = axcolor)
-    #textbox = TextBox(axtext, 'Adjust min,max', initial = '0,'+str(rmax))
-    
-    #def submit(text):
-    #    inp = text.split(',')
-    #    mx  = int(inp[1])
-    #    mn  = int(inp[0])
-    #    plt.clim([mn,mx])
-    #    plt.draw()
-
-    #textbox.on_submit(submit)
-    #plt.show()
     print(' ')
-    print('Given: Ld = ' + str(Ld) + ' rfact = ' + str(rfact) + ' dfact = ' + \
-          str(dfact) + ' dev1 = ' + str(dev1) + ' dev2 = ' + str(dev2))
-    print('--> We need ~'+str(nodes/1.8)+' nodes.')
+    print(f'Given: {Ld=} {rfact=} {dfact=} {dfact=} {dev1=} {dev2=}')
+    print(f'--> We need ~{int(nodes/1.8)} nodes.')
     return int(nodes/1.8), theres
 
 def distfunc_onepoint(grid, xp, yp, rfact=3.0, dfact=12.0, Ld=4.0e5,  dev1=4.0, dev2=4.0, 
@@ -676,7 +651,7 @@ def look_for_resfield():
     '''
     Look for files in input, return potential  
     '''
-    input_files  = os.listdir('./input/')
+    input_files  = os.listdir('./output/')
     normal_files = ['boundary.txt','islands.txt','.gitkeep']
     revised_if   = [file for file in input_files if file not in normal_files]
     if any(revised_if):
@@ -730,8 +705,8 @@ def add_resfield_data(grid, resfield):
     p_re = np.array([x_re, y_re]).transpose()
 
     print('- Connect resfield to the distfunc grid')
-    tree              = KDTree(p_re)
-    p,inds            = tree.query(p_df)
+    tree   = KDTree(p_re)
+    p,inds = tree.query(p_df)
 
     print('- Dump the resolution field data to the grid dict')
     nearest_resfield_point   = inds.astype(int)
@@ -749,47 +724,12 @@ def write_2dm(datafile, cangle = 5, new2dm = None):
     if new2dm is None:
         new2dm = datafile.split('.')[0]
 
-    fid    = open(datafile,'r')
-    i      = 0  # to know if output is node or element number
-    points = [] # list for points
-    trangs = [] # list for triangulation
-
-    # Write the file
-    for line in fid:
-        if len(line.split(' '))==1:
-            if i == 0:	
-                nodeN = int(line.split('/n')[0])
-                i     = 1
-                mode  = 'node'
-                continue
-                    
-            else:
-                elemN = int(line.split('/n')[0])
-                mode  = 'elem'
-                continue
-
-        if mode == 'node':
-            pts = line.split(' ')
-            points.append(list(map(float,pts)))
-
-        if mode == 'elem':
-            elm = line.split(' ')
-            trangs.append(list(map(int,elm)))
-
-    fid.close()
-
-    # I find numpy arrays to be easier to work with than lists...
-    points = np.array(points)
-    trangs = np.array(trangs)
+    points, trangs = read_mesh(datafile)
 
     print('Raw mesh:')
     theta  = trangles(points,trangs)
-    
-    plt.figure()
-    plt.hist(theta.ravel())
-    plt.title('Histogram of ')
-    plt.show(block = False)
-    
+    plt.show(block=False)
+
     while True:
         # Keep triangles with angles greater than cangle, delete the rest
         gtc    = np.where(theta.min(axis=1)>cangle)
@@ -799,21 +739,20 @@ def write_2dm(datafile, cangle = 5, new2dm = None):
         plt.axis('equal')
             
         plt.figure()
-        plt.triplot(points[:,0],points[:,1],trangs[gtc[0],:],c='g',lw=0.2)
-        plt.title('modified grid after removing angles less than '+str(cangle))
+        plt.triplot(points[:,0], points[:,1], trangs[gtc[0],:], c='g', lw=0.2)
+        plt.title(f'modified grid after removing angles less than {cangle}')
         plt.axis('equal')
         plt.show(block = False)
         
-        print(' ---------------------- ')
+        print('\n---------------------- ')
         print('Old number of triangles: '+str(len(trangs[:,0])))
         print('New number of triangles: '+str(len(gtc[0])))
         print(' ')
 
-        if raw_input('Good enough? y/[n] ')=='y':
+        if input('Good enough? y/[n] ').lower()=='y':
             break
 
         cangle = float(input('Enter the new critical angle:\n'))
-        print(' ')
 
     # Show the angles that are less than 35 degrees
     # -------------------------------------------------------------------
@@ -870,9 +809,9 @@ def trangles(p,t):
     a     = [lAB.min(), lBC.min(), lCA.min()]
     b     = [lAB.max(), lBC.max(), lCA.max()]
     
-    print('Minimum triangle wall length (resolution): '+ str(min(a)))
-    print('Maximum triangle wall length (resolution): '+ str(max(b)))
-        
+    print(f'Minimum triangle wall length (resolution): {min(a)} m')
+    print(f'Maximum triangle wall length (resolution): {max(b)} m')
+    
     # dot products
     ABAC  = -(AB[0,:]*CA[0,:]+AB[1,:]*CA[1,:])
     BABC  = -(AB[0,:]*BC[0,:]+AB[1,:]*BC[1,:])
@@ -890,15 +829,15 @@ def trangles(p,t):
     # Find number of corners < 35*
     th_raveled = np.ravel(theta)
     gt35       = np.where(th_raveled<=35.0)
-    print('There are ' + str(len(th_raveled[gt35])) + ' corners less than 35 degrees in this mesh\n')
+    print(f'There are {len(th_raveled[gt35])} corners less than 35 degrees in this mesh\n')
 
     fig, ax = plt.subplots(2,1)
-    ax[0].hist(lAB.ravel(),bins=40)
+    ax[0].hist(lAB.ravel(),bins=80)
     ax[0].set_title('Histogram of mesh resolution')
     ax[0].set_xlabel('resolution')
     ax[0].set_ylabel('# triangle corners')
 
-    ax[1].hist(theta.ravel(),bins=40)
+    ax[1].hist(theta.ravel(),bins=80)
     ax[1].set_title('Histogram of triangle corner angles')
     ax[1].set_xlabel('angle')
     ax[1].set_ylabel('# triangle corners')
@@ -915,10 +854,9 @@ def check_2dm(my2dm):
     - Are the angles good?
     - Are there any bad land-triangles?
     '''
-    import fvgrid as fvg
     print('Loading the grid\n')
     try:
-        triangle, nodes, X, Y, Z, types = fvg.read_sms_mesh(my2dm)
+        triangle, nodes, X, Y, Z, types = fvgrd.read_sms_mesh(my2dm)
     except ValueError:
         raise ValueError('Make sure to save the file with a nodestring')
 

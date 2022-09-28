@@ -29,7 +29,6 @@ def main(childfn       = None,
          filelist      = None,
          mother_grid   = None,
          child_grid    = None,
-         vinterp       = False,
          speed         = False):
     '''
     Interpolate all restart fields from one- to another FVCOM model.
@@ -57,7 +56,6 @@ def main(childfn       = None,
     ---
     mother_grid    - path to mother grid file (if mother grid info is not in the source file)
     child_grid     - path to child grid file (if child grid info is not in the restart file)
-    vinterp        - turn on weighted vertical interpolation, instead of copy of mother grid
     speed          - sometimes works, many times not =) (False by default)
     '''
     if childfn is None:
@@ -131,13 +129,12 @@ def main(childfn       = None,
 
     # Horizontal
     print('- Horizontal interpolation (nearest neighbor):')
-    data, dpt  = nearest_neighbor(mother, M, M_ch, ind,
+    data, dpt = nearest_neighbor(mother, M, M_ch, ind,
                                   nodefield, cellfield, alias)
 
     # Vertical
-    if vinterp:
-        print('- Vertical interpolation') 
-        data      = vertical_interpolation(data, child, dpt) 
+    print('- Vertical interpolation') 
+    data = vertical_interpolation(data, child, dpt) 
 
     # Dump to netCDF
     child = dump_data(data, child)

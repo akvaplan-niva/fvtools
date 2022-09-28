@@ -1,12 +1,7 @@
 import sys
-
-
-
 import numpy as np
 import matplotlib.pyplot as plt
-#import matplotlib.tri as tri
-from fvcom_grd import FVCOM_grid
-
+from fvtools.grid.fvcom_grd import FVCOM_grid
 
 def angles(xn, yn, tri):
     '''Computes and returns all angles in a grid'''
@@ -42,8 +37,7 @@ def move_vertices(xn, yn, tri, minangle=35., N=10.):
     print('There is ' + str(len(j)) + ' elements with angles < ' + str(minangle) + ' degrees')
     #Original position of the nodes in triangles. (xv,yv) is the node located in the cornerwith small angle
     for n in np.arange(len(j)):
-        if np.mod(n,1000) == 0:
-            print('Element ' + str(n) + ' of ' + str(len(j)))
+        print('Element ' + str(n) + ' of ' + str(len(j)))
         xv = x[i[n],j[n]]
         yv = y[i[n],j[n]]
         x1 = x[int(i[n]+1-np.floor((i[n]+1)/3)*3),j[n]]

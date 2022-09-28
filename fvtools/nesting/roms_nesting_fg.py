@@ -1,27 +1,21 @@
 # -----------------------------------------------------------------------------------------
-#                             Create nest from ROMS to FVCOM
+#                  Interpolate data from ROMS to the FVCOM nesting zone
 # -----------------------------------------------------------------------------------------
-import getpass
+import netCDF4
 import numpy as np
 import pandas as pd
-import progressbar as pb
-import pyproj
-import netCDF4
 import matplotlib.pyplot as plt
-import os
-import sys
-import time as time_mod
-from ..nesting import vertical_interpolation as vi
 
-from glob import glob
-from datetime import datetime, timedelta
-from ..grid.fvcom_grd import FVCOM_grid
-from scipy.io import loadmat
-from pyproj import Proj
+from numba import njit
 from time import gmtime, strftime
-from netCDF4 import Dataset
-from ..gridding.prepare_inputfiles import write_FVCOM_bath
-from scipy.spatial import KDTree
+from functools import cached_property
+from datetime import datetime, timedelta
+from scipy.spatial import cKDTree as KDTree
+from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
+from fvtools.grid.roms_grid import get_roms_grid, NoAvailableData, RomsDownloader
+from fvtools.gridding.prepare_inputfiles import write_FVCOM_bath
+from fvtools.nesting import vertical_interpolation as vi
+from fvtools.interpolators.nearest4 import N4
 
 def main(fvcom_grd,
          nest_grd,
@@ -30,17 +24,12 @@ def main(fvcom_grd,
          stop_time,
          mother  = None,
          weights = [2.5e-4, 2.5e-5],
-         R       = None,
-         avg     = True):
+         store_bath = True):
     '''
-    Nest from NorKyst-800 or NorShelf-2.4km (Support for other ROMS models should be easy
-    to implement)
-    ------
-    - Reads a FVCOM grid, identifies the nestingzone, creates interpolation coefficients,
-      interpolates data to the nestingzone and stores to a FVCOM readable NetCDF file.
+    Nest from NorKyst-800 or NorShelf-2.4km
 
-    input:
-    --
+    mandatory input:
+    ----
     fvcom_grd  - FVCOM grid file         (M.mat, M.npy)
     nest_grd   - FVCOM nesting grid file (ngrd.mat, ngrd.npy)
     outfile    - name of the output file
@@ -48,229 +37,99 @@ def main(fvcom_grd,
     stop_time  - yyyy-mm-dd
 
     optional:
-    --
-    mother     - 'NK' for NorKyst-800 or 'NS' for NorShelf-2.4km
-                 (Should be easy to add other ROMS versions as well)
+    ----
+    mother     - ROMS model to nest into
+                 - 'HI-NK' or 'MET-NK' for NorKyst-800 
+                 - 'H-NS' or 'D-NS' for hourly values or daily averages from NorShelf-2.4km
 
-    weights    - tuple giving the weight interval for the nest nodes and cells.
-                 By default, weights = [2.5e-4, 2.5e-5].
-
-    R          - Width of nestingzone
-
-    avg        - uses daily average data if True
+    weights    - tuple giving the weight interval for the nest nodes and cells. By default, weights = [2.5e-4, 2.5e-5].
+    
+    store_bath - True by default, but keep in mind that you only need to do this once pr experiment
     '''
-    if mother is None:
-        raise InputError('You must specify which ROMS model you want to nest to.\n'+\
-                         'More info: roms_nesting_fg.main?')
-
     # Get grid info
     # -----------------------------------------------------------------------------
-    print('Load mesh info:')
-    print('  - Read the FVCOM grid')
-    M = FVCOM_grid(fvcom_grd)         # The full fvcom grid. Needed to get OBC nodes and vertical coordinates.
+    print(f'Writing {outfile}\n====')
+    print('- Load mesh info')
+    M    = FVCOM_grid(fvcom_grd)   # The full fvcom grid. Needed to get OBC nodes and vertical coordinates.
+    NEST = NEST_grid(nest_grd, M)  # The grid that receives ROMS data (ngrd)
+    ROMS = get_roms_grid(mother, M.Proj)
 
-    print('  - Read nest grid info')
-    NEST = NEST_grid(nest_grd, M)     # The grid that receives ROMS data (ngrd)
-
-    print('  - Calculate weight coefficients')
+    print('- Compute FVCOM nesting nudging coefficients as function of distance from OBC')
     NEST.calcWeights(M, w1 = max(weights), w2 = min(weights))
+    
+    print('\nMake the filelist')
+    time, path, index = make_fileList(start_time, stop_time, ROMS)
 
-    # Create a filelist
-    # -----------------------------------------------------------------------------
-    print('\nPrepare the filelist')
-    time, path, index = make_fileList(start_time, stop_time, mother, avg)
+    # Load the ROMS grid, and identify parts covering FVCOM nodes (just nodes, since cells are always in bounds of nodes)
+    ROMS.load_grid(NEST.xn[:,0], NEST.yn[:,0], offset = NEST.R*6)
 
-    # Get the ROMS grid info
-    # -----------------------------------------------------------------------------
-    HI = []; MET = []
-    print('\nCreate a smooth ROMS-FVCOM bathymetry transition')
-    if mother == 'NS':
-        ROMS_grd = ROMS_grid(path[0])
+    print('\nFind the nearest 4 interpolation coefficients for the nestingzone')
+    N4R = N4ROMS(ROMS, x = NEST.xn[:,0], y = NEST.yn[:,0], 
+                       xc = NEST.xc[:,0], yc = NEST.yc[:,0])
+    N4R.nearest4()
 
-    else:
-        # Check if we have to load two grids
-        HI = [fil for fil in path if 'cluster' in fil]
-        MET = [fil for fil in path if 'thredds.met' in fil]
-        if any(HI) and any(MET):
-            print('  - We are using two different ROMS setups, and thus need to load two grids...')
-            # Find the thredds path...
-            thredds_path = [fil for fil in path if 'thredds' in fil][0]
-            local_path   = [fil for fil in path if 'cluster' in fil][0]
-            # use a date I know is available on thredds
-            # ----
-            ROMS_grd_thredds = ROMS_grid(thredds_path)
-            ROMS_grd_local   = ROMS_grid(local_path)
+    print('- Set the nestingzone bathymetry equal to ROMS and add a smooth transition zone. Write to nestingfile')
+    Match    = MatchTopo(ROMS, M, NEST, store_bath)
+    M, NEST  = Match.add_ROMS_bathymetry_to_FVCOM_and_NEST()
+    N4R.NEST = NEST
 
-        else:
-            ROMS_grd = ROMS_grid(path[0])
-
-    if R is None:
-        R = NEST.R[0][0]
-
-    # Smooth the bathymetry in the nesting zone (This should be the same for both NK grids)
-    # Overwrite the nest topo from matlab with topo from ROMS
-    # -----------------------------------------------------------------------------
-    print('- Set the bathymetry near the nestingzone equal to that of ROMS')
-    if any(HI) and(MET):
-        M, NEST = nestingtopo(ROMS_grd_local, M, NEST, R)
-    else:
-        M, NEST = nestingtopo(ROMS_grd, M, NEST, R)
-
-
-    # Create the netcdf forcing file
-    # -----------------------------------------------------------------------------
-    print(f'\nThe nest forcing file will be: {outfile}')
+    print('- Add vertical interpolation method')
+    N4R = vi.add_vertical_interpolation2N4(N4R)
     create_nc_forcing_file(outfile, NEST)
 
-    # Find The nearest 4 and add vertical interpolation matrices
-    # -----------------------------------------------------------------------------
-    print('\nFind the nearest 4 interpolation coefficients for the nestingzone')
-    if any(HI) and any(MET):
-        # Prepare the thredds files
-        N4 = nearest4(NEST, ROMS_grd_thredds)
-        N4 = vi.add_vertical_interpolation2N4(N4)
+    print('\nInterpolate data from ROMS to the nesting zone')
+    R2F = Roms2FVCOMNest(outfile, time, path, index, N4R)
+    R2F.dump()
 
-        # Prepare the local files
-        N4_local = nearest4(NEST, ROMS_grd_local)
-        N4_local = vi.add_vertical_interpolation2N4(N4_local)
-
-    else:
-        N4 = nearest4(NEST,ROMS_grd)
-        N4 = vi.add_vertical_interpolation2N4(N4)
-
-    # Read the data, interpolate to FVCOM nest and store to forcing file
-    # -----------------------------------------------------------------------------
-    print('\nCreate the roms2fvcom nesting file')
-    if any(HI) and any(MET):
-        roms2fvcom(outfile, time, path, index, N4, N4_local = N4_local)
-    else:
-        roms2fvcom(outfile, time, path, index, N4)
-
+    print('\nCompute the vertically averaged velocities')
     vi.calc_uv_bar(outfile, NEST, M)
 
-    # Check if there is missing data
-    # ----
-    data = Dataset(outfile)
-    diagnose_time(data['Itime'][:], data['Itime2'][:])
     print('\n--> Fin.')
 
+# ===============================================================================================
+#                                        fileList
+# ===============================================================================================
+def make_fileList(start_time, stop_time, ROMS):
+    '''
+    Link points in time to files.
+    input format: yyyy-mm-dd-hh
+    '''
+    # List of dates to look for files
+    # ----
+    start = datetime(int(start_time.split('-')[0]), int(start_time.split('-')[1]), int(start_time.split('-')[2]))
+    stop  = datetime(int(stop_time.split('-')[0]), int(stop_time.split('-')[1]), int(stop_time.split('-')[2]))
+    dates = pd.date_range(start,stop)
 
-# -----------------------------------------------------------------------------------------------
-#                                     fileList stuff
-# -----------------------------------------------------------------------------------------------
-def make_fileList(start_time, stop_time, mother, avg):
-    '''
-    Go through the met office thredds server and link points in time to files.
-    format: yyyy-mm-dd-hh
-    '''
-    dates   = prepare_dates(start_time, stop_time)
-    time    = np.empty(0)
-    path    = []
-    index   = []
-    local_file    = []; thredds_file = []
-    missing_dates = []
+    # Initialize some arrays we will be appending to
+    # ----
+    time  = np.empty(0); path  = []; index = []; file = []
+
+    # See where the files are available, create a list referencing files and indices to timestamps
+    # ----
     for date in dates:
-        # See where the files are available
-        # ----
         try:
-            # NorKyst
-            if mother == 'NK':
-                thredds_file = test_thredds_path(date, mother)
-                file         = thredds_file
+            file = ROMS.test_day(date)
 
-            # NorShelf
-            elif mother == 'NS':
-                thredds_file = test_norshelf_path(date, avg)
-                file         = thredds_file
+        except NoAvailableData:
+            print(f'- warning: {date} not found - your forcing file will have a gap')
+            continue
 
-            else:
-                raise InputError(f'{mother} is not a valid option\n Add it! :)')
+        print(f'- checking: {file}')
+        d        = netCDF4.Dataset(file)
+        t_roms   = netCDF4.num2date(d.variables['ocean_time'][:], units = d.variables['ocean_time'].units, only_use_cftime_datetimes=False)
+        t_fvcom  = netCDF4.date2num(t_roms, units = 'days since 1858-11-17 00:00:00')
 
-        # OSErrors will occur when the thredds server is offline/the requested file is not available
-        except:
-            if mother == 'NS':
-                print(f'- warning: {date} not found')
-                continue
-
-            # If NorKyst was not available on thredds, check locally
-            if mother == 'NK':
-                try:
-                    local_file = test_local_path(date)
-                    file       = local_file
-
-                    #thredds_file = test_thredds_path(date, mother)
-                    #file         = thredds_file
-
-                except:
-                    print('We did not find NorKyst-800 data for ' + str(date) + 'on thredds or in the specified folders.'+\
-                          '--> Run "mend_gaps.py" to fill the gaps.')
-                    continue
-
-        # We will come in problems the day before thredds lacks norkyst data since the
-        # files are not stored with the same datum. We avoid that problem by storing both.
+        # Append the timesteps, paths and indices to a fileList
         # ----
-        if any(local_file) and any(thredds_file):
-            print(f'- checking: {thredds_file} \n- checking: {local_file}')
-            d                = Dataset(thredds_file, 'r')
-            dlocal           = Dataset(local_file, 'r')
+        time     = np.append(time, t_fvcom)
+        path     = path + [file]*len(t_fvcom)
+        index.extend(list(range(len(t_fvcom))))
 
-            # Load the timevectors
-            # ----
-            t_thredds_roms   = netCDF4.num2date(d.variables['ocean_time'][:],units = d.variables['ocean_time'].units)
-            if type(t_thredds_roms) is np.ndarray:
-                ttroms = t_thredds_roms.data
-            else:
-                ttroms = t_thredds_roms.data
+    if len(index)==0:
+        raise NoAvailableData('We did not find data for your period of interest')
 
-            t_thredds_fvcom  = netCDF4.date2num(ttroms, units = 'days since 1858-11-17 00:00:00')
-            t_local_roms     = netCDF4.num2date(dlocal.variables['ocean_time'][:],units = dlocal.variables['ocean_time'].units)
-
-            if type(t_local_roms) is np.ndarray:
-                tlroms = t_local_roms
-            else:
-                tlroms = t_local_roms.data
-            t_local_fvcom    = netCDF4.date2num(tlroms, units = 'days since 1858-11-17 00:00:00')
-
-            # Expand the total time, path and index vectors
-            # ----
-            time             = np.append(time, t_thredds_fvcom)
-            path             = path + [thredds_file]*len(t_thredds_fvcom)
-            index.extend(list(range(len(t_thredds_fvcom))))
-
-            time             = np.append(time, t_local_fvcom)
-            path             = path + [local_file]*len(t_local_fvcom)
-            index.extend(list(range(len(t_local_fvcom))))
-
-        # if we just have thredds or a local copy
-        # -----
-        else:
-            print(f'- checking: {file}')
-            d        = Dataset(file)
-
-            # Convert from ROMS units to datetime
-            # ----
-            t_roms   = netCDF4.num2date(d.variables['ocean_time'][:], units = d.variables['ocean_time'].units)
-
-            # Convert from datetime to FVCOM units
-            # ----
-            if type(t_roms) is np.ndarray:
-                trom = t_roms
-            else:
-                trom = t_roms.data
-
-            t_fvcom  = netCDF4.date2num(trom, units = 'days since 1858-11-17 00:00:00')
-
-            # Append the timesteps, paths and indices to a fileList
-            # ----
-            time     = np.append(time, t_fvcom)
-            path     = path + [file]*len(t_fvcom)
-            index.extend(list(range(len(t_fvcom))))
-
-        local_file = []; thredds_file = []; file = []
-
-    # --------------------------------------------------------------------------------------------
-    #     Remove overlap
-    # --------------------------------------------------------------------------------------------
+    # Remove overlap
+    # ----
     time_no_overlap     = [time[-1]]
     path_no_overlap     = [path[-1]]
     index_no_overlap    = [index[-1]]
@@ -283,925 +142,382 @@ def make_fileList(start_time, stop_time, mother, avg):
 
     return np.array(time_no_overlap), path_no_overlap, index_no_overlap
 
-def test_thredds_path(date, mother):
-    '''
-    Check if the file exists that day, and that it has enough data
-    '''
-
-    # Get the URLs
-    # ----
-    file = get_norkyst_url(date)
-
-    # Test if the data is good
-    # ----
-    d    = Dataset(file, 'r')
-
-    if len(d.variables['ocean_time'][:])<24:       # Check to see if empty
-        print(f'{date} does not have a complete timeseries')
-        thredds_file = get_norkyst_local(date-timedelta(days=1))
-
-    file_tomorrow = get_norkyst_url(date+timedelta(days=1))
-    tmp           = Dataset(file_tomorrow, 'r')
-    tmp.close()
-
-    d.close()
-
-    return file
-
-def test_local_path(date):
-    '''
-    See if the local file exists that day, and has enough data
-    '''
-    file         = get_norkyst_local(date)
-    d            = Dataset(file, 'r')
-
-    if len(d.variables['ocean_time'][:])<24: # Check to see if empty (Might be too strict to crash the code)
-        raise ValueError(f'{file} does not have a complete timeseries')
-
-    d.close()
-    return file
-
-def test_norshelf_path(date, avg):
-    '''
-    Load norshelf path
-    '''
-    file = get_norshelf_day_url(date, avg)
-
-    # Test if the data is good
-    # ----
-    forecast_nr = 0
-    while True:
-        try:
-            d    = Dataset(file, 'r')
-            if avg:
-                if len(d.variables['ocean_time'][:])<1:  # Check to see if empty
-                    print('- check forecast')
-                    raise OSError
-                else:
-                    break
-
-            else:
-                if len(d.variables['ocean_time'][:])<24:  # Check to see if empty
-                    print('- check forecast')
-                    raise OSError
-                else:
-                    break
-        except:
-            file = get_norshelf_fc_url(date-timedelta(days=forecast_nr), avg)
-            forecast_nr +=1
-
-        if forecast_nr > 3:
-            print(f'-> no forecast available for {date}')
-            raise OSError
-
-    d.close()
-
-    return file
-
-# -----------------------------------------------------------------------------------------------
-#                                   Download procedures
-# -----------------------------------------------------------------------------------------------
-def prepare_dates(start_time,stop_time):
-    '''
-    returns pandas array of dates needed
-    '''
-    start       = datetime(int(start_time.split('-')[0]), int(start_time.split('-')[1]),\
-                           int(start_time.split('-')[2]))
-    stop        = datetime(int(stop_time.split('-')[0]), int(stop_time.split('-')[1]),\
-                           int(stop_time.split('-')[2]))
-
-    return pd.date_range(start,stop)
-
-def get_roms_data(d, index, N4):
-    '''
-    Dumps roms data from the netcdf file and prepares for interpolation
-    '''
-
-    # Initialize storage
-    class dumped: pass
-
-    # Selective load (load the domain within the given limits)
-    # ----
-    dumped.salt = d.variables.get('salt')[index, :, N4.m_ri:(N4.x_ri+1), N4.m_rj:(N4.x_rj+1)][:,N4.cropped_rho_mask].transpose()
-    dumped.temp = d.variables.get('temp')[index, :, N4.m_ri:(N4.x_ri+1), N4.m_rj:(N4.x_rj+1)][:,N4.cropped_rho_mask].transpose()
-    dumped.zeta = d.variables.get('zeta')[index,    N4.m_ri:(N4.x_ri+1), N4.m_rj:(N4.x_rj+1)][N4.cropped_rho_mask]
-
-    dumped.u    = d.variables.get('u')[index, :, N4.m_ui:(N4.x_ui+1), N4.m_uj:(N4.x_uj+1)][:,N4.cropped_u_mask].transpose()
-
-    dumped.v    = d.variables.get('v')[index, :, N4.m_vi:(N4.x_vi+1), N4.m_vj:(N4.x_vj+1)][:,N4.cropped_v_mask].transpose()
-
-    return dumped
-
-# ------------------------------------------------------------------------------------------------------------------------
-#                     Find the locations/whereabouts of the files we need for each day
-# ------------------------------------------------------------------------------------------------------------------------
-def get_norshelf_fc_url(date, avg):
-    '''
-    Give it a date, and you will get the corresponding url in return
-    '''
-    date        = date-timedelta(days=1) # The times in norshelf files is delayed by one day for some reason?
-    if avg:
-        https       = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_fc_"
-    else:
-        https       = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_fc_"
-    return https+ "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
-
-def get_norshelf_day_url(date, avg):
-    '''
-    Give it a date, and you will get the corresponding url in return
-    '''
-    date        = date
-    if avg:
-        https       = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_an_"
-    else:
-        https       = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_an_"
-    return https+ "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
-
-def get_norkyst_url(date):
-    '''
-    Give it a date, and you will get the corresponding url in return
-    '''
-    https       = 'https://thredds.met.no/thredds/dodsC/fou-hi/new_norkyst800m/his/ocean_his.an.'
-    year        = str(date.year)
-    month       = '{:02d}'.format(date.month)
-    day         = '{:02d}'.format(date.day)
-    return https+year+month+day+'.nc'
-
-def get_norkyst_local(date):
-    '''
-    Looks for NorKyst data in the predefined folders.
-    '''
-
-    # Some of these will need other interpolation coefficients than the ones we have calculated
-    # based on THREDDS data
-
-    folders     = ['/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2016-2017',\
-                   '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2017',\
-                   '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2018',\
-                   '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2019',\
-                   '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_20194']
-
-    # look for subfolders in parents
-    # ----
-    subfolders  = bottom_folders(folders)
-
-    # extract the .nc files in those folders
-    # ----
-    all_ncfiles = list_ncfiles(subfolders)
-
-    # return the file with the correct date
-    return connect_date_to_file(all_ncfiles, date)
-
-def list_ncfiles(dirs):
-    '''
-    returns list of all files in directories (or in one single directory)
-    '''
-    ncfiles = []
-    for dr in dirs:
-        stuff   = os.listdir(dr)
-        ncfiles.extend([dr+'/'+fil for fil in stuff if '.nc' in fil])
-    return ncfiles
-
-def connect_date_to_file(all_ncfiles, date):
-    '''
-    # --> IMR NorKyst data is stored starting at 01:00 and ending at 24:00, hence they are not
-    #     in sync with the data found at norstore (gah!), meaning that we (may) need to find more
-    #     than one file. Should not be a problem, but it is surely annoying...
-    '''
-
-    # Identify the files using their names (ie. not a filelist approach?)
-    # ----
-    year        = str(date.year)
-    month       = '{:02d}'.format(date.month)
-    day         = '{:02d}'.format(date.day)
-
-    files       = [files for files in all_ncfiles if year+month+day in files]
-
-    # I want the file that starts the same date as my date
-    # ----
-    for f in files:
-        if year+month+day in f.split('_')[-1].split('-')[0]:
-            read_file = f
-            break
-
-    return read_file
-
-
-def bottom_folders(folders):
-    '''
-    Returns the folders on the bottom of the pyramid (hence the name)
-    mandatory:
-    folders   - parent folder(s) to cycle through
-    '''
-    # ----
-    dirs = []
-    for folder in folders:
-        dirs.extend([x[0] for x in os.walk(folder)])
-
-    # remove folders that are not at the top of the tree
-    # ----
-    leaf_branch = []
-    for dr in dirs:
-        if dr[-1]=='/':
-            continue
-        else:
-            # This string is at the end of the branch, thus this is where the data is stored
-            # ----
-            leaf_branch.append(dr)
-    return leaf_branch
-
-# ------------------------------------------------------------------------------------------------
-#                                Interpolation coefficients
-# ------------------------------------------------------------------------------------------------
-def nearest4(NEST, ROMS_grd):
-    '''
-    Create nearest four indices and weights for all of the fields
-    '''
-    # This could probably be coded in a more consise and good looking way... But what the heck
-    # ----
-    widget         = ['\n- Finding nearest 4 and weights: ', pb.Percentage(), pb.Bar()]
-    bar            = pb.ProgressBar(widgets=widget, maxval=len(NEST.xn)+len(NEST.xc))
-    N4             = N4ROMS(NEST, ROMS_grd)
-
-    # The ROMS points covered by the FVCOM domain
-    # --------------------------------------------------------------------------------------------
-    N4.fv_rho_mask = ROMS_grd.crop_rho(xlim=[NEST.xn.min() - 5000, NEST.xn.max() + 5000],
-                                       ylim=[NEST.yn.min() - 5000, NEST.yn.max() + 5000])
-
-    N4.fv_u_mask   = ROMS_grd.crop_u(xlim=[NEST.xn.min() - 5000, NEST.xn.max() + 5000],
-                                     ylim=[NEST.yn.min() - 5000, NEST.yn.max() + 5000])
-
-    N4.fv_v_mask   = ROMS_grd.crop_v(xlim=[NEST.xn.min() - 5000, NEST.xn.max() + 5000],
-                                     ylim=[NEST.yn.min() - 5000, NEST.yn.max() + 5000])
-
-    # create a cropped version of the mask
-    # --------------------------------------------------------------------------------------------
-    # The indices that define the area we need to download
-    rho_i, rho_j = np.where(N4.fv_rho_mask)
-    N4.m_ri  = min(rho_i); N4.x_ri = max(rho_i)
-    N4.m_rj  = min(rho_j); N4.x_rj = max(rho_j)
-
-    u_i, u_j = np.where(N4.fv_u_mask)
-    N4.m_ui  = min(u_i); N4.x_ui = max(u_i)
-    N4.m_uj  = min(u_j); N4.x_uj = max(u_j)
-
-    v_i, v_j = np.where(N4.fv_v_mask)
-    N4.m_vi  = min(v_i); N4.x_vi = max(v_i)
-    N4.m_vj  = min(v_j); N4.x_vj = max(v_j)
-
-    # The mask (to be used later on)
-    N4.cropped_rho_mask = N4.fv_rho_mask[N4.m_ri:N4.x_ri+1, N4.m_rj:N4.x_rj+1]
-    N4.cropped_u_mask   = N4.fv_u_mask[N4.m_ui:N4.x_ui+1, N4.m_uj:N4.x_uj+1]
-    N4.cropped_v_mask   = N4.fv_v_mask[N4.m_vi:N4.x_vi+1, N4.m_vj:N4.x_vj+1]
-
-
-    # Cropping the ROMS land mask
-    # --------------------------------------------------------------------------------------------
-    Land_rho       = ROMS_grd.rho_mask[N4.fv_rho_mask]
-    Land_u         = ROMS_grd.u_mask[N4.fv_u_mask]
-    Land_v         = ROMS_grd.v_mask[N4.fv_v_mask]
-
-    # Cropping the coordinates
-    # --------------------------------------------------------------------------------------------
-    x_rho          = ROMS_grd.x_rho[N4.fv_rho_mask]
-    y_rho          = ROMS_grd.y_rho[N4.fv_rho_mask]
-
-    x_u            = ROMS_grd.x_u[N4.fv_u_mask]
-    y_u            = ROMS_grd.y_u[N4.fv_u_mask]
-
-    x_v            = ROMS_grd.x_v[N4.fv_v_mask]
-    y_v            = ROMS_grd.y_v[N4.fv_v_mask]
-
-    # Getting the psi mask
-    # --------------------------------------------------------------------------------------------
-    umask          = np.logical_and(N4.fv_u_mask[1:,:],N4.fv_u_mask[:-1,:])
-    vmask          = np.logical_and(N4.fv_v_mask[:,1:],N4.fv_v_mask[:,:-1])
-    psi_mask       = np.logical_and(umask,vmask)
-
-    # psi coordinates (Why is this not equal to the rho points?)
-    # --------------------------------------------------------------------------------------------
-    x_psi          = (ROMS_grd.x_u[1:,:]+ROMS_grd.x_u[:-1,:])[psi_mask]/2
-    y_psi          = (ROMS_grd.y_v[:,1:]+ROMS_grd.y_v[:,:-1])[psi_mask]/2
-
-    # Build the KDTrees, find the nearest 4 rho, u and v points
-    # --------------------------------------------------------------------------------------------
-    # Create position vectors
-    # ----
-    psi_points     = np.array([x_psi,y_psi]).transpose()
-    rho_points     = np.array([x_rho,y_rho]).transpose()
-    u_points       = np.array([x_u,y_u]).transpose()
-    v_points       = np.array([x_v,y_v]).transpose()
-    fv_nodes       = np.array([NEST.xn[:,0],NEST.yn[:,0]]).transpose()
-    fv_cells       = np.array([NEST.xc[:,0],NEST.yc[:,0]]).transpose()
-
-    # Build the trees
-    # ----
-    print('  - Build KDTrees')
-    psi_tree       = KDTree(psi_points)
-    rho_tree       = KDTree(rho_points)
-    u_tree         = KDTree(u_points)
-    v_tree         = KDTree(v_points)
-
-    # Determine the search range
-    # ----
-    dst            = np.sqrt((x_rho-x_psi[0])**2+(y_rho-y_psi[0])**2)
-    ball_radius    = 1.3*dst[dst.argsort()[0]] # 1.3 is arbitrary. Just to make sure we only
-                                               # find the 4 indices we need
-
-    # Connect FVCOM points to psi, v and u inds
-    # ----
-    print('  - Searching for ROMS rho, u and v cells covering FVCOM nodes and cells')
-    p, fv2psi      = psi_tree.query(fv_nodes) # psi is at the centre of rho cells
-    p, fv2u_centre = v_tree.query(fv_cells)   # v is a the centre of u cells
-    p, fv2v_centre = u_tree.query(fv_cells)   # u is at the centre of v cells
-
-    # Find the nearest 4 by using KDTree query balls
-    # ----
-    rho_inds       = rho_tree.query_ball_point(psi_points[fv2psi], r = ball_radius)
-
-    # v points are in the centre of "u-cells"
-    u_inds         = u_tree.query_ball_point(v_points[fv2u_centre], r = ball_radius)
-
-    # u points are in the centre of "v-cells"
-    v_inds         = v_tree.query_ball_point(u_points[fv2v_centre], r = ball_radius)
-
-    # Initiate the progress bar
-    # --------------------------------------------------------------------------------------------
-    widget         = ['- Calculating weight coefficients: ', pb.Percentage(), pb.Bar()]
-    bar            = pb.ProgressBar(widgets=widget, maxval=len(NEST.xn)+2*len(NEST.xc))
-
-    # Nodes (rho points)
-    # --------------------------------------------------------------------------------------------
-    bcnt = 0;
-
-    bar.start()
-    for k, (x, y) in enumerate(zip(NEST.xn, NEST.yn)):
-        bar.update(bcnt)
-
-        nearest_indices     = np.array(rho_inds[k])
-
-        # land check
-        # ----
-        if any(Land_rho[nearest_indices]) and any(NEST.cid): # the last statement turns on/off the land-test switch
-            class out: pass
-            out.x           = x_rho; out.y = y_rho; out.mask = Land_rho
-            land_ind        = nearest_indices[Land_rho[nearest_indices]]
-            land_exception(NEST, out, land_ind, [x,y], 'node')
-
-        # store the indices
-        N4.rho_index[k,:]   = nearest_indices
-
-        # Determine the weight function
-        N4.rho_coef[k,:]    = bilinear_coefficients(x_rho[nearest_indices],\
-                                                    y_rho[nearest_indices], x, y)
-
-        # Progressbar stuff
-        bcnt                += 1
-
-    # Elements (u and v)
-    # ----
-    # Only loop through this one if we actually need the cell data
-    if any(NEST.cid):
-        for k, (x, y) in enumerate(zip(NEST.xc, NEST.yc)):
-            bar.update(bcnt)
-            # u
-            # -------------------------------------------------------------------
-            nearest_indices     = np.array(u_inds[k])
-
-            # land check
-            # ----
-            if any(Land_u[nearest_indices]) and any(NEST.cid):
-                class out: pass
-                out.x    = x_u; out.y = y_u; out.mask = Land_u
-                land_ind = nearest_indices[Land_u[nearest_indices]]
-                land_exception(NEST, out, land_ind, [x,y], 'cell')
-
-            # store the indices
-            N4.u_index[k,:]      = np.array(nearest_indices)
-
-            # Determine the weight function
-            N4.u_coef[k,:]       = bilinear_coefficients(x_u[nearest_indices],\
-                                                         y_u[nearest_indices], x, y)
-            bcnt +=1
-            bar.update(bcnt)
-
-            # v
-            # -------------------------------------------------------------------
-            nearest_indices      = np.array(v_inds[k])
-
-            # land check
-            # ----
-            if any(Land_v[nearest_indices]) and any(NEST.cid):
-                class out: pass
-                out.x    = x_v; out.y = y_v; out.mask = Land_v
-                land_ind = nearest_indices[Land_v[nearest_indices]]
-                land_exception(NEST, out, land_ind, [x,y], 'cell')
-
-            N4.v_coef[k,:]       = bilinear_coefficients(x_v[nearest_indices],\
-                                                         y_v[nearest_indices], x, y)
-            N4.v_index[k,:]      = np.array(nearest_indices)
-            bcnt += 1
-
-    bar.finish()
-
-    # since we want to use these as indices
-    # ----
-    N4.rho_index     = N4.rho_index.astype(int)
-    N4.u_index       = N4.u_index.astype(int)
-    N4.v_index       = N4.v_index.astype(int)
-
-    N4.NEST          = NEST
-    N4.ROMS_grd      = ROMS_grd
-    if any(NEST.cid):
-        N4.ROMS_depth()
-    else:
-        N4.ROMS_node_depth()
-    N4.ROMS_angle()
-
-    return N4
-
-def horizontal_interpolation(ROMS_out, N4):
-    class HORZfield: pass
-    zlen               = ROMS_out.salt.shape[-1]
-    HORZfield.u        = np.sum(ROMS_out.u[N4.u_index,:]*np.repeat(N4.u_coef[:,:,np.newaxis], zlen, axis=2), axis=1)
-    HORZfield.v        = np.sum(ROMS_out.v[N4.v_index,:]*np.repeat(N4.v_coef[:,:,np.newaxis], zlen, axis=2), axis=1)
-    HORZfield.zeta     = np.sum(ROMS_out.zeta[N4.rho_index]*N4.rho_coef, axis=1)
-    HORZfield.temp     = np.sum(ROMS_out.temp[N4.rho_index,:]*np.repeat(N4.rho_coef[:,:,np.newaxis], zlen, axis=2), axis=1)
-    HORZfield.salt     = np.sum(ROMS_out.salt[N4.rho_index,:]*np.repeat(N4.rho_coef[:,:,np.newaxis], zlen, axis=2), axis=1)
-    return HORZfield
-
-
-def bilinear_coefficients(roms_x, roms_y, fvcom_x, fvcom_y):
-    '''
-    Given four points, returns interpolation coefficients
-    See the formula at: http://en.wikipedia.org/wiki/Bilinear_interpolation
-    '''
-    # We may need to rotate the coordinate system to get a straight system
-    # ----
-    if len(roms_y[np.argwhere(roms_y == min(roms_y))])>1 and len(roms_x[np.argwhere(roms_x == min(roms_x))])>1:
-        #We do not need to rotate, continue
-        abc = 0 # because why not...
-
-    else:
-        # Get the corner to rotate around
-        # ----
-        first_corner       = np.where(roms_y == min(roms_y))
-
-        # Get the angle to rotate
-        # ----
-        dist               = np.sqrt((roms_x-roms_x[first_corner])**2+(roms_x-roms_x[first_corner])**2)
-        x_tmp1             = roms_x[dist.argsort()[1:3]]
-        first_to_the_right = x_tmp1[np.where(x_tmp1 == max(x_tmp1))]
-        second_corner      = np.where(roms_x == first_to_the_right)
-        angle              = np.arctan2(roms_y[second_corner]-roms_y[first_corner], \
-                                        roms_x[second_corner]-roms_x[first_corner])
-
-        # Rotate around origo. (rotating the entire coordinate system should be better...)
-        # ----
-        x_tmp              = (roms_x-roms_x[first_corner]);  y_tmp = (roms_y-roms_y[first_corner])
-        fx_t               = (fvcom_x-roms_x[first_corner]); fy_t  = (fvcom_y-roms_y[first_corner])
-
-        # Rotate ROMS
-        # ----
-        roms_x             = x_tmp*np.cos(-angle) - y_tmp*np.sin(-angle)
-        roms_y             = x_tmp*np.sin(-angle) + y_tmp*np.cos(-angle)
-
-        # Rotate FVCOM
-        # ----
-        fvcom_x            = fx_t*np.cos(-angle) - fy_t*np.sin(-angle)
-        fvcom_y            = fx_t*np.sin(-angle) + fy_t*np.cos(-angle)
-
-    # Find the bilinear interpolation coefficients for a 4 cornered box
-    #   The formula for 1d interpolation to a point x on [a,b] is f(x) = [(b-x)*f(a)+(x-a)*f(b)]/(b-a)
-    #   Bilinear interpolation applies that formula once in the x direction and once in the y direction
-    # ----
-
-    # All of them are divided by the same coefficient
-    bottom                 = (max(roms_x)-min(roms_x))*(max(roms_y)-min(roms_y))
-    coef                   = []
-
-    # Identify the lowest ones
-    args                   = roms_y.argsort()
-    lower                  = args[0:2]
-    upper                  = args[2:]
-
-    coef                   = np.zeros((4,))
-    coef[lower[0]]         = abs((roms_x[lower[1]]-fvcom_x)*(roms_y[upper[0]]-fvcom_y))/bottom
-    coef[lower[1]]         = abs((roms_x[lower[0]]-fvcom_x)*(roms_y[upper[0]]-fvcom_y))/bottom
-
-    coef[upper[0]]         = abs((roms_x[upper[1]]-fvcom_x)*(roms_y[lower[0]]-fvcom_y))/bottom
-    coef[upper[1]]         = abs((roms_x[upper[0]]-fvcom_x)*(roms_y[lower[0]]-fvcom_y))/bottom
-
-    coef                   = coef/np.sum(coef)
-
-    return coef
-
-def get_ROMS_grid_indices(x_roms, y_roms, x, y):
-    '''
-    Basically just finds the grid cell you are in, and stores the four indices connected to it
-    (just in a horribly inefficient way)
-    '''
-    # Check if KD trees combined with psi points can be used to speed up this process
-
-    distance          = np.sqrt((x_roms - x)**2 + (y_roms - y)**2)
-    indices_sorted_according_to_distance = distance.argsort()[0:6]
-
-    # Check that you use the correct indices
-    # -----------------------------------------------------------------------------------------------------
-    # -> The three first are given (no more than one node from outside the gridcell can be closer than those in it)
-    # ----
-    three_first       = indices_sorted_according_to_distance[0:3]
-
-    # -> The last one can be close to the grid walls, which makes it trickier to find the nearest
-    # ----
-    dist_last_ones    = [np.sum((x_roms[three_first]-x_roms[last])**2 + (y_roms[three_first]-y_roms[last])**2)\
-                            for last in indices_sorted_according_to_distance[3:]]
-
-    last_one          = np.where(np.array(dist_last_ones) == np.array(dist_last_ones).min())[0][0]
-    indices_sorted_and_checked  = np.append(three_first, indices_sorted_according_to_distance[3:][last_one])
-
-    return indices_sorted_and_checked
-
-def land_exception(NEST, grid, inds, pos, kind):
-    '''
-    Tell the user to recreate the nestingzone, and show them where the problem is.
-    '''
-    plt.scatter(grid.x[grid.mask==False],grid.y[grid.mask==False], label = 'ROMS ocean points')
-    plt.scatter(grid.x[inds], grid.y[inds], c='r', label = 'ROMS land at this node point')
-    plt.scatter(pos[0], pos[1], c='m', label = 'This FVCOM '+kind)
-    plt.triplot(NEST.xn[:,0], NEST.yn[:,0], NEST.nv, c = 'g', lw = 0.3)
-    plt.axis('equal')
-    plt.title('Your nestingzone cover ROMS land!')
-    plt.legend()
-    plt.show(block=False)
-    raise LandError(f'Adjust your mesh to avoid FVCOM nesting {kind} on ROMS land')
-
 # --------------------------------------------------------------------------------------
 #                             Grid and interpolation objects
 # --------------------------------------------------------------------------------------
-class N4ROMS():
+class N4ROMS(N4):
     '''
-    Object with indices and coefficients for ROMS to FVCOM interpolation.
-    All grid details needed for the nesting should be found here.
+    Object with indices and coefficients for ROMS to FVCOM interpolation using bilinear coefficients
     '''
-    def __init__(self, NEST, ROMS_grd):
+    def __init__(self, ROMS, x = None, y = None, xc = None, yc = None, land_check=True):
         '''
         Initialize empty attributes
         '''
-        self.rho_coef         = np.empty([len(NEST.xn),  4])
-        self.rho_index        = np.empty([len(NEST.xn),  4])
+        self.x = x;   self.y = y
+        self.xc = xc; self.yc = yc
+        self.land_check = land_check
+        self.ROMS = ROMS
 
-        self.u_coef           = np.empty([len(NEST.xc),  4])
-        self.u_index          = np.empty([len(NEST.xc),  4])
+    def nearest4(self):
+        '''
+        Create nearest four indices and weights for all of the fields
+        '''
+        # Compute interpolation coefficients for nearest4 interpolation
+        try:
+            self.rho_index, self.rho_coef = self._compute_interpolation_coefficients(
+                                                    self.x, self.y,
+                                                    self.rho_inds,
+                                                    self.rho_tree.data,
+                                                    np.empty([len(self.x),  4]), np.empty([len(self.x),  4]),
+                                                    widget_title = 'rho'
+                                                    )
+            if self.xc is not None:
+                self.u_index, self.u_coef = self._compute_interpolation_coefficients(
+                                                        self.xc, self.yc, 
+                                                        self.u_inds,
+                                                        self.u_tree.data, 
+                                                        np.empty([len(self.xc),  4]), np.empty([len(self.xc),  4]),
+                                                        widget_title = 'u'
+                                                        ) # note: u_tree.data = u_points used to build the u_tree
 
-        self.v_coef           = np.empty([len(NEST.xc),  4])
-        self.v_index          = np.empty([len(NEST.xc),  4])
+                self.v_index, self.v_coef = self._compute_interpolation_coefficients(
+                                                        self.xc, self.yc, 
+                                                        self.v_inds,
+                                                        self.v_tree.data, 
+                                                        np.empty([len(self.xc),  4]), np.empty([len(self.xc),  4]),
+                                                        widget_title = 'v'
+                                                        )
+        except ValueError:
+            self.domain_exception_plot(self.rho_tree.data)
+            raise DomainError('Your FVCOM domain is outside of the ROMS domain, it needs to be changed.')
 
-    def ROMS_depth(self):
-        '''
-        Calculate the ROMS depth at the FVCOM node, u and v point
-        '''
-        self.fvcom_rho_dpt    = np.sum(self.ROMS_grd.h_rho[self.fv_rho_mask][self.rho_index] * self.rho_coef, axis=1)
-        self.fvcom_u_dpt      = np.sum(self.ROMS_grd.h_u[self.fv_u_mask][self.u_index] *self.u_coef, axis=1)
-        self.fvcom_v_dpt      = np.sum(self.ROMS_grd.h_v[self.fv_v_mask][self.v_index] *self.v_coef, axis=1)
+        # Check if your mesh covers ROMS land, if so kill the routine and force the user to change the grid
+        self.check_if_ROMS_land_in_FVCOM_mesh()
 
-    def ROMS_node_depth(self):
-        '''
-        Calculate the ROMS depth at the FVCOM nodes
-        '''
-        self.fvcom_rho_dpt    = np.sum(self.ROMS_grd.h_rho[self.fv_rho_mask][self.rho_index] * self.rho_coef, axis=1)
+    # Some basic grid info needed to compute the nearest-4 matrices and prepare for vertical interpolation
+    # ----
+    @property
+    def fvcom_rho_dpt(self):
+        return np.sum(self.ROMS.h_rho[self.ROMS.fv_rho_mask][self.rho_index] * self.rho_coef, axis=1)
 
-    def ROMS_angle(self):
-        '''
-        Calculate ROMS angle at FVCOM nodes.
-        '''
-        self.fvcom_angle    = np.sum(self.ROMS_grd.angle[self.fv_rho_mask][self.rho_index] * self.rho_coef, axis=1)
+    @property
+    def fvcom_u_dpt(self):
+        return np.sum(self.ROMS.h_u[self.ROMS.fv_u_mask][self.u_index] *self.u_coef, axis=1)
 
-    def save(self, name="Nearest4"):
-        '''
-        Save object to file.
-        '''
-        pickle.dump(self, open( name + ".p", "wb" ) )
+    @property
+    def fvcom_v_dpt(self):
+        return np.sum(self.ROMS.h_v[self.ROMS.fv_v_mask][self.v_index] *self.v_coef, axis=1)
 
-class NEST_grid():
+    @property
+    def fvcom_rho_dpt(self):
+        return np.sum(self.ROMS.h_rho[self.ROMS.fv_rho_mask][self.rho_index] * self.rho_coef, axis=1)
+
+    @property
+    def fvcom_angle(self):
+        return np.sum(self.ROMS.angle[self.ROMS.fv_rho_mask][self.rho_index] * self.rho_coef, axis=1)
+
+    # KDTrees used to find the 4 nearest ROMS points
+    # -----
+    @property
+    def psi_tree(self):
+        return KDTree(np.array([self.ROMS.cropped_x_psi, self.ROMS.cropped_y_psi]).transpose())
+
+    @property
+    def rho_tree(self):
+        return KDTree(np.array([self.ROMS.cropped_x_rho, self.ROMS.cropped_y_rho]).transpose())
+    
+    @property
+    def u_tree(self):
+        return KDTree(np.array([self.ROMS.cropped_x_u, self.ROMS.cropped_y_u]).transpose())
+
+    @property
+    def v_tree(self):
+        return KDTree(np.array([self.ROMS.cropped_x_v, self.ROMS.cropped_y_v]).transpose())
+    
+    # The nearest ROMS point to any FVCOM point
+    # ----
+    @property
+    def fv2psi(self):
+        _, fv2psi      = self.psi_tree.query(self.fv_nodes) # psi is at the centre of rho cells
+        return fv2psi
+
+    @property
+    def fv2u_centre(self):
+        _, fv2u_centre = self.v_tree.query(self.fv_cells)   # v is a the centre of u cells
+        return fv2u_centre
+
+    @property
+    def fv2v_centre(self):
+        _, fv2v_centre = self.u_tree.query(self.fv_cells)   # u is at the centre of v cells
+        return fv2v_centre
+
+    # Point representation of FVCOM nodes and cells
+    # ----
+    @property
+    def fv_nodes(self):
+        return np.array([self.x, self.y]).transpose()
+
+    @property
+    def fv_cells(self):
+        return np.array([self.xc, self.yc]).transpose()
+
+    @property
+    def ball_radius(self):
+        '''
+        We make use of the staggering of the ROMS grid to find clusters of 4 indices.
+        This propery gives a distance from a centre-point in a ROMS grid-square, used to find those points making up the grid-square
+        '''
+        dst = np.sqrt((self.ROMS.cropped_x_rho - self.ROMS.cropped_x_psi[0])**2 + (self.ROMS.cropped_y_rho - self.ROMS.cropped_y_psi[0])**2)
+        return 1.3*dst[dst.argsort()[0]] # 1.3 was arbitrary, but turns ot to make sure that we only find the points we need
+
+    @property
+    def rho_inds(self):
+        return self.rho_tree.query_ball_point(self.psi_tree.data[self.fv2psi], r = self.ball_radius)
+    
+    @property
+    def u_inds(self):
+        return self.u_tree.query_ball_point(self.v_tree.data[self.fv2u_centre], r = self.ball_radius)
+    
+    @property
+    def v_inds(self):
+        return self.v_tree.query_ball_point(self.u_tree.data[self.fv2v_centre], r = self.ball_radius)
+
+    def check_if_ROMS_land_in_FVCOM_mesh(self):
+        '''
+        Check if FVCOM covers ROMS land, if so return
+        '''
+        if not self.land_check: # return if told to not care about land
+            return
+
+        error = False
+        for field in ['rho','u','v']:
+            indices = getattr(self.ROMS, f'Land_{field}')[getattr(self, f'{field}_index')]
+            if indices.any():
+                if not error:
+                    plt.figure()
+                    plt.scatter(self.x, self.y, 'FVCOM')
+                    error = True
+                x_roms = getattr(self.ROMS, f'cropped_x_{field}')[indices]
+                y_roms = getattr(self.ROMS, f'cropped_y_{field}')[indices]
+                plt.scatter(x_roms, y_roms, label = f'ROMS {field} land points intersecting with FVCOM mesh')
+
+        if error:
+            plt.axis('equal')
+            plt.legend()
+            raise LandError('ROMS intersects with your FVCOM experiment in the nestingzone, see the figure and adjust the mesh.')
+
+    def domain_exception_plot(self, ROMS_points):
+        plt.plot(ROMS_points[:, 0], ROMS_points[:, 1], 'r.', label = 'ROMS')
+        plt.plot(self.x, self.y, 'b.', label = 'FVCOM')
+        plt.legend()
+        plt.axis('equal')
+        plt.show(block=False)
+
+# ============================================================================================================================
+#                                 Class downloading ROMS data and dumping to FVCOM
+# ============================================================================================================================
+class LinearInterpolation:
     '''
-    Object containing information about the FVCOM grid
+    Linearly interpolate data from ROMS to FVCOM grid points
     '''
-    def __init__(self, path_to_nest, M, proj="+proj=utm +zone=33W, +north "+\
-                 "+ellps=WGS84 +datum=WGS84 +units=m +no_defs"):
-        """
-        Reads ngrd.* file. Converts it to general format.
-        """
-
-        self.filepath = path_to_nest
-        self.Proj     = Proj(proj)
-
-        if self.filepath[-3:] == 'mat':
-            self.add_grid_parameters_mat(['xn', 'yn', 'h', 'nv', 'fvangle', 'xc',
-                                          'yc', 'R', 'nid', 'cid','oend1','oend2'])
-
-            self.lonc, self.latc = self.Proj(self.xc, self.yc, inverse=True)
-            self.lonn, self.latn = self.Proj(self.xn, self.yn, inverse=True)
-            self.nv = self.nv
-
-        elif self.filepath[-3:] == 'npy':
-            self.add_grid_parameters_npy(['xn','yn','nv','xc','yc','lonn',
-                                          'latn','lonc','latc','nid','cid','R'])
-
-        # Add information from full fvcom grid (M), vertical coords and OBS-nodes
-        # ----
-        self.siglay  = M.siglay[:len(self.xn), :]
-        self.siglev  = M.siglev[:len(self.xn), :]
-        self.siglayz = M.siglayz[:len(self.xn), :]
-
-        self.siglay_center = (
-                              self.siglay[self.nv[:,0], :]
-                            + self.siglay[self.nv[:,1], :]
-                            + self.siglay[self.nv[:,2], :]
-                              )/3
-
-        self.siglev_center = (
-                              self.siglev[self.nv[:,0], :]
-                            + self.siglev[self.nv[:,1], :]
-                            + self.siglev[self.nv[:,2], :]
-                             )/3
-
-        self.calcWeights(M)
-
-
-    def add_grid_parameters_mat(self, names):
+    def horizontal_interpolation(self):
         '''
-        Read grid attributes from mfile and add them to FVCOM_grid object
+        bi-linear interpolation from one ROMS point to another
         '''
-        grid_mfile = loadmat(self.filepath)
+        zlen      = self.salt.shape[-1]
+        self.u    = np.sum(self.u[self.N4.u_index, :]*np.repeat(self.N4.u_coef[:, :, np.newaxis], zlen, axis=2), axis=1)
+        self.v    = np.sum(self.v[self.N4.v_index, :]*np.repeat(self.N4.v_coef[:, :, np.newaxis], zlen, axis=2), axis=1)
+        self.zeta = np.sum(self.zeta[self.N4.rho_index]*self.N4.rho_coef, axis=1)
+        self.temp = np.sum(self.temp[self.N4.rho_index, :]*np.repeat(self.N4.rho_coef[: ,:, np.newaxis], zlen, axis=2), axis=1)
+        self.salt = np.sum(self.salt[self.N4.rho_index, :]*np.repeat(self.N4.rho_coef[:, :, np.newaxis], zlen, axis=2), axis=1)
 
-        if type(names) is str:
-            names=[names]
-
-        for name in names:
-            setattr(self, name, grid_mfile['ngrd'][0,0][name])
-
-        # Translate Matlab indexing to python
-        self.nid = self.nid -1
-        self.cid = self.cid-1
-        self.nv  = self.nv-1
-
-    def add_grid_parameters_npy(self, names):
-        nest = np.load(self.filepath, allow_pickle=True)
-        special_keys = ['nv','R']
-        for key in names:
-            if key in special_keys:
-                setattr(self, key, nest.item()[key])
-            else:
-                setattr(self, key, nest.item()[key][:,None])
-
-        # Parameters
-        self.oend1 = nest.item()['oend1'] # Matlab legacy
-        self.oend2 = nest.item()['oend2'] # Matlab legacy
-        self.R     = [[nest.item()['R']]] # Matlab legacy
-
-    def calcWeights(self, M, w1=2.5e-4, w2=2.5e-5):
+    def vertical_interpolation(self):
         '''
-        Calculates linear weights in the nesting zone from weight = w1 at the obc to
-        w2 the inner end of the nesting zone. At the obc nodes, weights equals 1
-
-        By default (matlab legacy):
-        w1  = 2.5e-4
-        w2  = 2.5e-5
-
-        This routine differs from the matlab sibling since the matlab version
-        didn't work well for grids with several obcs.
-
-        The ROMS model will be weighted less near the land than elsewhere (except
-        at the outermost obc-row)
+        Linear vertical interpolation.
         '''
-        M.get_obc()
+        salt = np.flip(self.salt, axis=1).T
+        self.salt = salt[self.N4.vi_ind1_rho, range(0, salt.shape[1])] * self.N4.vi_weigths1_rho\
+                    + salt[self.N4.vi_ind2_rho, range(0, salt.shape[1])] * self.N4.vi_weigths2_rho
 
-        # Find the max radius- and node distance vector
-        # ----
-        if self.oend1 == 1:
-            for n in range(len(M.x_obc)):
-                dist       = np.sqrt((M.x_obc[n]-M.x_obc[n][0])**2+(M.y_obc[n] - M.y_obc[n][0])**2)
-                i          = np.where(dist>self.R[0][0])
-                M.x_obc[n] = M.x_obc[n][i]
-                M.y_obc[n] = M.y_obc[n][i]
+        temp = np.flip(self.temp, axis=1).T
+        self.temp = temp[self.N4.vi_ind1_rho, range(0, temp.shape[1])] * self.N4.vi_weigths1_rho \
+                    + temp[self.N4.vi_ind2_rho, range(0, temp.shape[1])] * self.N4.vi_weigths2_rho
 
-        if self.oend2 == 1:
-            for n in range(len(M.x_obc)):
-                dist       = np.sqrt((M.x_obc[n]-M.x_obc[n][-1])**2+(M.y_obc[n]-M.y_obc[n][-1])**2)
-                i          = np.where(dist>self.R[0][0])
-                M.x_obc[n] = M.x_obc[n][i]
-                M.y_obc[n] = M.y_obc[n][i]
+        u = np.flip(self.u, axis=1).T
+        self.u = u[self.N4.vi_ind1_u, range(0, u.shape[1])] * self.N4.vi_weigths1_u + \
+                 + u[self.N4.vi_ind2_u, range(0, u.shape[1])] * self.N4.vi_weigths2_u
 
-        # Find the distances between the nesting zone and the obc
-        # ----
-        # 1. Gather the obc nodes in one vector
-        xo = []; yo = []
-        for n in range(len(M.x_obc)):
-            xo.extend(M.x_obc[n])
-            yo.extend(M.y_obc[n])
+        v = np.flip(self.v, axis=1).T
+        self.v = v[self.N4.vi_ind1_v, range(0, v.shape[1])] * self.N4.vi_weigths1_v + \
+                 + v[self.N4.vi_ind2_v, range(0, v.shape[1])] * self.N4.vi_weigths2_v
 
-        R = []; d_node = []
-        for n in range(len(self.xn)):
-            d_node.append(np.min(np.sqrt((xo-self.xn[n])**2+(yo-self.yn[n])**2)))
-
-        R = max(d_node)
-
-        # Define the interpolation values
-        # ----
-        distance_range = [0,R]
-        weight_range   = [w1,w2]
-
-        # Do the same for the cell values
-        # ----
-        d_cell = []
-        for n in range(len(self.xc)):
-            d_cell.append(min(np.sqrt((xo-self.xc[n])**2+(yo-self.yc[n])**2)))
-
-        # Estimate the weight coefficients
-        # ==> Kan det hende at disse må være lik for vektor og skalar?
-        # ----
-        weight_node = np.interp(d_node, distance_range, weight_range)
-        weight_cell = np.interp(d_cell, distance_range, weight_range)
-
-        if np.argwhere(weight_node<0).size != 0:
-            weight_node[np.where(weight_node)]=min(weight_range)
-
-        if np.argwhere(weight_cell<0).size != 0:
-            weight_cell[np.where(weight_cell)]=min(weight_range)
-
-        # ======================================================================================
-        # The weights are calculated, now we need to overwrite some of them to get a full row of
-        # forced values
-        # ======================================================================================
-        # Force the weight at the open boundary to be 1
-        # ----
-        # 1. reload the full obc
-        M.get_obc()
-        for n in range(len(M.x_obc)):
-            xo.extend(M.x_obc[n])
-            yo.extend(M.y_obc[n])
-
-        # 2. Find the nesting nodes on the boundary
-        node_obc_in_nest = [];
-        for x,y in zip(xo,yo):
-            dst_node = np.sqrt((self.xn-x)**2+(self.yn-y)**2)
-            node_obc_in_nest.append(np.where(dst_node==dst_node.min())[0][0])
-
-        # 3. Find the cells connected to these nodes
-        cell_obc_in_nest = []
-        nv               = self.nv
-        nest_nodes       = np.array([node_obc_in_nest[:-1],\
-                                     node_obc_in_nest[1:]]).transpose()
-
-        # If you want a qube as the outer row
-        # ===========================================================================
-        for i, nest_pair in enumerate(nest_nodes):
-            cells = [ind for ind, corners in enumerate(nv) if nest_pair[0] in \
-                     corners or nest_pair[1] in corners]
-            cell_obc_in_nest.extend(cells)
-
-        cell_obc_to_one = np.unique(cell_obc_in_nest)
-
-        # 4. Get all of the nodes in this list (builds the nodes one row outward)
-        node_obc_to_one = np.unique(nv[cell_obc_to_one].ravel())
-
-        # 5. Finally force the weight at the outermost OBC-row
-        weight_node[node_obc_to_one] = 1.0
-        weight_cell[cell_obc_to_one] = 1.0
-
-        # --> Store everything in the NEST object
-        # ----
-        self.weight_node = weight_node
-        self.weight_cell = weight_cell
-        self.obc_nodes   = node_obc_to_one
-        self.obc_cells   = cell_obc_to_one
-
-class ROMS_grid():
+class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
     '''
-    Object containing grid information about ROMS coastal ocean  model grid.
+    Class writing data to nesting-file.
+    - Downloading ROMS data
+    - Interpolating to FVCOM
     '''
-    def __init__(self, pathToROMS):
-        """
-        Read grid coordinates from nc-files.
-        """
-        self.nc     = pathToROMS
-        self.name   = pathToROMS.split('/')[-1].split('.')[0]
+    def __init__(self, outfile, time, path, index, N4):
+        '''
+        outfile: Name of file to write to
+        time:    list of timesteps to write to
+        path:    list of path to file to read timestep from
+        index:   list of indices to read from file for each timestep
+        N4:      Class with Nearest4 interpolation coefficients
+        '''
+        self.out = netCDF4.Dataset(outfile, 'r+')
+        self.time = time; self.path = path; self.index = index
+        self.N4 = N4
+        self.ROMS = N4.ROMS
+        self.verbose = True
 
-        # Open the ROMS file
-        # ----
-        ncdata      = Dataset(pathToROMS, 'r')
+    @property
+    def angle(self):
+        return np.mean(self.N4.fvcom_angle[self.N4.NEST.nv], axis=1)
 
-        # Get information about vertical coordinates from this file for norshelf!!!
-        # --> Frank, you are messing up the scheme here...
-        # ----
-        ncvert_path = get_vertpath(pathToROMS)
-        ncvert      = Dataset(ncvert_path, 'r')
+    @property
+    def NEST(self):
+        return self.N4.NEST
 
-        # temp, salt and zeta
-        # ----
-        self.lon_rho = ncdata.variables.get('lon_rho')[:]
-        self.lat_rho = ncdata.variables.get('lat_rho')[:]
-        self.h_rho   = ncdata.variables.get('h')[:]
-        self.angle   = ncdata.variables.get('angle')[:]
+    def dump(self):
+        '''
+        loop over all timesteps and interpolate them to the FVCOM nesting file
+        '''
+        for self.counter, (self.fvcom_time, self.path_here, self.index_here) in enumerate(zip(self.time, self.path, self.index)):
+            self.read_timestep()
+            print(f"- {netCDF4.num2date(self.fvcom_time, units='days since 1858-11-17 00:00:00')}")
+            self.crop_and_transpose_roms_data()
+            self.horizontal_interpolation()
+            self.vertical_interpolation()
+            self._dump_timestep_to_nest()
+        self.out.close()
+        self.nc.close()
 
-        # Find z-level using variable sigma levels
-        self.Cs_r    = ncvert.variables.get('Cs_r')[:]
-        self.s_rho   = ncvert.variables.get('s_rho')[:]
-        self.hc      = ncvert.variables.get('hc')[0]
-        self.S       = np.tile(np.zeros((self.lon_rho.shape))[:,:,None], (1,1,len(self.Cs_r)))
+    def crop_and_transpose_roms_data(self):
+        self.salt = self.salt[:, self.ROMS.cropped_rho_mask].transpose()
+        self.temp = self.temp[:, self.ROMS.cropped_rho_mask].transpose()
+        self.zeta = self.zeta[self.ROMS.cropped_rho_mask].transpose()
+        self.u    = self.u[:, self.ROMS.cropped_u_mask].transpose()
+        self.v    = self.v[:, self.ROMS.cropped_v_mask].transpose()
 
-        # - get the depth at each s-level
-        for i, (s, c) in enumerate(zip(self.s_rho, self.Cs_r)):
-            self.S[:, :, i] = (self.hc*s + self.h_rho[:, :]*c)/(self.hc+self.h_rho)
+    def _dump_timestep_to_nest(self):
+        '''
+        Write the data to the output file
+        '''
+        self.out.variables['time'][self.counter]           = self.fvcom_time
+        self.out.variables['Itime'][self.counter]          = np.floor(self.fvcom_time)
+        self.out.variables['Itime2'][self.counter]         = np.round((self.fvcom_time - np.floor(self.fvcom_time)) * 60 * 60 * 1000, decimals = 0)*24
+        self.out.variables['u'][self.counter, :, :]        = self.u*np.cos(self.angle) - self.v*np.sin(self.angle)
+        self.out.variables['v'][self.counter, :, :]        = self.u*np.sin(self.angle) + self.v*np.cos(self.angle)
+        self.out.variables['hyw'][self.counter, :, :]      = np.zeros((1, len(self.NEST.siglev[:,0]), len(self.NEST.siglev[0,:])))
+        self.out.variables['zeta'][self.counter, :]        = self.zeta
+        self.out.variables['temp'][self.counter, :, :]     = self.temp
+        self.out.variables['salinity'][self.counter, :, :] = self.salt
+        self.out.variables['weight_node'][self.counter,:]  = self.NEST.weight_node
+        self.out.variables['weight_cell'][self.counter,:]  = self.NEST.weight_cell
 
-        zeta = np.mean(ncdata.variables['zeta'][:])
-        # this zeta is a slight simplification (good to probably within cm accuracy)-
-        # according to https://www.myroms.org/wiki/Vertical_S-coordinate#transform2,
-        # we would have to use time-varying zeta, but that would require quite a bit of
-        # overhaul of the dimensions, interpolation, etc.
-        self.z_rho = zeta + (zeta + self.h_rho[:,:,None]) * self.S
+# ==========================================================================================================================
+#   Force the FVCOM bathymetry in the nestingzone to be equal to that of ROMS, add smooth transition to FVCOM bathymetry
+# ==========================================================================================================================
+class MatchTopo:
+    def __init__(self, ROMS, M, NEST, store_bath):
+        '''
+        Rutine matching ROMS depth with FVCOM depth, same-same in nestingzone,
+        but a smooth transition from ROMS to BuildCase topo on the outside of it
+        '''
+        self.M = M 
+        self.ROMS = ROMS
+        self.NEST = NEST
+        self.store_bath = store_bath
+        self.R_edge_of_nestingzone = self.NEST.R+50
+        self.R_edge_of_smoothing_zone = 5*self.NEST.R # arbitrarily chosen, this can be tuned if the nestingzone is acting weird
+        self.get_distance_from_gridpoints_to_obc()
+        self.get_nodes_near_obc()
 
-        # u velocity
-        # ----
-        self.lon_u   = ncdata.variables.get('lon_u')[:]
-        self.lat_u   = ncdata.variables.get('lat_u')[:]
-        self.h_u     = (self.h_rho[:,1:]+self.h_rho[:,:-1])/2
-        self.z_u     = (self.z_rho[:,1:,:]+self.z_rho[:,:-1,:])/2
+    def get_distance_from_gridpoints_to_obc(self):
+        '''
+        compute fvcom cells distance from the obc
+        '''
+        obc_tree      = KDTree(np.array([self.M.x[self.M.obc_nodes], self.M.y[self.M.obc_nodes]]).transpose())
+        self.Rdst_cells, _ = obc_tree.query(np.array([self.M.xc, self.M.yc]).transpose())
+        self.Rdst_nodes, _ = obc_tree.query(np.array([self.M.x, self.M.y]).transpose())
 
-        # v velocity
-        # ----
-        self.lon_v   = ncdata.variables.get('lon_v')[:]
-        self.lat_v   = ncdata.variables.get('lat_v')[:]
-        self.h_v     = (self.h_rho[1:,:]+self.h_rho[:-1,:])/2
-        self.z_v = (self.z_rho[1:,:,:]+self.z_rho[:-1,:,:])/2
+    @cached_property
+    def weight(self):
+        _weight = np.zeros(self.M.x.shape)
+        _weight[self.nestingzone_nodes] = 1
+        R_outer_edge = np.max(self.Rdst_nodes[self.transition_nodes])
 
-        ncvert.close()
+        # compute weights in the transition zone
+        width_transition = -(R_outer_edge - self.R_edge_of_nestingzone)
+        a = 1.0/width_transition
+        b = R_outer_edge/width_transition
+        _weight[self.transition_nodes]  = a*self.Rdst_nodes[self.transition_nodes]-b
+        return _weight
 
-        # ROMS fractional landmask (from pp file). Let "1" indicate ocean.
-        # ----
-        self.u_mask   = ((ncdata.variables.get('mask_u')[:]-1)*(-1)).astype(bool)
-        self.v_mask   = ((ncdata.variables.get('mask_v')[:]-1)*(-1)).astype(bool)
-        self.rho_mask = ((ncdata.variables.get('mask_rho')[:]-1)*(-1)).astype(bool)
-        ncdata.close()
+    def get_nodes_near_obc(self):
+        '''
+        return the nodes in the nestingzone (where we will set the ROMS bathymetry) and in the transition zone
+        where we will use a smooth transition from ROMS bathymetry to FVCOM bathymetry
+        '''
+        # First find cells
+        self.nestingzone_cells     = np.where(self.Rdst_cells<self.R_edge_of_nestingzone)[0]
+        self.cells_outside_of_nest = np.where(self.Rdst_cells>=self.R_edge_of_nestingzone)[0]
+        self.transition_cells      = np.where(np.logical_and(self.Rdst_cells>self.R_edge_of_nestingzone, self.Rdst_cells<=self.R_edge_of_smoothing_zone))[0]
+        self.cells_to_change       = np.where(self.Rdst_cells<=self.R_edge_of_smoothing_zone)[0]
 
-        # Project to UTM33 coordinates
-        # ----
-        UTM33W       = pyproj.Proj(proj='utm', zone='33', ellps='WGS84')
-        self.x_rho, self.y_rho = UTM33W(self.lon_rho, self.lat_rho, inverse=False)
-        self.x_u,   self.y_u   = UTM33W(self.lon_u,   self.lat_u,   inverse=False)
-        self.x_v,   self.y_v   = UTM33W(self.lon_v,   self.lat_v,   inverse=False)
+        # Then get the associated nodes
+        self.nestingzone_nodes     = np.unique(self.M.tri[self.nestingzone_cells])
+        self.nodes_outside_of_nest = np.unique(self.M.tri[self.cells_outside_of_nest])
+        self.transition_nodes      = np.unique(self.M.tri[self.transition_cells])
+        self.nodes_to_change       = np.unique(self.M.tri[self.cells_to_change])
 
-    def crop_rho(self, xlim, ylim):
-        """
-        Find indices of grid points inside specified domain
-        """
-        ind1 = np.logical_and(self.x_rho >= xlim[0], self.x_rho <= xlim[1])
-        ind2 = np.logical_and(self.y_rho >= ylim[0], self.y_rho <= ylim[1])
-        return np.logical_and(ind1, ind2)
+    def add_ROMS_bathymetry_to_FVCOM_and_NEST(self):
+        '''
+        Her må man holde tunga i munnen, viktig å huske at akkurat i denne rutinen sysler vi med _hele_ FVCOM domenet!
+        '''
+        # Prepare interpolator, add ROMS bathymetry to the transition-zone in h_roms
+        N4B = N4ROMS(self.ROMS, x = self.M.x[self.nodes_to_change], y = self.M.y[self.nodes_to_change], land_check = False) # the depth at ROMS land is equal to min_depth
+        N4B.nearest4()
 
-    def crop_u(self, xlim, ylim):
-        """
-        Find indices of grid points inside specified domain
-        """
-        ind1 = np.logical_and(self.x_u >= xlim[0], self.x_u <= xlim[1])
-        ind2 = np.logical_and(self.y_u >= ylim[0], self.y_u <= ylim[1])
-        return np.logical_and(ind1, ind2)
+        # Make copy of FVCOM bathymetry
+        h_roms = np.copy(self.M.h) 
+        h_roms[self.nodes_to_change] = np.sum(N4B.ROMS.h_rho[N4B.ROMS.fv_rho_mask][N4B.rho_index]*N4B.rho_coef, axis=1)
 
-    def crop_v(self, xlim, ylim):
-        """
-        Find indices of grid points inside specified domain
-        """
-        ind1 = np.logical_and(self.x_v >= xlim[0], self.x_v <= xlim[1])
-        ind2 = np.logical_and(self.y_v >= ylim[0], self.y_v <= ylim[1])
-        return np.logical_and(ind1, ind2)
+        # Update the nodes according to their distance to the obc
+        self.M.h  = h_roms*self.weight + self.M.h*(1-self.weight)
 
-def get_vertpath(pathToROMS):
-    '''
-    If the path does not necessarilly contain the stuff we need, we will crop it a bit
-    '''
-    if 'norshelf' in pathToROMS:
-        verpath = 'https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_an_20210531T00Z.nc'
-    else:
-        verpath = pathToROMS
-    return verpath
+        # Get M indices corresponding to the nest locations
+        fvtree = KDTree(np.array([self.M.x, self.M.y]).transpose())
+        _, ind = fvtree.query(np.array([self.NEST.xn[:,0], self.NEST.yn[:,0]]).transpose())
 
-# ---------------------------------------------------------------------------------
-#                            Write the output file
-# ---------------------------------------------------------------------------------
+        # Store the smoothed bathymetry
+        self.NEST.h       = self.M.h[ind,None]
+        self.NEST.hc      = np.mean(self.NEST.h[self.NEST.nv], axis = 1)[:,None]
+        self.NEST.siglayz = self.NEST.h*self.NEST.siglay
+        self.store_bathymetry()
+        return self.M, self.NEST
 
+    def store_bathymetry(self):
+        if self.store_bath:
+            filename = f"./input/{self.M.info['casename']}_dep.dat"
+            write_FVCOM_bath(self.M, filename = filename)
+
+# ==============================================================================================
+#                            Write an empty output file
+# ==============================================================================================
 def create_nc_forcing_file(name, NEST):
     '''
     Creates empty nc file formatted to fit FVCOM open boundary ocean forcing
     '''
-    nc = Dataset(name, 'w', format='NETCDF4')
+    nc = netCDF4.Dataset(name, 'w', format='NETCDF3_CLASSIC')
 
     # Write global attributes
     # ----
     nc.title       = 'FVCOM Nesting File'
     nc.institution = 'Akvaplan-niva AS'
     nc.source      = 'FVCOM grid (unstructured) nesting file'
-    nc.created     = strftime("%Y-%m-%d %H:%M:%S", gmtime())
+    nc.created     = f'{strftime("%Y-%m-%d %H:%M:%S", gmtime())} using roms_nesting_fg.py'
 
     # Create dimensions
     # ----
@@ -1236,7 +552,6 @@ def create_nc_forcing_file(name, NEST):
     x                  = nc.createVariable('x', 'single', ('node',))
     y                  = nc.createVariable('y', 'single', ('node',))
     h                  = nc.createVariable('h', 'single', ('node',))
-
 
     # center
     lonc               = nc.createVariable('lonc', 'single', ('nele',))
@@ -1294,303 +609,6 @@ def create_nc_forcing_file(name, NEST):
 
     nc.close()
 
-def roms2fvcom(outfile, time, path, index, N4, N4_local=None):
-    out          = Dataset(outfile, 'r+')
-    already_read = []
-    counter      = 0
-
-    angle = N4.fvcom_angle # Angle to rotate u, v
-    angle = (angle[N4.NEST.nv[:, 0]] + angle[N4.NEST.nv[:, 1]] + angle[N4.NEST.nv[:, 2]]) / 3
-    angle = angle
-
-    for fvcom_time, path, index in zip(time, path, index):
-        if path != already_read:
-            print(' ')
-            print('Reading data from: '+path)
-            nc = Dataset(path,'r')
-            already_read = path
-
-        print('- '+str(netCDF4.num2date(fvcom_time, units='days since 1858-11-17 00:00:00')))
-
-        # Get the data you need from ROMS
-        # ----
-        unavailable = True
-        while unavailable:
-            try:
-                if N4_local is not None and 'norkyst_800m_his.nc4' in path: # I think that string must be unique
-                    ROMS_out = get_roms_data(nc, index, N4_local)
-                    break
-                else:
-                    ROMS_out = get_roms_data(nc, index, N4)
-                    break
-            except:
-                print("\n --------------------\n The data is unavailable at the moment.\n"+\
-                      "Let' wait a minute and try again.\n --------------------\n")
-                time_mod.sleep(60)
-
-        # Interpolate the data to FVCOM nodes and centroids horizontally and vertically
-        # ----
-        if N4_local is not None and 'norkyst_800m_his.nc4' in path:
-            ROMS_horizontal = horizontal_interpolation(ROMS_out, N4_local)
-            FVCOM_in = vertical_interpolation(ROMS_horizontal, N4_local)
-
-        else:
-            ROMS_horizontal = horizontal_interpolation(ROMS_out, N4)
-            FVCOM_in = vertical_interpolation(ROMS_horizontal, N4)
-
-        # Write the data to the output file
-        out.variables['time'][counter]           = fvcom_time
-        out.variables['Itime'][counter]          = np.floor(fvcom_time)
-        out.variables['Itime2'][counter]         = np.round((fvcom_time - np.floor(fvcom_time)) * 60 * 60 * 1000, decimals = 0)*24
-        out.variables['u'][counter, :, :]        = FVCOM_in.u*np.cos(angle) - FVCOM_in.v*np.sin(angle)
-        out.variables['v'][counter, :, :]        = FVCOM_in.u*np.sin(angle) + FVCOM_in.v*np.cos(angle)
-        out.variables['hyw'][counter, :, :]      = np.zeros((1, len(N4.NEST.siglev[:,0]), len(N4.NEST.siglev[0,:])))
-        #out.variables['ua'][counter, :]          = FVCOM_in.ubar
-        #out.variables['va'][counter, :]          = FVCOM_in.vbar
-        out.variables['zeta'][counter, :]        = FVCOM_in.zeta
-        out.variables['temp'][counter, :, :]     = FVCOM_in.temp
-        out.variables['salinity'][counter, :, :] = FVCOM_in.salt
-
-        # --> I guess these weights are time dependent to support nudging?
-        out.variables['weight_node'][counter,:]  = N4.NEST.weight_node
-        out.variables['weight_cell'][counter,:]  = N4.NEST.weight_cell
-
-        # prepare for the next round
-        counter += 1
-
-    out.close()
-
-def vertical_interpolation(ROMS_data, N4):
-    '''Linear vertical interpolation of ROMS data to FVCOM-depths.'''
-    class Data2FVCOM():
-        pass
-
-    #Data2FVCOM.ubar = ROMS_data.ubar
-    #Data2FVCOM.vbar = ROMS_data.vbar
-    Data2FVCOM.zeta = ROMS_data.zeta
-
-    salt = np.flip(ROMS_data.salt, axis=1).T
-    Data2FVCOM.salt = salt[N4.vi_ind1_rho, range(0, salt.shape[1])] * N4.vi_weigths1_rho + \
-                      salt[N4.vi_ind2_rho, range(0, salt.shape[1])] * N4.vi_weigths2_rho
-
-
-    temp = np.flip(ROMS_data.temp, axis=1).T
-    Data2FVCOM.temp = temp[N4.vi_ind1_rho, range(0, temp.shape[1])] * N4.vi_weigths1_rho + \
-                      temp[N4.vi_ind2_rho, range(0, temp.shape[1])] * N4.vi_weigths2_rho
-
-
-    u = np.flip(ROMS_data.u, axis=1).T
-    Data2FVCOM.u = u[N4.vi_ind1_u, range(0, u.shape[1])] * N4.vi_weigths1_u + \
-                   u[N4.vi_ind2_u, range(0, u.shape[1])] * N4.vi_weigths2_u
-
-
-    v = np.flip(ROMS_data.v, axis=1).T
-    Data2FVCOM.v = v[N4.vi_ind1_v, range(0, v.shape[1])] * N4.vi_weigths1_v + \
-                   v[N4.vi_ind2_v, range(0, v.shape[1])] * N4.vi_weigths2_v
-
-
-    return Data2FVCOM
-
-# ----------------------------------------------------------------------------------
-# Force the FVCOM bathymetry in the nestingzone to be equal to that of ROMS, make a
-# transition zone from pure BuildCase-calculated bathymetry (in the model interoior)
-# to pure ROMS bathymetry in the nestingzone
-# ----------------------------------------------------------------------------------
-def nestingtopo(ROMS, M, NEST, R):
-    '''
-    Interpolate the nestingzone ROMS topography to the FVCOM grid, use that
-    new depth information to overwrite
-    ----------------------------------------
-    - ROMS:    ROMS grid object
-    - M:       FVCOM grid object
-    - NEST:    NEST grid object
-    - R:       Nest radius (3000 by default)
-
-    The routine will use the depth at rho points.
-    '''
-
-    r1 = 1.1*R; r2 = 2.5*R
-
-    # Find the indices of the OBC nodes in the mesh
-    # ----
-    M.get_obc()
-    tmp_nodes  = M.obcnodes
-    nest_nodes = []
-
-    for i in range(len(tmp_nodes)):
-        nest_nodes.extend(tmp_nodes[i])
-
-    nest_nodes = np.array(nest_nodes)
-
-    # Distance from the OBC
-    # ----
-    Rdist = []
-    for xn, yn in zip(M.x, M.y):
-        dst   = np.sqrt((M.x[nest_nodes]-xn)**2+(M.y[nest_nodes]-yn)**2)
-        Rdist.append(min(dst))
-
-    Rdist = np.array(Rdist)
-
-    # Find the weight function
-    # ----
-    weight                = np.zeros(len(M.x))
-    weight[np.where(Rdist<r1)[0]] = 1
-    weight[np.where(Rdist>r1)[0]] = 0
-    transition            = np.where(np.logical_and(Rdist>r1, Rdist<r2))[0]
-    a                     = 1.0/(r1-r2)
-    b                     = r2/(r2-r1)
-    weight[transition]    = a*Rdist[transition]+b
-
-    # Find interpolation coefficients to the nodes where h must be smoothed
-    # ----
-    nodes = []
-    nodes.extend(np.where(Rdist<r1)[0])
-    nodes.extend(transition)
-    nodes = np.array(nodes)
-
-    # Create a mesh object that can be read by nearest4
-    # ----
-    class Mextra: pass
-    Mextra.xn             = M.x[nodes][:,None]
-    Mextra.yn             = M.y[nodes][:,None]
-    Mextra.xc             = M.xc[0:3][:,None] # just placeholders
-    Mextra.yc             = M.yc[0:3][:,None] # just placeholders
-    Mextra.cid            = []                # a hack to tell the routine to _not_ check if
-                                              # FVCOM overlaps with ROMS land
-
-    print('  - Finding interpolation coefficients for the smoothing zone')
-    N4                    = nearest4(Mextra, ROMS)
-
-    # Dump ROMS depth to FVCOM nodes
-    # ----
-    hroms                 = np.copy(M.h)
-    interpolert           = np.sum(N4.ROMS_grd.h_rho[N4.fv_rho_mask][N4.rho_index]*N4.rho_coef, axis=1)
-    hroms[nodes]          = interpolert[:]
-
-    # Update the nodes according to their distance from the obc
-    h_updated             = hroms*weight + M.h*(1-weight)
-
-    # Dump the new data to a dummy object
-    class dump: pass
-    dump.lat = M.lat[:]
-    dump.lon = M.lon[:]
-    dump.x   = M.x[:]
-    dump.y   = M.y[:]
-    dump.h   = h_updated[:]
-
-    # Write the smoothed bathymetry to a .dat file
-    try:
-        filename = './input/'+M.info['casename']+'_dep.dat'
-        write_FVCOM_bath(dump, filename = filename)
-
-    except:
-        write_FVCOM_bath(dump)
-
-    # Overwrite NEST and M topo fields
-    M.h         = dump.h[:,None]
-    M.hc        = (M.h[M.tri[:,0]] + M.h[M.tri[:,1]] + M.h[M.tri[:,2]])/3.0
-    M.siglayz   = M.siglayz
-
-    # Get M indices corresponding to the nest locations
-    ind       = []
-    for x, y in zip(NEST.xn[:,0], NEST.yn[:,0]):
-        dst     = np.sqrt((M.x[:]-x)**2+(M.y[:]-y)**2)
-        ind.append(np.where(dst==dst.min())[0][0])
-    ind          = np.array(ind)
-
-    # Store the smoothed bathymetry
-    nv           = NEST.nv[:]
-    NEST.h       = M.h[ind]
-    NEST.hc      = (NEST.h[nv[:,0]] + NEST.h[nv[:,1]] + NEST.h[nv[:,2]])/3.0
-    NEST.siglayz = NEST.h*NEST.siglay
-
-    return M, NEST
-
-def make_fileList_NorShelf(start_time, stop_time):
-    dates = prepare_dates(start_time, stop_time)
-
-    thredds = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_fc_"
-    #thredds = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_an_"
-    #thredds = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_his_fc_"
-    #thredds = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_his_an_"
-
-
-    time = np.empty(0)
-    path = []
-    index = []
-    not_found = []
-
-    for date in dates:
-        Norshelf_file = thredds + "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
-
-        try:
-            nc = Dataset(Norshelf_file, 'r')
-            roms_time = nc.variables['ocean_time'][:]
-            time = np.append(time, roms_time)
-            path.extend([Norshelf_file]*len(roms_time))
-            index.extend(list(range(0, len(roms_time))))
-            nc.close()
-            print(Norshelf_file.split('/')[-1])
-
-        except OSError:
-            print(Norshelf_file.split('/')[-1] + " - not found")
-            not_found.append(Norshelf_file)
-
-    # --------------------------------------------------------------------------------------------
-    #     Remove overlap
-    # --------------------------------------------------------------------------------------------
-    time_no_overlap     = [time[-1]]
-    path_no_overlap     = [path[-1]]
-    index_no_overlap    = [index[-1]]
-
-    for n in range(len(time)-1, 0, -1):
-        if time[n-1] < time_no_overlap[0]:
-            time_no_overlap.insert(0, time[n-1])
-            path_no_overlap.insert(0, path[n-1])
-            index_no_overlap.insert(0, index[n-1])
-
-
-    nc = Dataset(path[0], 'r')
-    roms_time_units = nc.variables['ocean_time'].units
-    time_no_overlap = netCDF4.num2date(time_no_overlap, units=roms_time_units)
-    time_no_overlap = netCDF4.date2num(time_no_overlap, units='days since 1858-11-17 00:00:00')
-    nc.close()
-
-
-    return np.array(time_no_overlap), path_no_overlap, index_no_overlap
-
-def diagnose_time(days, msec):
-    '''
-    Find the missing timesteps.
-    Returns full (corrected) time vector and missing indices.
-    '''
-    # Find the timestep in-between each index
-    # ----
-    dts = []
-    for i in range(len(days)-1):
-        dt_day  = days[i+1]-days[i]
-        dt_msec = msec[i+1]-msec[i]
-        dts.append(dt_day*24+dt_msec/(60*60*1000))
-
-    # To avoid roundoff-stuff
-    # ----
-    dts     = np.round(dts, decimals=1)
-
-    # Minimum timestep
-    # ----
-    dt      = min(dts)
-
-    # Identify bad indices
-    # ----
-    bad_ind = np.where(dts>dt)[:]
-
-    if sum(dts[bad_ind[:]])>0:
-        # Give user some feedback
-        # ----
-        print('\n --> There are ' + str(sum(dts[bad_ind[:]])) + ' hours missing from these data')
-
-    else:
-        print('No missing dates in this forcing file')
-
 class LandError(Exception): pass
+class DomainError(Exception): pass
 class InputError(Exception): pass

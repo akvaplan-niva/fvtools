@@ -3,10 +3,10 @@
 # ---------------------------------------------------------------------
 import numpy as np
 import sys
-import fvcom_pytools.grid.fvgrid as fvg
+import fvtools.grid.fvgrid as fvg
 import matplotlib.pyplot as plt
 from pyproj import Proj, transform
-from fvcom_pytools.grid.fvcom_grd import FVCOM_grid
+from fvtools.grid.fvcom_grd import FVCOM_grid
 from scipy.spatial import cKDTree as KDTree
 
 def main(mesh, 
@@ -20,9 +20,9 @@ def main(mesh,
     print('Computing nestzone metrics')
     # Store the stuff we need to create a nestingfile in this dict
     # ----
-    M   = FVCOM_grid(mesh)
-    M.R = R
-    FULL   = {};
+    M    = FVCOM_grid(mesh)
+    M.R  = R
+    FULL = {}
 
     # Store the full grid for later
     # ----

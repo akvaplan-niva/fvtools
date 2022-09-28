@@ -2,11 +2,11 @@ import numpy as np
 from netCDF4 import Dataset
 
 
-def add_vertical_interpolation2N4(N4,coords = ['rho', 'u', 'v']):
+def add_vertical_interpolation2N4(N4, coords = ['rho', 'u', 'v']):
     '''Adds matrices for vertical interpolation to N4 object.'''    
     for c in coords:
-        z_roms = getattr(N4.ROMS_grd, 'z_' + c)                   # z at all points in ROMS grid
-        z_roms = z_roms[getattr(N4, 'fv_' + c + '_mask'), :]      # z cropped
+        z_roms = getattr(N4.ROMS, 'z_' + c)                   # z at all points in ROMS grid
+        z_roms = z_roms[getattr(N4.ROMS, 'fv_' + c + '_mask'), :]      # z cropped
         z_roms = np.sum(z_roms[getattr(N4, c + '_index'), :] 
                         * getattr(N4, c + '_coef')[:, :, None],
                         axis=1)                                   # z interpolated to fvcom-points
@@ -39,13 +39,12 @@ def add_vertical_interpolation2N1(N1, coords = ['u','v','rho']):
     Adds matrices for vertical interpolation to the N1 object.
     '''
     for c in coords:
-        z_roms  = getattr(N1.ROMS_grd, 'z_' + c)              # z at all points in ROMS grid
+        z_roms  = getattr(N1.ROMS, 'z_' + c)              # z at all points in ROMS grid
         z_roms  = z_roms[getattr(N1, 'fv_' + c + '_mask'), :] # z cropped
         z_roms  = z_roms[getattr(N1, 'Land_'+c)==0]
         z_roms  = z_roms[getattr(N1, c + '_index'), :]      # z at the points nearest the FVCOM points
     
         z_roms  = np.flip(z_roms, axis=1) 
-        #z_fvcom = getattr(N1.NEST, 'siglay') * N1.fvcom_rho_dpt[:]
         if c == 'rho':
             try:
                 z_fvcom = getattr(N1.NEST, 'siglay').T * N1.fvcom_rho_dpt[:, None]
