@@ -27,7 +27,11 @@ import fvtools.pre_pro.BuildCase as bc
 bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 
 ```
-BuildCase returns `casename_*.dat` FVCON input files to the `input` folder, and a file called `M.npy` to be used as input to the rest of the setup routines.
+BuildCase prepares the grid before a simulation. It does a quick quality control of the mesh to check if there are invalid triangles (triangles with more than one side facing the boundary), and will remove such triangles if present.
+
+It also smooths the bathymetry to a rx0 factor less than rx0max. It finds the sponge nodes and sets a sponge factor.
+
+BuildCase returns `casename_*.dat` FVCOM input files to the `input` folder, and a file called `M.npy` to be used as input to the rest of the setup routines.
 
 #### The mesh in the nesting zone
 fvtools support two nesting types:
@@ -86,7 +90,6 @@ We use the MetCoOp-AROME model for atmospheric forcing.
 ```python
 import fvtools.atm.read_metCoop as rm
 rm.main("M.npy", "./input/casename_atm.nc", "2018-01-01-00", "2018-02-01-00")
-
 ```
 
 These are all the input files you need to run a FVCOM experiment (except for `JulianTidesElev`, which may or may not be required for FVCOM-ROMS nesting).
@@ -128,7 +131,7 @@ python fvcom_make_filelist.py -d folders.txt -s PO10 -f fileList.txt
 ```
 
 ### Take a quick look at the results
-qc_gif and qc_gif_uv are two versatile scripts to look at your results between `[start, stop]` (or the entire timespan if not specified).
+`qc_gif` and `qc_gif_uv` creates animations of scalar or velocity fields between `[start, stop]` (or the entire timespan if not specified).
 
 These scripts were developed to be used during a simulation to make it easier to look for bad model results.
 
@@ -167,7 +170,7 @@ qc.main(folder='output01', z=10)
 ```
 
 ## The mesh object - FVCOM_grid
-The mesh object is the main interface for a quick look at an FVCOM grid. It reads a variety of input formats ("casename_xxxx.nc, casename_restart_xxxx.nc", "M.npy", "M.mat", "casename.2dm") and provide simple functions to look at a mesh, look at results from an experiment and return other useful forms of the mesh (i.e. .2dm file).
+The mesh object is the main interface for a quick look at an FVCOM grid. It reads a variety of input formats (`casename_xxxx.nc`, `casename_restart_xxxx.nc`, `M.npy`, `M.mat`, `casename.2dm` or `smeshing.txt`) and provide simple functions to look at a mesh, look at results from an experiment and return other useful forms of the mesh (i.e. .2dm file).
 
 Example use:
 ```python
