@@ -8,6 +8,33 @@ a variety of scripts to interact with FVCOM data before, during and after a mode
 [[_TOC_]]
 
 
+# General idea
+These scrips have been developed to emulate out workflow in MATLAB using fvcom_toolbox / fvtools.
+
+We always:
+- Prepare our mesh in SMS, where we write a `.2dm` file with a nodestring on the outer boundaries
+- Use high-resolution bathymetry datasets downloaded from Kartverket with approval from the Norwegian Navy.
+- Use atmospheric forcing from the AROME configuration "MetCoOp" which is accessible on thredds.met.no
+
+We most of the time:
+- Work in Norway, where input data are most easilly accessible in UTM33W coordinates
+- Nest into existing FVCOM experiments using files stored on `Betzy` or on `Stokes`
+
+We sometimes:
+- Nest into larger domain ROMS models operated by the met office
+  - NorKyst800 is an 800 m ROMS model configured for near-coast modelling.
+  - NorShelf2.5km is an 2500 m resolution data assimilated ROMS model configured for shelf modelling.
+
+All standard scripts can be called via the "main" function, which will create input/forcing files following a standardized setup:
+- `fvtools.pre_pro.BuildCase.main` creates FVCOM.dat input files 
+- `fvtools.pre_pro.BuildRivers.main` creates river forcing for your experiment
+- `fvtools.nesting.get_ngrd.main` cuts out a nestingzone mesh from the main mesh
+  - for fvcom to fvcom nested domains, this routine will dump the `bathymetry.dat` file to your `input` folder 
+- `fvtools.atm.read_metCoop.main` interpolates atmospheric forcing to your domain
+
+Nesting is either done using
+- `fvtools.nesting.roms_nesting_fg.main` or `fvtools.nesting.fvcom2fvcom_nesting.main`
+
 # Example workflow:
 ## Preparing an experiment
 1. Create a folder called `casename` and a subfolder of it called `input`.
