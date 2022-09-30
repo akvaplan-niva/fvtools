@@ -33,7 +33,7 @@ All standard scripts can be called via the "main" function, which will create in
 - `fvtools.atm.read_metCoop.main` interpolates atmospheric forcing to your domain
 
 Nesting is either done using
-- `fvtools.nesting.roms_nesting_fg.main` or `fvtools.nesting.fvcom2fvcom_nesting.main`
+- `fvtools.nesting.roms_nesting_fg.main` or `fvtools.nesting.fvcom2fvcom_nesting.make_nestfile`
 
 # Example workflow:
 ## Preparing an experiment
