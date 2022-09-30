@@ -17,16 +17,25 @@ We always:
 - Use atmospheric forcing from the AROME configuration "MetCoOp" which is accessible on thredds.met.no
 
 We most of the time:
-- Work in Norway, where input data are most easilly accessible in UTM33W coordinates
+- Work in Norway, where input data are most easilly accessible in `UTM33W` coordinates
 - Nest into existing FVCOM experiments using files stored on `Betzy` or on `Stokes`
 
 We sometimes:
 - Nest into larger domain ROMS models operated by the met office
-  - NorKyst800 is an 800 m ROMS model configured for near-coast modelling.
-  - NorShelf2.5km is an 2500 m resolution data assimilated ROMS model configured for shelf modelling.
+  - `NorKyst800` is an 800 m ROMS model configured for near-coast modelling.
+  - `NorShelf2.5km` is an 2500 m resolution data assimilated ROMS model configured for shelf modelling.
 
 All standard scripts can be called via the "main" function, which will create input/forcing files following a standardized setup:
-- `fvtools.pre_pro.BuildCase.main` creates FVCOM.dat input files 
+- `fvtools.pre_pro.BuildCase.main` 
+  - Quality controls the mesh (not complete, some rare cases such as nodes connected to two boundaries will not be detected yet)
+  - Smooths raw bathymetry to desired `rx0` value (i.e. following MetOffice ROMS routines)
+  - Returns estimate of necessary CFL criteria
+  - Creates FVCOM.dat input files
+    - `casename_cor.dat`
+    - `casename_grd.dat`
+    - `casename_obc.dat`
+    - `casename_spg.dat`
+
 - `fvtools.pre_pro.BuildRivers.main` creates river forcing for your experiment
 - `fvtools.nesting.get_ngrd.main` cuts out a nestingzone mesh from the main mesh
   - for fvcom to fvcom nested domains, this routine will dump the `bathymetry.dat` file to your `input` folder 
@@ -52,7 +61,6 @@ You have a `casename.2dm` file (either from smeshing or from SMS), and you want 
 ```python
 import fvtools.pre_pro.BuildCase as bc
 bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
-
 ```
 BuildCase prepares the grid before a simulation. It does a quick quality control of the mesh to check if there are invalid triangles (triangles with more than one side facing the boundary), and will remove such triangles if present.
 
@@ -91,9 +99,16 @@ python fvcom2fvcom_nesting.py -n ngrd.npy -f fileList.txt -o ./input/my_experime
 ROMS-FVCOM nesting will automatically find the forcing it need at thredds.met.no:
 ```python
 import fvtools.nesting.roms_nesting_fg as rn
-rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='NS')
-
+rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='MET-NK')
 ```
+
+Currently supports
+- Met office NorKyst `MET-NK`
+- IMR NorKyst `HI-NK`
+- Hourly NorShelf `H-NS`
+- Daily NorShelf `D-NS`
+
+Support for other models can be done by adding a ROMS reader to `fvtools.grid.roms_grd`.
 
 ### River runoff
 ```python
