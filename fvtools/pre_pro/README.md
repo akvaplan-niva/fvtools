@@ -8,7 +8,7 @@ These should really be co-located with nesting and atmospheric forcing
 Reads .2dm file, checks that the triangles are legal (and remove illegal ones), interpolates bathymetry to the mesh, smooths to comply with hydrostatic constitency criteria, writes .2dm files and returns a M.npy-mesh file.
 
 Example use:
-```
+```python
 import pre_pro.BuildCase as bc
 bc.main('M.npy', 'depth_data.npy')
 ```
