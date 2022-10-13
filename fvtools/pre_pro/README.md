@@ -52,11 +52,18 @@ Interpolates inital fields from a FVCOM mother to you restartfile
 import pre_pro.interpol_restart as ir 
 ir.main(childfn = 'my_experiment_restart_0001.nc', filelist = 'filelist.txt', vinterp = True, speed = True)
 ```
+Switches_
+- vinterp: True to vertically interpolate fields to the child model
+- speed:   True if you also want to include speed
+
 
 ### interpol_roms_restart
 Interpolated initial fields from a ROMS model to your restartfile
 ```python
 import pre_pro.interpol_roms_restart as ir 
-ir.main('my_experiment_restart_0001.nc', 'NS', uv = True, avg = True)
+ir.main('my_experiment_restart_0001.nc', 'MET-NK', uv = True, latlon = True)
 ```
+Switches:
+- uv: True if you want to interpolate a velocity field to the mesh
+- latlon: True if you run FVCOM in spherical model, will otherwise correct currents for meridional convergence in UTM coordinates
 
