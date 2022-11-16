@@ -114,13 +114,13 @@ Support for other models can be done by adding a ROMS reader to `fvtools.grid.ro
 ```python
 import fvtools.pre_pro.BuildRivers as br
 # ROMS nested experiment (ROMS nested):
-br.main('2018-01-01-00', '2018-02-01-00', temp=None)
+br.main('2018-01-01-00', '2018-02-01-00', vassdrag, temp=None)
 
 # FVCOM-nested experiment:
-br.main('2018-01-01-00', '2018-02-01-00', temp='fvcom_mother_temperatures.npy')
+br.main('2018-01-01-00', '2018-02-01-00', vassdrag, temp='fvcom_mother_temperatures.npy')
 
 ```
-This routine writes a file called `RiverNamelist.nml` and `riverdata.nc`. Put these in the `input` folder.
+This routine requires list of chosen catchment areas ids (vassdrag), the ids are available mapped at https://atlas.nve.no/. The routine writes a file called `RiverNamelist.nml` and `riverdata.nc`. Put these in the `input` folder.
 
 Temperatures for big models are stored on the Stokes and Betzy
   - Stokes: `/data/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
