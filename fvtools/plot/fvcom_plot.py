@@ -75,9 +75,9 @@ def geoplot(filepath, offx=0.0, offy=0.0, plot = True):
     yn    = float(tmp[5])
 
     # Finner antall pixler i hver retning
-#Dette sluttet å funke plutselig, men PIL ser ut til å gjøre jobben:    
-#    xpx   = len(img[0,:,0])
-#    ypx   = len(img[:,0,0])
+    #Dette sluttet å funke plutselig, men PIL ser ut til å gjøre jobben:    
+    #    xpx   = len(img[0,:,0])
+    #    ypx   = len(img[:,0,0])
     xpx,ypx=Image.open(filepath+'.jpg').size
 
     # Gjør transformasjonen for å få ut x-y på andre kanten
@@ -222,7 +222,7 @@ def geo_rose(point, u, v, width = 2000, geopath = None, title = None,
         extent     = [c.xw,c.xe,c.ys,c.yn]
         
     else:
-        from plot.geoplot import geoplot as newgp
+        from fvtools.plot.geoplot import geoplot as newgp
         x          = [point[0]-width*1.2, point[0] + width*1.2]
         y          = [point[1]-width*1.2, point[1] + width*1.2]
 
@@ -236,7 +236,7 @@ def geo_rose(point, u, v, width = 2000, geopath = None, title = None,
     rect       = [0.05, 0.05, 0.9, 0.9]
     rect_polar = [0.20, 0.20, 0.6, 0.6]
 
-    # We also need to rotate the subplot to allign with true north!
+    # We also need to rotate the subplot to align with true north!
     # Remember that utm north != true north. The windrose needs to be realligned,
     # and velocities from FVCOM needs to be adjusted. (But for now, we accept a small error)
 

@@ -32,7 +32,7 @@ def main(mesh,
     FULL['xc'] = triangulate(FULL,'xn')
     FULL['yc'] = triangulate(FULL,'yn')
 
-    print('- Number of nodestrings: '+ str(len(M.read_obc_nodes[0,:])))
+    print(f'- Number of nodestrings: {len(M.nodestrings)}')
     # "Cut corners" on the solid sides of the nestingzone
     # ----
     M.oend1 = 1; M.oend2 = 1
@@ -40,8 +40,8 @@ def main(mesh,
     # Adjust sides
     # ----
     circular = False
-    if M.read_obc_nodes.shape[1] == 1:
-        if M.read_obc_nodes[0,0][0,0] == M.read_obc_nodes[0,0][0,-1]:
+    if M.nodestrings.shape[1] == 1:
+        if M.nodestrings[0][0] == M.nodestrings[0][-1]:
             print('-- this nest is circular')
             circular = True
         
@@ -135,18 +135,18 @@ def adjust_sides(M, circular):
     '''
     Cut of the sides of the nestingzone
     '''
-    nstrs = len(M.read_obc_nodes[0,:])
+    nstrs = len(M.nodestrings)
 
     print('  -> Cropping obc nodes')
     x_obc = np.empty(0); y_obc = np.empty(0)
     if circular:
-        x_obc = M.x[M.read_obc_nodes[0,0][0,:]]
-        y_obc = M.y[M.read_obc_nodes[0,0][0,:]]
+        x_obc = M.x[M.nodestrings[0]]
+        y_obc = M.y[M.nodestrings[0]]
 
     else:
         for i in range(nstrs):
-            x_tmp = M.x[M.read_obc_nodes[0,i][0,:]]
-            y_tmp = M.y[M.read_obc_nodes[0,i][0,:]]
+            x_tmp = M.x[M.nodestrings[i]]
+            y_tmp = M.y[M.nodestrings[i]]
         
             # Look at the sides one-by-one
             x_tmp, y_tmp = crop_obc(M, x_tmp, y_tmp, x_tmp[0], y_tmp[0])

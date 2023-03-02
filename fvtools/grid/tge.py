@@ -44,7 +44,7 @@ def main(M, verbose = False):
       - tri    (triangulation)
       - x,  y  (node positions)
       - xc, yc (centrod positions)
-      - obc_nodes or read_obc_nodes (reference to position of open boundary, optional)
+      - obc_nodes or nodestrings (reference to position of open boundary, optional)
 
     - verbose  (default: False - boolean that turns on progress reports)
 
@@ -75,10 +75,10 @@ def main(M, verbose = False):
     - ISONB  [MT]           (node is on the boundary check
                              isonb = 1 on the solid boundary
                              isonb = 2 on the open boundary)
-    - NTVE   [MT]           (number of neighboring elements of node M)
+    - NTVE   [MT]            (number of neighboring elements of node M)
     - NBVE   [MT, :NTVE[MT]] (ntve elements containing node i)
     - NBVT   [MT, :NTVE(MT)] (the node number of node i in element nvbe[i,j])
-    - NESE   [MT]           (number of elements surrounding a element)
+    - NESE   [MT]            (number of elements surrounding a element)
     - NBSE   [MT, :NESE[MT]] (ids of elements surrounding a element)
 
     Edge information
@@ -97,15 +97,11 @@ def main(M, verbose = False):
 
     Node neighbor information
     ------------------
-    - NTVE   [MT]           (total number of the surrounding triangles
-                             connected to the given node)
-    - NBVE   [M, NTVE+1]    (the identification number of a given node over each
-                             individual surrounding triangle (counted clockwise))
-    - NBVT   [M, NTVE[1:M]] (the identification number of a given node over each
-                             individual surrounding triangle (counted clockwise))
+    - NTVE   [MT]           (total number of the surrounding triangles connected to the given node)
+    - NBVE   [M, NTVE+1]    (the identification number of a given node over each individual surrounding triangle (counted clockwise))
+    - NBVT   [M, NTVE[1:M]] (the identification number of a given node over each individual surrounding triangle (counted clockwise))
     - NTSN   [M]            (total number of surrounding nodes)
-    - NBSN   [M, NTSN]      (the identification number of surrounding nodes
-                             counted clockwise)
+    - NBSN   [M, NTSN]      (the identification number of surrounding nodes counted clockwise)
 
     Boundary information
     ------------------
@@ -162,14 +158,15 @@ def main(M, verbose = False):
     # Find number of nodes surrounding nodes, and elements surrounding nodes
     out.NTSN, out.NBSN, out.NBVE, out.NBVT, invalid_nodes = get_NTSN_NBSN(NBVE, out.NTVE, NBVT, out.NBE,
                                                                           out.NV, ISONB, MAXNBR, out.MT)
+    if verbose: print('- Reordered elements surrounding nodes, found NTSN and NBSN')
+
+    # Check if any of the nodes are invalid, if so kill and indicate where we have a problem
     invalid_nodes = invalid_nodes.astype(bool)
     if any(invalid_nodes):
         M.plot_grid()
         plt.scatter(M.x[invalid_nodes], M.y[invalid_nodes], c = 'r')
         plt.draw()
         raise Exception(f'{len(np.where(invalid_nodes)[0])} of the boundary nodes are invalid, see figure.')
-        
-    if verbose: print('- Reordered elements surrounding nodes, found NTSN and NBSN')
 
     # Control volume grid metrics
     out.NE, out.IEC, out.IENODE, out.ISBC  = get_TRI_EDGE_PARAM(out.NT, out.NBE, out.NV)
@@ -179,7 +176,9 @@ def main(M, verbose = False):
     out.DLTXC, out.DLTYC, out.XIJC, out.YIJC, out.DLTXYC, out.SITAC = get_element_edge_metrics(out.VX, out.VY, out.IENODE, out.NE)
     if verbose: print('- CV distances computed. ')
 
-    # Set ISONB on open boundary nodes, determine if element on open boundary
+    # Set ISONB on open boundary nodes, determine if element on open boundary, on land or in the interior
+    if len(OBC_NODES) < 1:
+        OBC_NODES = None
     out.ISONB, out.ISBCE   = set_boundary(ISONB, ISBCE, out.NV, out.NBE, OBC_NODES, out.NT)
     if verbose: print('- Nodes and cells on the edge of the grid identified and tagged')
 
@@ -190,15 +189,18 @@ def main(M, verbose = False):
 
     # Get shape coefficients for gradient calculation
     out.A1U, out.A2U = shape_coefficients(out.NT, out.XC, out.YC, out.NBE, out.ISBCE)
+    if verbose: print('- Found shape coefficients for gradient calculation')
 
     # Construct a dict containing all fields and store to .npy
     out.write_data()
+    if verbose: print(f'- Stored the TGE coefficients to tge.npy')
 
     # Add reference to M to object if needed later?
     out.M = M
 
     # Compute CV area
     out.get_art1()
+    if verbose: print('- Computed control volume area (art1)')
 
     if verbose: print('-------------------------------------------------------------------------------')
     if verbose: print('                                   Fin')
@@ -296,14 +298,15 @@ def get_MAXNBR(MT, NT, NV):
 
     return elems_with_this_node
 
-@jit(nopython = True, parallel = True) # Hvorfor kan ikke denne kjøres i parallel?
+# Try to rewrite this in a more pythonic way to speed it up
+@jit(nopython = True, parallel = True)
 def get_NBVE_NBVT(MT, NT, NV, MXNBR_ELEMS):
     '''
     Determine number of surrounding elements for node I = NTVE(I)
     '''
     NBVE = -1*np.ones((MT, MXNBR_ELEMS+1), np.int32) # Indices of neighboring elements of node I
     NBVT = -1*np.ones((MT, MXNBR_ELEMS+2), np.int32) # index of node I in neighboring element
-    NTVE = np.zeros((MT), np.int32)                  # Counting function, numbers are equivalent to MATLAB or FORTRAN code
+    NTVE = np.zeros((MT), np.int32)                  # Counting array, indexes indicate number of elements around each node
 
     for I in prange(MT):
         NCNT = -1      # nodecount, negative by default
@@ -485,7 +488,7 @@ def set_boundary(ISONB, ISBCE, NV, NBE, OBC_NODES, NT):
     '''
     Marks open boundary nodes and open boundary elements
     '''
-    if len(OBC_NODES) > 1:
+    if OBC_NODES is not None:
         for I in prange(len(OBC_NODES)):
             ISONB[OBC_NODES[I]] = 2
 
@@ -760,20 +763,14 @@ def shape_coefficients(NT, XC, YC, NBE, ISBCE):
 # Check if this M object has OBC nodes
 def get_obc(M):
     '''
-    Simple check to see if read_obc_nodes is available
+    Simple check to see if obc_nodes is available
     '''
-    try:
+    if any(M.obc_nodes):
         obc_nodes = M.obc_nodes
 
-    except AttributeError:
-        try:
-            obc_nodes = np.empty(0, dtype = np.int64)
-            for i in range(M.read_obc_nodes.size):
-                obc_nodes = np.append(obc_nodes, M.read_obc_nodes[0,i][0,:])
-
-        except:
-            print(f'{M.filepath}\ndoes not contain obc_nodes or read_obc_nodes.')
-            obc_noces = np.empty(0, dtype = np.int64)
+    else:
+        print(f'{M.filepath}\ndoes not contain OBC information.')
+        obc_nodes = np.empty(0, dtype = np.int64)
 
     return obc_nodes
 

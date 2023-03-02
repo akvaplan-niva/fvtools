@@ -378,8 +378,7 @@ class NodeEstimate(GraphicalInterface, StructuredGridPoints, MeshLand, DistanceF
         '''
         The number of nodes needed to get the desired resolution is 
         '''
-        return int(np.sum(self.resolution/(self.res**2))/1.8)
-    
+        return int(np.sum(self.resolution/(np.sqrt(3)self.res**2/4))/1.8)
     
     def get_nodenr(self, graphical = False):
         '''

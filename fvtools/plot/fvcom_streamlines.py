@@ -32,10 +32,10 @@ import matplotlib.lines as mlines
 import matplotlib.patches as patches
 from numba import jit
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from scipy.spatial import KDTree
+from scipy.spatial import cKDTree as KDTree
 from fvtools.grid import tge
 
-class streamlines():
+class streamlines:
     '''
     Computes streamlines from a velocity dataset
     '''
@@ -60,12 +60,14 @@ class streamlines():
         # Interpret grid input
         # ----
         self.verbose = verbose
-        if self.verbose: print('Initializing FVCOM streamline maker\n-----------------------')
-        if self.verbose: print('- load grid')
+        if self.verbose: print('\nInitializing FVCOM streamline maker\n-----------------------')
+        if self.verbose: print('  - load grid')
         if isinstance(grid, str):
-            self.M = FVCOM_grid(grid, verbose = False)
+            self.M = FVCOM_grid(grid)
+
         elif isinstance(grid, object):
             self.M = grid
+
         else:
             raise InputError('Grid must either be a string or an object')
 
@@ -167,14 +169,23 @@ class streamlines():
 
         # Find elements surrounding elements
         # ----
-        if self.verbose: print('- Find elements surrounding elements')
+        if self.verbose: print('\n- Find elements surrounding elements')
         NV = tge.check_nv(self.M.ctri, self.M.xc, self.M.yc)
 
-        NBE                    = tge.get_NBE(NT, MT, NV)
-        ISBCE, ISONB           = tge.get_BOUNDARY(NT, MT, NBE, NV)
-        NBVE, NBVT, NTVE       = tge.get_NBVE_NBVT(MT, NT, NV, 15)
-        NTSN, NBSN, NBVE, NBVT = tge.get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, 15, MT)
-        self.NBSE, self.NESE   = tge.get_NBSE_NESE(NBVE, NTVE, NV, NT)
+        if self.verbose: print('  - NBE')
+        NBE                       = tge.get_NBE(NT, MT, NV)
+
+        if self.verbose: print('  - Boundary check')
+        ISBCE, ISONB              = tge.get_BOUNDARY(NT, MT, NBE, NV)
+
+        if self.verbose: print('  - Elements around nodes')
+        NBVE, NBVT, NTVE          = tge.get_NBVE_NBVT(MT, NT, NV, 15)
+
+        if self.verbose: print('  - Nodes around nodes')
+        NTSN, NBSN, NBVE, NBVT, _ = tge.get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, 15, MT)
+        
+        if self.verbose: print('  - Elements around elements')
+        self.NBSE, self.NESE      = tge.get_NBSE_NESE(NBVE, NTVE, NV, NT)
 
     def _prepare_nearest(self):
         '''
@@ -468,7 +479,7 @@ def compute_streamline_linear(grid_x, grid_y, nv, NBSE, NESE, gridres, free_inpu
             # Streamline current grid_cell
             # ----
             last_cell = last_visit[i]
-            this_nbse = NBSE[last_cell,:NESE[last_cell]+1]
+            this_nbse = NBSE[last_cell, :NESE[last_cell]+1]
 
             # Continue to next streamline if this has already been stopped
             if stopped[i]:
@@ -521,12 +532,20 @@ def compute_streamline_linear(grid_x, grid_y, nv, NBSE, NESE, gridres, free_inpu
             # - first see what the grid resolution is here
             dx     = gridres[cind]/6
             speed  = np.sqrt(u_point**2+v_point**2)
+
+            # Now, for the rare case when the speed is exactly equal to zero
+            if speed == 0:
+                streamline_x[i, t+1] = streamline_x[i, t]
+                streamline_y[i, t+1] = streamline_y[i, t]
+                sp[i,t] = 0
+                continue
+
             dt     = dx/speed
             streamline_x[i, t+1] = streamline_x[i, t] + u_point*dt
             streamline_y[i, t+1] = streamline_y[i, t] + v_point*dt
 
             # Kind of akward?
-            sp[i,t] = np.sqrt(u_point**2 + v_point**2)
+            sp[i,t] = speed
 
         # see if we want to restrict the other streamlines
         if length > min_length:

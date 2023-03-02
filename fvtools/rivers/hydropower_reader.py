@@ -24,7 +24,7 @@ def main(vannkraft_folder = '/work/hes/Vannkraft', plant_name = 'Evanger',
     # Initialize a Power Station instance to deal with the irregular time-stamping
     Evanger = PowerStation(this_station)
 
-class PowerReader():
+class PowerReader:
     '''
     Read all power production datasets
     - basically just does operations on a pandas series object
@@ -77,7 +77,7 @@ class PowerReader():
         tmp = self.production[self.production.PowerSystemResourceName.str.contains(plant_name)]
         return tmp
 
-class PowerStation():
+class PowerStation:
     '''
     Handles data from a single station
     '''

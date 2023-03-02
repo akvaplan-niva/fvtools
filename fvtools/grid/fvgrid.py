@@ -335,62 +335,36 @@ def grid_metrics(tri, noisy=False):
 
     return ntve, nbve, nbe, isbce, isonb
 
-def smoothfield(fieldin, tri, SmoothPts, Niter = 1, SmoothFactor = 1.0):
-    ''' '''
-    #if SmoothPts.all(0):
-    #    SmoothPts = range(0,len(fieldin))
-    for k in range(1,Niter+1):
-        field = np.copy(fieldin)
-        for r in SmoothPts:
-            nnodes = find_connected_nodes(r, tri)
-            fave = np.average(np.append(fieldin[nnodes],fieldin[r]))
-            field[r] = SmoothFactor*fave + (1 - SmoothFactor) * fieldin[r]
-
-    return field
         
 
 # Routines added by Akvaplan
-# ----
-def write_2dm(x, y, tri, read_obc_nodes = None, name = 'output_from_BuildCase', casename = 'BuildCase'):
+def write_2dm(x, y, tri, nodestrings = None, name = 'output_from_BuildCase', casename = 'BuildCase'):
     '''
     Writes the grid metrics to a 2dm file
     '''
-    # Open file
-    # ----
-    fid     = open(name+'.2dm','w')
+    with open(f'{name}.2dm','w') as fid:
+        fid.write('MESH2D\n')
+        fid.write(f'MESHNAME "{casename}"\n')
+        for i, nv in enumerate(tri):
+            fid.write(f'E3T {i+1} {nv[0]+1} {nv[1]+1} {nv[2]+1} 1\n')
 
-    # Write triangulation
-    # ----
-    fid.write('MESH2D\n')
-    fid.write(f'MESHNAME "{casename}"\n')
-    for i in range(len(tri[:,0])):
-        fid.write('E3T '+str(i+1)+' '+str(tri[i,0]+1)+' '+str(tri[i,1]+1)+' '+str(tri[i,2]+1)+' 1\n')
+        for i, (xp, yp) in enumerate(zip(x,y)):
+            fid.write(f'ND {i+1} {xp} {yp} 0.00000001\n')
 
-    # Write node positions
-    # ----
-    for i in range(len(x)):
-        fid.write('ND '+str(i+1)+' '+str(x[i])+' '+str(y[i])+' 0.00000001\n')
+        if nodestrings is not None:
+            write = ''
+            string_end = False
+            for i, nodestring in enumerate(nodestrings):
+                for j, node in enumerate(nodestring):
+                    if j == len(nodestring)-1:
+                        n = f'{-(node+1)} {i+1} '
+                        string_end = True
 
-    # Write nodestrings
-    # ----
-    if read_obc_nodes is not None:
-        write = ''
-        string_end = False
-        for i in range(len(read_obc_nodes[0,:])):           # Loop over nodestrings
-            for j in range(len(read_obc_nodes[0,i][0,:])):  # Loop over nodes in nodestrings
-                if j == len(read_obc_nodes[0,i][0,:])-1:    # If final obc_node
-                    n = str(-read_obc_nodes[0,i][0,j]-1) +' '+str(i+1)+' '
-                    string_end = True
+                    else:
+                        n = f'{node+1} '
 
-                else:
-                    n = str(read_obc_nodes[0,i][0,j]+1)+' '
-
-                write = write+n
-                if (j+1)%10 == 0 or string_end: # If line has 10 obc_nodes, or we're at the final node in this string
-                    fid.write('NS  '+write[:-1]+'\n')
-                    write  = ''
-                    string_end = False
-
-    # Close and return file
-    # ----
-    fid.close()
+                    write = write+n
+                    if (j+1)%10 == 0 or string_end: # If line has 10 obc_nodes, or we're at the final node in this string
+                        fid.write(f'NS  {write[:-1]}\n')
+                        write  = ''
+                        string_end = False

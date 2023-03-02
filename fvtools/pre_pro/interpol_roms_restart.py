@@ -10,350 +10,326 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import progressbar as pb
 import fvtools.nesting.vertical_interpolation as vi
-from netCDF4 import Dataset
+
 from datetime import datetime, timedelta
 from time import gmtime, strftime
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.grid.roms_grid import get_roms_grid
 from scipy.spatial import cKDTree as KDTree
+from fvtools.grid.roms_grid import RomsDownloader
+from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
 
-# ---
-# Basically just the same as any other nestingfile.
-# ---
+import warnings
+warnings.filterwarnings("ignore")
 
-def main(restartfile, mother, uv=False, avg=False, proj='epsg:32633'):
+def main(restartfile, mother, uv=False, proj='epsg:32633', latlon = False):
     '''
     restartfile  - restart file formatted for FVCOM
-    mother       - 'HI-NK' or 'MET-NK' for NorKyst-800, 'H-NS' for hourly- or 'D-NS' for daily averaged NorShelf 2.4km files
-    avg          - True if using average files, default: False
+    mother       - 'HI-NK' or 'MET-NK' for NorKyst-800
+                   'H-NS' for hourly- or 'D-NS' for daily averaged NorShelf 2.4km files
+    uv           - set True if you want to interpolate velocity fields to the mesh
     proj         - set projection, default: epsg:32633 (UTM33)
     '''
     # FVCOM grid object
     # ----
-    print('Load FVCOM restart file, find restart time')
-    M            = FVCOM_grid(restartfile, reference=proj)
-    restart_time = netCDF4.num2date(Dataset(restartfile)['time'][0], \
-                                    units = Dataset(restartfile)['time'].units)
+    ROMS = get_roms_grid(mother)
 
-    print('Find ROMS source file')
-    ROMS = get_roms_grid(mother, M.Proj)
+    print(f'\nInterpolate data from {ROMS} to {restartfile}\n---')
+    print('- Load FVCOM restart file')
+    M         = FVCOM_grid(restartfile, reference=proj)
+    ROMS.Proj = M.Proj
 
     # Fields we will interpolate to the restart file
     # ----
     if uv:
         coords = ['rho','u','v']
+        variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']
+
     else:
-        coords = ['rho']
+        coords    = ['rho']
+        variables = ['salt', 'temp', 'zeta']
 
-    # Find the ROMS output file- and index in that file we want to start from
-    # ---- 
-    ROMS, index, path = find_roms_to_start_from(ROMS, restart_time, restartfile)
-
-    # ROMS load the grid that covers our FVCOM domain
+    # Load a part of the ROMS grid covering the FVCOM domain
     # ----
     ROMS.load_grid(M.x, M.y)
 
     # Interpolation coefficients
     # ----
-    print('\nFind nearest neighbors\n -------------------')
-    N1 = N1ROMS(M.x, M.y, M.xc, M.yc, ROMS)
-    N1.NEST = M
+    print('\nCompute interpolation coefficients')
+    N4 = N4ROMSRESTART(ROMS, 
+                        x = M.x, y = M.y,
+                        tri = M.tri,
+                        uv = uv,
+                        land_check = False,
+                        latlon = latlon,
+                       )
+    N4.nearest4()
+
+    # Land correction (we can't use ROMS land points)
+    # ---
+    print('    - Adjust interpolation coefficients to remove land')
+    N4.rho_index, N4.rho_coef = N4.correct_land(N4.rho_index, N4.rho_coef, ROMS.cropped_x_rho, ROMS.cropped_y_rho, M.x, M.y, ROMS.Land_rho)
+    if uv:
+        N4.u_index, N4.u_coef = N4.correct_land(N4.u_index, N4.u_coef, ROMS.cropped_x_u, ROMS.cropped_y_u, M.xc, M.yc, ROMS.Land_u, zero = True)
+        N4.v_index, N4.v_coef = N4.correct_land(N4.v_index, N4.v_coef, ROMS.cropped_x_v, ROMS.cropped_y_v, M.xc, M.yc, ROMS.Land_v, zero = True)
+
+    # Update FVCOM depth and ROMS depth with sea surface perturbation (i.e. tides ++) before finding vertical interpolation weights
+    # ---
+    N4.FV     = M
+    N4.ROMS   = ROMS
     
-    print('\nAdd vertical interpolation coefficients\n -------------------')
-    N1 = vi.add_vertical_interpolation2N1(N1, coords = coords)
+    print('\nUpdate zeta in domain (needed for vertical interpolation)')
+    Restarter = Roms2FVCOMRestart(restartfile, N4, M.tri, variables, latlon, verbose=False)
+    ROMS.zeta = Restarter.z # Add actual depth to ROMS
+    timestep  = Restarter.download(variables = variables)
 
-    # Intepolate data and dump to the restartfile
-    # ----
-    print('\nInterpolate and store ROMS hydrography to the FVCOM restart file\n -------------------')
-    interpolate_to_restart(restartfile, path, index, N1, uv)
+    # Add the FVCOM grid and depth to the interpolator
+    # ---
+    M.zeta = np.sum(timestep.zeta[N4.rho_index] * N4.rho_coef, axis = 1)
+    N4.h  = M.d  # Add sea surface perturbation to FVCOM, FVCOM_grid will now say that M.d = M.h + M.zeta
+    N4.FV = M
+    N4.ROMS.z = timestep.zeta
 
-    print('Fin.')
-    
-def find_roms_to_start_from(ROMS, restart_time, restartfile):
-    # Search for the relevant time and index over more than one file, in case we use a forecast- or a HI-NorKyst file
-    # ----
-    start, stop       = prepare_search(restart_time)
-    time, path, index = rn.make_fileList(start, stop, ROMS)
-    ind               = np.where(time==Dataset(restartfile)['time'][0])
+    print('\nVertical interpolation coefficients')
+    N4 = vi.add_vertical_interpolation2N4(N4, coords = coords)
 
-    # Check if this index actually exists
-    # ----
-    if ind[0].size == 0:
-        if 'NS' in mother:
-            raise CouldNotFindRestartTime("Remember that the average files are published for 12:00 o'clock")
-        else:
-            raise CouldNotFindRestartTime("We were not able to find a suitable restart time")
+    print('\nInterpolate and store ROMS hydrography to the FVCOM restart file')
+    Restarter = Roms2FVCOMRestart(restartfile, N4, M.tri, variables, latlon, verbose=True) #re-initializing the interpolator just to make sure that everything is ready...
+    timestep = Restarter.download(variables = variables)
+    Restarter.dump(timestep, variables = variables)
+    print('\n- Fin.')
 
-    # The file and index of that file we need to read, is therefore
-    # ----
-    path  = path[ind[0][0]]
-    index = index[ind[0][0]]
-
-    return ROMS, index, path
-
-# Fetch data from the ROMS output and dump to the FVCOM grid
-# ----------------------------------------------------------------------------------------
-def get_roms_data(d, index, N1, uv):
+class N4DEPTH:
     '''
-    Dumps roms data from the netcdf file and prepares for interpolation
+    The FVCOM depth is "not negotiable" in FVCOM restart files, thus we set it to the FVCOM depth
     '''
-
-    # Initialize storage
-    class dumped: pass
-
-    # Selective load (load the domain within the given limits)
-    # ----
-    dumped.salt = d.variables.get('salt')[index, :, N1.m_ri:(N1.x_ri+1), N1.m_rj:(N1.x_rj+1)][:, N1.ROMS.cropped_rho_mask][:,N1.Land_rho==0].transpose()
-    dumped.temp = d.variables.get('temp')[index, :, N1.m_ri:(N1.x_ri+1), N1.m_rj:(N1.x_rj+1)][:, N1.ROMS.cropped_rho_mask][:,N1.Land_rho==0].transpose()
-    dumped.zeta = d.variables.get('zeta')[index,    N1.m_ri:(N1.x_ri+1), N1.m_rj:(N1.x_rj+1)][N1.ROMS.cropped_rho_mask][N1.Land_rho==0]
-    if uv:
-        dumped.u    = d.variables.get('u')[index, :, N1.m_ui:(N1.x_ui+1), N1.m_uj:(N1.x_uj+1)][:, N1.ROMS.cropped_u_mask][:, N1.Land_u==0].transpose()
-        dumped.v    = d.variables.get('v')[index, :, N1.m_vi:(N1.x_vi+1), N1.m_vj:(N1.x_vj+1)][:, N1.ROMS.cropped_v_mask][:, N1.Land_v==0].transpose()
-
-    return dumped
-
-
-def interpolate_to_restart(restartfile, path, index, N1, uv):
-    '''
-    Read data from the ROMS file and dump it to the FVCOM file
-    '''
-    # Get ROMS data
-    roms_nc         = Dataset(path)
-    ROMS_out        = get_roms_data(roms_nc, index, N1, uv)
-
-    # Dump the grid angle to the grid file
-    if uv:
-        # rotation factor
-        angle = N1.fvcom_angle[N1.M.tri]
-
-    # Interpolate horizontally and vertically to the FVCOM grid
-    print('- horizontal interpolation')
-    ROMS_horizontal = horizontal_interpolation(ROMS_out, N1, uv)
-
-    print('- vertical interpolation')
-    FVCOM_in        = vertical_interpolation(ROMS_horizontal, N1, uv)
-
-    # Dump to the restart file
-    print('\nDump to the restart file')
-    restart         = Dataset(restartfile, 'r+')
-
-    restart.variables['zeta'][0,:]       = FVCOM_in.zeta
-    restart.variables['temp'][0,:,:]     = FVCOM_in.temp
-    restart.variables['salinity'][0,:,:] = FVCOM_in.salt
-    if uv:
-        restart.variables['u'][0, :, :]      = FVCOM_in.u*np.cos(angle) - FVCOM_in.v*np.sin(angle)
-        restart.variables['v'][0, :, :]      = FVCOM_in.u*np.sin(angle) + FVCOM_in.v*np.cos(angle)
-        ubar, vbar = calc_uv_bar(restart.variables['u'][0, :, :], restart.variables['v'][0, :, :], N1.M)
-        restart.variables['ua'][0,:]         = ubar
-        restart.variables['va'][0,:]         = vbar
-
-    restart.close()
-
-
-# Interpolation stuff
-# -------------------------------------------------------------------------------------------
-def prepare_search(restart_date, days = 3):
-    '''
-    Search over a some days to make sure that you will find the correct restart file
-    '''
-    start = restart_date-timedelta(days =days)
-
-    start_string = "{0.year}-{0.month:02}-{0.day:02}".format(start)
-    stop_string  = "{0.year}-{0.month:02}-{0.day:02}".format(restart_date)
-
-    return start_string, stop_string
-
-
-# Fetch data from the ROMS output and dump to the FVCOM grid
-# ----------------------------------------------------------------------------------------
-def horizontal_interpolation(ROMS_out, N1, uv):
-    '''
-    Simple nearest neighbor interpolation algorithm.
-    '''
-    class HORZfield: pass
-    HORZfield.zeta = ROMS_out.zeta[N1.rho_index]
-    HORZfield.temp = ROMS_out.temp[N1.rho_index,:]
-    HORZfield.salt = ROMS_out.salt[N1.rho_index,:]
-    if uv:
-        HORZfield.u = ROMS_out.u[N1.u_index,:]
-        HORZfield.v = ROMS_out.v[N1.v_index,:]
-    return HORZfield
-
-def vertical_interpolation(ROMS_data, N1, uv):
-    '''
-    Linear vertical interpolation of ROMS data to FVCOM-depths.
-    '''
-    class Data2FVCOM():
-        pass
-
-    Data2FVCOM.zeta = ROMS_data.zeta
-
-    salt = np.flip(ROMS_data.salt, axis=1).T
-    Data2FVCOM.salt = salt[N1.vi_ind1_rho, range(0, salt.shape[1])] * N1.vi_weigths1_rho + \
-                      salt[N1.vi_ind2_rho, range(0, salt.shape[1])] * N1.vi_weigths2_rho 
-     
-
-    temp = np.flip(ROMS_data.temp, axis=1).T
-    Data2FVCOM.temp = temp[N1.vi_ind1_rho, range(0, temp.shape[1])] * N1.vi_weigths1_rho + \
-                      temp[N1.vi_ind2_rho, range(0, temp.shape[1])] * N1.vi_weigths2_rho 
-
-    if uv:
-        u = np.flip(ROMS_data.u, axis=1).T
-        Data2FVCOM.u    = u[N1.vi_ind1_u, range(0, u.shape[1])] * N1.vi_weigths1_u + \
-                          u[N1.vi_ind2_u, range(0, u.shape[1])] * N1.vi_weigths2_u 
- 
-
-        v = np.flip(ROMS_data.v, axis=1).T
-        Data2FVCOM.v    = v[N1.vi_ind1_v, range(0, v.shape[1])] * N1.vi_weigths1_v + \
-                          v[N1.vi_ind2_v, range(0, v.shape[1])] * N1.vi_weigths2_v 
-    
-    return Data2FVCOM
-
-def calc_uv_bar(u, v, M):
-    '''
-    Calculate vertical average of velocity (ubar, vbar).
-    '''
-    h_uv    = np.squeeze(M.h_uv)
-    siglevz = M.siglev_c.T * h_uv
-    dz      = np.abs(np.diff(siglevz, axis=0))
-    ubar    = np.sum(u*dz, axis=0) / h_uv
-    vbar    = np.sum(v*dz, axis=0) / h_uv
-    return ubar, vbar
-
-class N1ROMS:
-    '''
-    Object that finds the nearest
-    '''
-    def __init__(self, x, y, xc, yc, ROMS):
-        '''
-        Initialize empty attributes
-        '''
-        self.x = x;   self.y = y   # for FVCOM nodes
-        self.xc = xc; self.yc = yc # for FVCOM cells
-        self.ROMS = ROMS
-        self._cropped_mask()
-
-    @property
-    def fv_nodes(self):
-        return np.array([self.x, self.y]).transpose()
-
-    @property
-    def fv_cells(self):
-        return np.array([self.xc, self.yc]).transpose()
-
-    # Masking to only retain ROMS points covering FVCOM domain
-    @property
-    def fv_rho_mask(self):
-        return self.ROMS.fv_rho_mask
-
-    @property
-    def fv_u_mask(self):
-        return self.ROMS.fv_u_mask
-
-    @property
-    def fv_v_mask(self):
-        return self.ROMS.fv_v_mask
-
-    # Quick access to depth at FVCOM points
     @property
     def fvcom_rho_dpt(self):
-        return self.ROMS.h_rho[self.fv_rho_mask][self.Land_rho==0][self.rho_index]
-
+        return self.h
+    
     @property
     def fvcom_u_dpt(self):
-        return self.ROMS.h_u[self.fv_u_mask][self.Land_u==0][self.u_index]
+        return self.hc
 
-    @property 
-    def fvcom_v_dpt(self):
-        return self.ROMS.h_v[self.fv_v_mask][self.Land_v==0][self.v_index]
-
-    # ROMS grid angle relative to FVCOM
     @property
-    def fvcom_angle(self):
+    def fvcom_v_dpt(self): 
+        return self.hc
+
+class N4ROMSRESTART(N4ROMS, N4DEPTH):
+    def __init__(self, ROMS, x = None, y = None, tri = None, h = None, uv = False, land_check=False, latlon = False):
         '''
-        ROMS angle at FVCOM nodes.
+        Initialize empty attributes
+        - h is necessary by the time this object is passed to vertical_interpolation.py
         '''
-        return self.ROMS.angle[self.fv_rho_mask][self.rho_index]
-
-    # ROMS land points identifier
-    @property
-    def Land_rho(self):
-        return self.ROMS.rho_mask[self.fv_rho_mask]
-
-    @property
-    def Land_u(self):
-        return self.ROMS.u_mask[self.fv_u_mask]
+        self.x, self.y, self.tri, self.h = x, y, tri, h
+        self.uv = uv
+        self.latlon = latlon
+        self.land_check = land_check
+        self.ROMS = ROMS
 
     @property
-    def Land_v(self):
-        return self.ROMS.v_mask[self.fv_v_mask]
+    def h(self):
+        '''
+        fvcom watercolumn depth at nodes
+        '''
+        if not hasattr(self, '_h'):
+            raise ValueError('You must specify h')
+        return self._h
     
-    # Positions of ocean rho, u and v points as FVCOM-covernig arrays
-    @property
-    def x_rho(self):
-        return self.ROMS.x_rho[self.fv_rho_mask][self.Land_rho==0]
-    
-    @property
-    def y_rho(self):
-        return self.ROMS.y_rho[self.fv_rho_mask][self.Land_rho==0]
-    
-    @property
-    def x_u(self):
-        return self.ROMS.x_u[self.fv_u_mask][self.Land_u==0]
-    
-    @property
-    def y_u(self):
-        return self.ROMS.y_u[self.fv_u_mask][self.Land_u==0]
+    @h.setter
+    def h(self, var):
+        '''
+        fvcom watercolumn depth at cells
+        '''
+        self._h = var
 
     @property
-    def x_v(self):
-        return self.ROMS.x_v[self.fv_v_mask][self.Land_v==0]
-    
-    @property
-    def y_v(self):
-        return self.ROMS.y_v[self.fv_v_mask][self.Land_v==0]
+    def hc(self):
+        return np.mean(self.h[self.tri], axis=1)
+
+    def correct_land(self, index, coef, x_source, y_source, fvcom_x, fvcom_y, LandMask, zero = False):
+        '''
+        Remove points completely covered by land.
+        - points partially covered by land will use those values instead
+        '''
+        _coef, _index, _land = self._nullify_land_points(coef, index, LandMask)
+        nearest_ocean = self._find_nearest_ocean_neighbor(_index, _coef, x_source, y_source, fvcom_x, fvcom_y, LandMask)
+
+        # Overwrite indices at points completely covered by arome land
+        _index[_land, :] = nearest_ocean[_land][:, None]
+
+        # Set land weight to something
+        if not zero:
+            _coef[_land, :] = 0.25
+        else:
+            _coef[_land, :] = 0.0 # used for velocities when we deal with ROMS data in restart files
+
+        return _index, _coef
+
+    @staticmethod
+    def _nullify_land_points(coef, index, LandMask):
+        '''
+        Identify land points, these must be removed for the radiation field interpolation
+        '''
+        # Copy to not mess up anything inadvertibly :)
+        _index = np.copy(index)
+        _coef  = np.copy(coef)
+
+        # Set weight of land points to zero and re-normalize
+        landbool = LandMask[_index]
+        _coef[landbool] = 0
+        _coef = _coef/np.sum(_coef,axis=1)[:,None]
+
+        # Identify points completely covered by land
+        _land = np.where(np.isnan(_coef[:,0]))[0]
+
+        return _coef, _index, _land
+
+    @staticmethod
+    def _find_nearest_ocean_neighbor(_index, _coef, x_source, y_source, fvcom_x, fvcom_y, LandMask):
+        '''
+        replace land point with nearest ocean neighbor
+        '''
+        # Create a tree referencing ocean points
+        ocean_tree  = KDTree(np.array([x_source[LandMask==False], y_source[LandMask==False]]).transpose())
+        source_tree = KDTree(np.array([x_source, y_source]).T)
+
+        # Nearest ocean point to all FVCOM points
+        _, _nearest_ocean = ocean_tree.query(np.array([fvcom_x, fvcom_y]).transpose())
+        nearest_ocean_x = x_source[LandMask==False][_nearest_ocean]
+        nearest_ocean_y = y_source[LandMask==False][_nearest_ocean]
+
+        # With same indexing as the rest of source
+        _, nearest_ocean = source_tree.query(np.array([nearest_ocean_x, nearest_ocean_y]).transpose())
+        return nearest_ocean
+
+class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
+    '''
+    Class writing data to restart-file.
+    - Downloading ROMS data
+    - Interpolating to FVCOM
+    '''
+    def __init__(self, restartfile, N4, tri, variables, latlon, verbose = False):
+        '''
+        outfile: Name of file to write to
+        time:    list of timesteps to write to
+        path:    list of path to file to read timestep from
+        index:   list of indices to read from file for each timestep
+        N4:      Class with Nearest4 interpolation coefficients
+        '''
+        self.restartfile = restartfile
+        self.variables = variables
+        self.latlon = latlon
+        self.N4 = N4.dump()
+        self.ROMS = N4.ROMS
+
+        with netCDF4.Dataset(restartfile) as nc:
+            self.restart_time = netCDF4.num2date(nc['time'][0], units = nc['time'].units, only_use_cftime_datetimes=False, only_use_python_datetimes=False)
+        self.find_roms_to_start_from(verbose)
 
     @property
-    def rho_tree(self):
-        return KDTree(np.array([self.x_rho, self.y_rho]).transpose())
+    def z(self):
+        '''
+        downloads zeta in same shape as ROMS grid
+        '''
+        with netCDF4.Dataset(self.path) as nc:
+            z = nc['zeta'][self.index_here,:,:]
+        return z
 
-    @property
-    def u_tree(self):
-        return KDTree(np.array([self.x_u, self.y_u]).transpose())
+    def download(self, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']):
+        '''
+        Download timestep thredds
+        '''
+        timestep = self.read_timestep(self.index_here, self.path, variables = variables)
+        timestep = self.crop_and_transpose(timestep, variables = variables)
+        return timestep
 
-    @property
-    def v_tree(self):
-        return KDTree(np.array([self.x_v, self.y_v]).transpose())
+    def dump(self, timestep, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']):
+        '''
+        Download all required fields from the thredds server
+        '''
+        timestep = self.horizontal_interpolation(timestep, variables = variables)
+        timestep = self.vertical_interpolation(timestep, variables = variables)
+        if 'u' in variables or 'v' in variables or 'ua' in variables or 'va' in variables:
+            timestep = self.adjust_uv(timestep) # adjust from (xi, eta) to (lon, lat) - and then to (x,y) in utm if self.latlon=False
+        self.write_to_restart(timestep, variables = variables)
 
-    @property
-    def rho_index(self):
-        _, ind = self.rho_tree.query(self.fv_nodes)
-        return ind
-    
-    @property
-    def u_index(self):
-        _, ind = self.u_tree.query(self.fv_cells)
-        return ind
+    def write_to_restart(self, timestep, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']):
+        '''
+        Dump the fields to the restart file
+        '''
+        with netCDF4.Dataset(self.restartfile, 'r+') as nc:
+            if 'zeta' in variables:
+                nc.variables['zeta'][0,:]       = timestep.zeta
+                print('  - Updated zeta')
 
-    @property
-    def v_index(self):
-        _, ind = self.v_tree.query(self.fv_cells)
-        return ind
+            if 'temp' in variables:
+                nc.variables['temp'][0,:,:]     = timestep.temp
+                print('  - Updated temp')
 
-    def _cropped_mask(self):
-        # of rho mask
-        i, j = np.where(self.fv_rho_mask)
-        self.m_ri = min(i); self.x_ri = max(i)
-        self.m_rj = min(j); self.x_rj = max(j)
+            if 'salt' in variables:
+                nc.variables['salinity'][0,:,:] = timestep.salt
+                print('  - Updated salinity')
 
-        # of u mask
-        i, j = np.where(self.fv_u_mask)
-        self.m_ui = min(i); self.x_ui = max(i)
-        self.m_uj = min(j); self.x_uj = max(j)
+            if 'u' in variables:
+                nc.variables['u'][0, :, :]      = timestep.u
+                print('  - Updated u')
 
-        i, j = np.where(self.fv_v_mask)
-        self.m_vi = min(i); self.x_vi = max(i)
-        self.m_vj = min(j); self.x_vj = max(j)
+            if 'v' in variables:
+                nc.variables['v'][0, :, :]      = timestep.v
+                print('  - Updated v')
 
+            if 'ua' in variables:
+                nc.variables['ua'][0,:]         = timestep.ua
+                print('  - Updated ua')
+
+            if 'va' in variables:
+                nc.variables['va'][0,:]         = timestep.va
+                print('  - Updated va')
+
+    def find_roms_to_start_from(self, verbose):
+        '''
+        Search for the relevant time and index over more than one file, in case we use a forecast- or a HI-NorKyst file
+        '''
+        with netCDF4.Dataset(self.restartfile) as nc:
+            self._prepare_search()
+            time, self.path, self.indices = rn.make_fileList(self.start_time, self.stop_time, self.ROMS)
+            ind = np.where(time==nc['time'][0])
+
+        if ind[0].size == 0:
+            raise CouldNotFindRestartTime("We were not able to find a suitable restart time")
+
+        self.path  = self.path[ind[0][0]]
+        self.index_here = self.indices[ind[0][0]]
+
+        if verbose:
+            with netCDF4.Dataset(self.path) as nc:
+                print(f"    - Found data for {netCDF4.num2date(nc['ocean_time'][self.index_here], units = nc['ocean_time'].units)}")
+
+    def _prepare_search(self, days = 2):
+        '''
+        Search over a some days to make sure that you will find the correct restart file
+        '''
+        start = self.restart_time-timedelta(days = days)
+        self.start_time = "{0.year}-{0.month:02}-{0.day:02}".format(start)
+        self.stop_time  = "{0.year}-{0.month:02}-{0.day:02}".format(self.restart_time)
 
 class CouldNotFindRestartTime(Exception): pass
+
+def smooth_fields(restartfile, fields = ['ua', 'va', 'zeta', 'u', 'v'], n = 10):
+    '''
+    Smooth fields in the restartfile
+    '''
+    M = FVCOM_grid(restartfile)
+    with netCDF4.Dataset(restartfile, 'r+') as restart:
+        for field in fields:
+            print(f'\n-{field=}')
+            if len(restart[field].shape) == 2:
+                restart[field][-1, :] = M.smooth(restart[field][-1, :], n = n)
+
+            elif len(restart[field].shape) == 3:
+                for s in range(restart.dimensions['siglay'].size):
+                    restart[field][-1, s, :] = M.smooth(restart[field][-1, s, :], n = n)
+
+            else:
+                raise ValueError('what?')

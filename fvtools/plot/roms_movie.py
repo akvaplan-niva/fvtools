@@ -95,7 +95,7 @@ def main(start,
     for field in var:
         mmaker.var = field
         mmaker.get_cmap(field, cb)
-        widget        = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar()]
+        widget        = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
         mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(time))
         mmaker.bar.start()
         anim       = manimation.FuncAnimation(fig,
@@ -107,7 +107,6 @@ def main(start,
                                    cache_frame_data = False)
         writer = MovieWriter(fps = fps)
         anim.save(f'{mname}_{field}.{codec}', writer = writer)
-        mmaker.nc.close()
         mmaker.bar.finish()
 
 # Animation
@@ -121,19 +120,15 @@ def get_animator():
     if 'ffmpeg' in avail:
         FuncAnimation = manimation.writers['ffmpeg']
         codec      = 'mp4'
-       
     elif 'imagemagick' in avail:
         FuncAnimation = manimation.writers['imagemagick']
         codec      = 'gif'
-
     elif 'pillow' in avail:
         FuncAnimation = manimation.writers['pillow']
         codec      = 'gif'        
-
     elif 'html' in avail:
         FuncAnimation = manimation.writers['html']
         codec      = 'html'
-
     else:
         raise ValueError('None of the standard animators are available')
     
@@ -170,48 +165,26 @@ class FilledAnimation(RomsDownloader):
         Let the writer know which frames to make
         '''
         # Write input to class
-        # ----
-        self.index = index
-        self.files = List
-        self.ROMS  = ROMS
-        self.xlim  = xlim
-        self.ylim  = ylim
-        self.FVCOM = FVCOM
-
-        # Prepare georeference
-        # ----
+        self.files, self.index = List, index
+        self.xlim, self.ylim = xlim, ylim
+        self.ROMS, self.FVCOM = ROMS, FVCOM
+        self.N4 = ROMS # hack for now, just used when finding a cropped version of the model domain
         self.gp = geoplot(xlim, ylim)
 
         # Prepare grid info
-        # ----
-        self.old_path  = 'start up'
         self.transform = ccrs.RotatedPole(pole_longitude = 177.5, pole_latitude = 37.5)
 
     def animate(self, i):
         '''
         Write frames using contourf
         '''
-        # Update path and index to be read from the data source
-        # ----
-        self.index_here = self.index[i]
-        self.path_here = self.files[i]
-
         plt.clf()
         self.bar.update(i)
-        self.read_timestep(variables=[self.var])
-
-        # Load the data to be plotted
-        # ----
-        self.index_here = self.index[i]
-        if self.var == 'zeta':
-            data = self.zeta
-        else:
-            data = getattr(self, self.var)[-1,:]
+        timestep = self.read_timestep(self.index[i], self.files[i], variables=[self.var], sigma = -1)
 
         # Plot the raw ROMS field
-        # ----
         plt.imshow(self.gp.img, extent = self.gp.extent)
-        cont = plt.contourf(self.ROMS.cropped_x_rho_grid, self.ROMS.cropped_y_rho_grid, data, 
+        cont = plt.contourf(self.ROMS.cropped_x_rho_grid, self.ROMS.cropped_y_rho_grid, getattr(timestep, self.var), 
                             cmap = self.cmap, levels = self.colorticks, extend = 'both')
         if self.FVCOM is not None:
             plt.plot(*self.FVCOM.model_boundary.xy, c='r')
@@ -221,9 +194,8 @@ class FilledAnimation(RomsDownloader):
         plt.colorbar(cont, label = self.label)
 
         # Title to get timestamp of this frame
-        # ----
-        plt.title(netCDF4.num2date(self.nc['ocean_time'][self.index_here], units = self.nc['ocean_time'].units).strftime('%m/%d, %H:%M:%S'))
-        
+        with Dataset(self.files[i]) as nc:
+            plt.title(netCDF4.num2date(nc['ocean_time'][self.index[i]], units = nc['ocean_time'].units).strftime('%m/%d, %H:%M:%S'))
         return cont
 
     def get_cmap(self, var, cb):

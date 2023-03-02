@@ -21,27 +21,13 @@ def get_nbe(M):
     """
     print('- Identify boundary nodes and cells...')
     print('  - build triangulation')
-    tri               = Triangulation(M.x, M.y, triangles = M.tri)
+    tri      = Triangulation(M.x, M.y, triangles = M.tri)
     print('  - find neighbors')
-    near_tri          = tri.neighbors
+    near_tri = tri.neighbors
 
     # Find triangles at the boundary
     print('  - find triangles near the model boundary')
     boundary_tri      = [i for i, tri in enumerate(near_tri) if -1 in tri]
-
-    if len(np.unique(boundary_tri)) < len(boundary_tri):
-        n_neighbor    = [len(np.where(tri == -1)[0]) for i, tri in enumerate(near_tri)]
-        bad_tris      = np.where(n_neighbor > 1)[0]
-        if len(bad_tris) < 2:
-            raise ValueError('Sorry, the boundary cells ' + str(bad_tris) + \
-                             ' are bad for the model\n' +\
-                             'they have more than one edge facing the boundary')
-        elif len(bad_tris) == 1:
-            raise ValueError('Sorry, the boundary cell ' + str(bad_tris) + \
-                             ' is bad for the model\n' +\
-                             'it has more than one edge facing the boundary')
-        else:
-            raise RuntimeError('Unexpected error')
 
     print('  - isolate the nodes and cells in the domain from those near the boundary')
     btri_neighbors    = near_tri[boundary_tri, :]
@@ -58,10 +44,8 @@ def get_nbe(M):
     # ----
     print('  - seperate land boundaries from the obc')
     boundary_nodes_id = np.ones(len(boundary_nodes))
-    for nobc in range(len(M.read_obc_nodes[0,:])):
-        for node in M.read_obc_nodes[0,nobc][0]:
-            on_obc = np.where(boundary_nodes == node)[0]
-            boundary_nodes_id[on_obc] = 2
+    for nodestring in M.nodestrings:
+            boundary_nodes_id[nodestring] = 2
 
     boundary_elements_id = np.ones(len(boundary_elements))
     obc_nodes = boundary_nodes[np.where(boundary_nodes_id == 2)[0]]
