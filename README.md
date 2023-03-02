@@ -102,7 +102,7 @@ import fvtools.nesting.roms_nesting_fg as rn
 rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='NS')
 ```
 
-MET Norway can _not_ guarantee to publish continuous data. The main problem here is to keep the tides continuous, which we do using `fvtools.nesting.fill_nesting.gaps`. The harmonic analysis software, `utide`, is very slow. We use it to do a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell`. This obciously requires some time, so we distribute the job over many CPUs to speed things up, e.g.
+MET Norway can _not_ guarantee to publish continuous data. The main problem here is to keep the tides continuous, which we do using `fvtools.nesting.fill_nesting.gaps`. We use utide to do a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell`, ran in parallel on slurm using a bash script:
 ```
 ## Example use:
 ## file: run_gap_filler.py
@@ -146,7 +146,7 @@ Support for other models can be done by adding a ROMS reader to `fvtools.grid.ro
 ```python
 import fvtools.pre_pro.BuildRivers as br
 # ROMS nested experiment (ROMS nested):
-br.main('2018-01-01-00', '2018-02-01-00', vassdrag, temp=None)
+br.main('2018-01-01-00', '2018-02-01-00', vassdrag, temp='compile')
 
 # FVCOM-nested experiment:
 br.main('2018-01-01-00', '2018-02-01-00', vassdrag, temp='fvcom_mother_temperatures.npy')
@@ -157,7 +157,6 @@ This routine requires list of chosen catchment areas ids (vassdrag), the ids are
 Temperatures for big models are stored on the Stokes and Betzy
   - Stokes: `/data/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
   - Betzy:  `/cluster/shared/NS9067K/apn_backup/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
-
 
 ### Atmospheric forcing
 We use the MetCoOp-AROME model for atmospheric forcing.
@@ -170,11 +169,21 @@ These are all the input files you need to run a FVCOM experiment (except for `Ju
 
 ### Initial conditions
 Start FVCOM in a coldstart mode using the input files to create a `casename_restart_0001.nc` file. We thereafter interpolate data to it using `interpol_restart` (for fvcom2fvcom experiments) or `interpol_roms_restart` (for roms2fvcom experiments):
+
 #### interpol_restart
-Interpolates inital fields from a FVCOM mother to you restartfile. The best practice is to interpolate from a `filelist` referencing to FVCOM restart files (set `-s PO10_restart` when you generate a [filelist](https://source.coderefinery.org/apn/fvtools/-/blob/hes/README.md#a-filelist-linking-to-fvcom-results)), but it is also acceptable to use normal output files - but then with `speed = False`. 
+Interpolates inital fields from a FVCOM mother to a restart file.
+- using an existing `restartfile.nc`
+- make a restartfile for a `startdate`
+
+The best practice is to interpolate from a `filelist` referencing to FVCOM restart files (set `-s PO10_restart` when you generate a [filelist](https://source.coderefinery.org/apn/fvtools/-/blob/hes/README.md#a-filelist-linking-to-fvcom-results)).
+
 ```python
 import fvtools.pre_pro.interpol_restart as ir 
+# With an existing file
 ir.main(childfn="casename_restart_0001.nc", filelist="filelist_restart.txt", vinterp=True, speed=True)
+
+# For a specified time
+ir.main(startdate="2023-01-31-00", filelist="filelist_restart.txt", vinterp=True, speed=True)
 
 # or alternatively avoiding the filelist
 ir.main(childfn="casename_restart_0001.nc", result_folder="./mother_folder/output01/", name = "mother_restart", vinterp=True, speed=True)
@@ -224,7 +233,7 @@ qc.main(filelist='filelist.txt', var=['salinity', 'temp'], z=10)
 
 # transect movie
 # --> either with a transect.txt input file with lon lat as colums
-qc.main(fname='output01/casename.nc', var=['salinity', 'temp'], section='transect.txt')
+qc.main(fname='output01/casename.nc', var=['salinity', 'temp', 'tracer_01'], section='transect.txt')
 
 # --> or as graphical input
 qc.main(folder='output01', var=['salinity', 'temp'], section=True)
@@ -266,15 +275,14 @@ You can georeference the mesh using geoplot
 ```python
 from fvtools.plot.geoplot import geoplot
 import matplotlib.pyplot as plt
-gp = geoplot(M.x, M.y)
-plt.imshow(gp.img, extent=gp.extent)
+M.georeference()
 M.plot_grid()
 ```
 
 ### Plot results
 Data stored on nodes can be plotted on visible node-based control volumes, for example:
 ```python
-plt.imshow(gp, extent=gp.extent)
+M.georeference()
 M.plot_cvs(M.h)
 
 ```
@@ -301,5 +309,6 @@ from netCDF4 import Dataset
 data = Dataset('casename_0001.nc')
 salt = data['salinity'][0,:]
 salt_50m = M.interpolate_to_z(salt, 50)
+M.georeference()
 M.plot_contour(salt_50m)
 ```
