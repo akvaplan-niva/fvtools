@@ -64,7 +64,8 @@ bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 ```
 `Mesh quality`: BuildCase prepares the grid before a simulation. It checks if there are invalid triangles (triangles with more than one side facing the boundary), and will remove such triangles if present.
 
-`Bathymetry`: BuildCase smooths the bathymetry to a  [rx0](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwil_uzfvL39AhWPnYsKHZREAtAQFnoECAUQAQ&url=http%3A%2F%2Fmathieudutour.altervista.org%2FPresentations%2FSteepnessPresExt.pdf&usg=AOvVaw1bBZEBsmkvWmSeCkxlrE3y) factor less than `rx0max`. It finds the sponge nodes and sets a sponge factor.
+`Bathymetry`: BuildCase smooths the bathymetry to a  [rx0](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwil_uzfvL39AhWPnYsKHZREAtAQFnoECAUQAQ&url=http%3A%2F%2Fmathieudutour.altervista.org%2FPresentations%2FSteepnessPresExt.pdf&usg=AOvVaw1bBZEBsmkvWmSeCkxlrE3y) factor less than `rx0max`. 
+`Boundary setup`: It finds the `OBC`nodes, the `sponge nodes` and sets a `sponge factor`if asked to (defaults to 0).
 
 BuildCase returns `casename_*.dat` FVCOM input files to the `input` folder, and a file called `M.npy` to be used as input to the rest of the setup routines.
 
