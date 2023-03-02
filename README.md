@@ -62,9 +62,9 @@ You have a `casename.2dm` file (either from smeshing or from SMS), and you want 
 import fvtools.pre_pro.BuildCase as bc
 bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 ```
-BuildCase prepares the grid before a simulation. It does a quick quality control of the mesh to check if there are invalid triangles (triangles with more than one side facing the boundary), and will remove such triangles if present.
+`Mesh quality`: BuildCase prepares the grid before a simulation. It checks if there are invalid triangles (triangles with more than one side facing the boundary), and will remove such triangles if present.
 
-It also smooths the bathymetry to a rx0 factor less than rx0max. It finds the sponge nodes and sets a sponge factor.
+`Bathymetry`: BuildCase smooths the bathymetry to a  [rx0](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwil_uzfvL39AhWPnYsKHZREAtAQFnoECAUQAQ&url=http%3A%2F%2Fmathieudutour.altervista.org%2FPresentations%2FSteepnessPresExt.pdf&usg=AOvVaw1bBZEBsmkvWmSeCkxlrE3y) factor less than `rx0max`. It finds the sponge nodes and sets a sponge factor.
 
 BuildCase returns `casename_*.dat` FVCOM input files to the `input` folder, and a file called `M.npy` to be used as input to the rest of the setup routines.
 
@@ -77,34 +77,32 @@ fvtools support two nesting types:
 import fvtools.nesting.get_ngrd as gn
 
 # ROMS-FVCOM nesting:
-# You need to define the width of the nesting zone (R measured in meters). This is typically approximately 4.5 times the mesh resolution at the OBC.
-gn.main('M.npy', R=5000)
+# R is the nestingzone width (R measured in meters). This is typically approximately 4.5 times the mesh resolution at the OBC.
+gn.main('M.npy', R=4.5*800)
 
 # FVCOM-FVCOM nesting:
-# The nest nest grid is computed automatically, give the new grid and a path leading to the mother model (used as OBC conditions)
 gn.main('M.npy', mother='mother_fvcom.nc')
 
+# These routines will create a ngrd.npy file in your working directory
 ```
-These routines return a nest-grid file called `ngrd.npy` that you feed to the nesting zone interpolator.
 
 ### Nesting (OBC forcing)
-Interpolating ocean state to the FVCOM nesting zone
+Interpolating ocean state to the FVCOM nesting zone.
 
-FVCOM to FVCOM nesting requires a [filelist](https://source.coderefinery.org/apn/fvtools/-/blob/hes/README.md#a-filelist-linking-to-fvcom-results) for the mother grid and must be executed from the linux terminal.
+`FVCOM to FVCOM nesting` requires a [filelist](https://source.coderefinery.org/apn/fvtools/-/blob/hes/README.md#a-filelist-linking-to-fvcom-results) for the mother grid and must be executed from the linux terminal.
 ```bash
 python fvcom2fvcom_nesting.py -n ngrd.npy -f fileList.txt -o ./input/my_experiment_nest.nc -s 2018-01-01-00 -e 2018-02-01-00
 
 ```
 
-ROMS-FVCOM nesting will automatically find the forcing it need at thredds.met.no:
+`ROMS-FVCOM nesting` will automatically find the forcing it need at thredds.met.no:
 ```python
 import fvtools.nesting.roms_nesting_fg as rn
 rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='NS')
 ```
 
-MET Norway can _not_ guarantee to publish continuous data. The main problem here is to keep the tides continuous, which we do using `fvtools.nesting.fill_nesting.gaps`. We use utide to do a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell`, ran in parallel on slurm using a bash script:
+MET Norway does _not_ guarantee data continuous in time. We need to keep the tides continuous, for that we use `fvtools.nesting.fill_nesting.gaps`. It performs a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell` to fill gaps. Temperature and salinity are linearly interpolated. The script runs the tidal analysis in parallel, see these scripts:
 ```
-## Example use:
 ## file: run_gap_filler.py
 
  import sys
@@ -120,16 +118,13 @@ MET Norway can _not_ guarantee to publish continuous data. The main problem here
 #SBATCH --job-name=fillgaps
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=128
-##SBATCH --qos=devel
 #SBATCH --time=02-00:00:00
 #SBATCH --mail-type=ALL
-##SBATCH --mem-per-cpu=1G
 
 module load IPython/7.18.1-GCCcore-10.2.0
 module load GEOS/3.9.1-GCC-10.2.0
 
 source /cluster/work/users/hes001/pyipy/bin/activate
-
 python run_gap_filler.py
 
 ```
@@ -143,20 +138,20 @@ Currently supports
 Support for other models can be done by adding a ROMS reader to `fvtools.grid.roms_grd`.
 
 ### River runoff
+River runoff is given for geographical catchment areas ids (vassdrag), the ids are available mapped at https://atlas.nve.no/.
+- river temperatures are read from NVE text-files. For a new "FVCOM-mother" grid, you will need to compile a new rivertemp.npy file.
+
+Temperature files used to force the FVCOM-mother models are stored on the Stokes and Betzy, use these when nesting in a smaller model.
+  - Stokes: `/data/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
+  - Betzy:  `/cluster/shared/NS9067K/apn_backup/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
+
 ```python
 import fvtools.pre_pro.BuildRivers as br
-# ROMS nested experiment (ROMS nested):
 br.main('2018-01-01-00', '2018-02-01-00', vassdrag, temp='compile')
-
-# FVCOM-nested experiment:
 br.main('2018-01-01-00', '2018-02-01-00', vassdrag, temp='fvcom_mother_temperatures.npy')
 
 ```
-This routine requires list of chosen catchment areas ids (vassdrag), the ids are available mapped at https://atlas.nve.no/. The routine writes a file called `RiverNamelist.nml` and `riverdata.nc`. Put these in the `input` folder.
-
-Temperatures for big models are stored on the Stokes and Betzy
-  - Stokes: `/data/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
-  - Betzy:  `/cluster/shared/NS9067K/apn_backup/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
+The routine writes a file called `RiverNamelist.nml` and `riverdata.nc` to your working directory. Put these in the `input` folder.
 
 ### Atmospheric forcing
 We use the MetCoOp-AROME model for atmospheric forcing.
@@ -165,27 +160,20 @@ import fvtools.atm.read_metCoop as rm
 rm.main("M.npy", "./input/casename_atm.nc", "2018-01-01-00", "2018-02-01-00")
 ```
 
-These are all the input files you need to run a FVCOM experiment (except for `JulianTidesElev`, which may or may not be required for FVCOM-ROMS nesting).
-
 ### Initial conditions
-Start FVCOM in a coldstart mode using the input files to create a `casename_restart_0001.nc` file. We thereafter interpolate data to it using `interpol_restart` (for fvcom2fvcom experiments) or `interpol_roms_restart` (for roms2fvcom experiments):
+We interpolate data to restart files using `interpol_restart` (for fvcom2fvcom experiments) or `interpol_roms_restart` (for roms2fvcom experiments):
 
 #### interpol_restart
 Interpolates inital fields from a FVCOM mother to a restart file.
 - using an existing `restartfile.nc`
 - make a restartfile for a `startdate`
 
-The best practice is to interpolate from a `filelist` referencing to FVCOM restart files (set `-s PO10_restart` when you generate a [filelist](https://source.coderefinery.org/apn/fvtools/-/blob/hes/README.md#a-filelist-linking-to-fvcom-results)).
-
 ```python
-import fvtools.pre_pro.interpol_restart as ir 
-# With an existing file
+import fvtools.pre_pro.interpol_restart as ir
 ir.main(childfn="casename_restart_0001.nc", filelist="filelist_restart.txt", vinterp=True, speed=True)
-
-# For a specified time
 ir.main(startdate="2023-01-31-00", filelist="filelist_restart.txt", vinterp=True, speed=True)
 
-# or alternatively avoiding the filelist
+# If you don't have a filelist
 ir.main(childfn="casename_restart_0001.nc", result_folder="./mother_folder/output01/", name = "mother_restart", vinterp=True, speed=True)
 ```
 
@@ -216,8 +204,6 @@ python fvcom_make_filelist.py -d folders.txt -s PO10 -f fileList.txt
 ### Take a quick look at the results
 `qc_gif` and `qc_gif_uv` creates animations of scalar or velocity fields between `[start, stop]` (or the entire timespan if not specified).
 
-These scripts were developed to be used during a simulation to make it easier to look for bad model results.
-
 They are helpful to look for dynamically active regions so that you can avoid putting a nesting zone there. (that is: we want to put the nesting zone in areas where the flow fluctuates on timescales >> 1h to avoid aliasing and false shocks)
 
 #### qc_gif
@@ -231,8 +217,7 @@ qc.main(folder='output01', var=['salinity', 'temp'], sigma=0)
 # z-level movie
 qc.main(filelist='filelist.txt', var=['salinity', 'temp'], z=10)
 
-# transect movie
-# --> either with a transect.txt input file with lon lat as colums
+# transect movie (either with a transect.txt input file with lon lat as colums)
 qc.main(fname='output01/casename.nc', var=['salinity', 'temp', 'tracer_01'], section='transect.txt')
 
 # --> or as graphical input
@@ -240,20 +225,16 @@ qc.main(folder='output01', var=['salinity', 'temp'], section=True)
 ```
 
 #### qc_gif_uv
-As the name suggests, this creates quick georeferenced gifs of velocity fields. It accepts filelist and folder, as well as sigma and z.
+Creates quick georeferenced gifs of velocity fields. It accepts `filelist` and `folder`, as well as `sigma` and `z`.
 ```python
 import fvtools.plot.qc_gif_uv as qc
-
-# sigma level movie
 qc.main(folder='output01', sigma=0)
-
-# z level movie
 qc.main(folder='output01', z=10)
 
 ```
-
 ## The mesh object - FVCOM_grid
-The mesh object is the main interface for a quick look at an FVCOM grid. It reads a variety of input formats (`casename_xxxx.nc`, `casename_restart_xxxx.nc`, `M.npy`, `M.mat`, `casename.2dm` or `smeshing.txt`) and provide simple functions to look at a mesh, look at results from an experiment and return other useful forms of the mesh (i.e. .2dm file).
+The mesh object is the main interface for a quick look at an FVCOM grid. It reads a variety of input formats (`casename_xxxx.nc`, `casename_restart_xxxx.nc`, `M.npy`, `M.mat`, `casename.2dm` or `smeshing.txt`).
+Provides simple functions to look at a mesh and results. Methods to export the mesh, write `*.dat` input files etc.
 
 Example use:
 ```python
@@ -271,7 +252,7 @@ M.write_2dm()
 
 ```
 
-You can georeference the mesh using geoplot
+You can georeference data
 ```python
 from fvtools.plot.geoplot import geoplot
 import matplotlib.pyplot as plt
