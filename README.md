@@ -61,7 +61,7 @@ DL = 0.5
 
 ### Preparing the mesh
 #### The full mesh
-You have a `casename.2dm` file (either from smeshing or from SMS), and you want to set up a model. The first step is to create the FVCOM grid input files using `BuildCase`:
+You have a `casename.2dm` file (either from smeshing or from SMS), create the FVCOM grid input files using `BuildCase`:
 ```python
 import fvtools.pre_pro.BuildCase as bc
 bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
@@ -71,7 +71,7 @@ bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 `Bathymetry`: BuildCase smooths the bathymetry to a  [rx0](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwil_uzfvL39AhWPnYsKHZREAtAQFnoECAUQAQ&url=http%3A%2F%2Fmathieudutour.altervista.org%2FPresentations%2FSteepnessPresExt.pdf&usg=AOvVaw1bBZEBsmkvWmSeCkxlrE3y) factor less than `rx0max`. 
 `Boundary setup`: It finds the `OBC`nodes, the `sponge nodes` and sets a `sponge factor`if asked to (defaults to 0).
 
-BuildCase returns `casename_*.dat` FVCOM input files to the `input` folder, and a file called `M.npy` to be used as input to the rest of the setup routines.
+BuildCase returns `casename_*.dat` FVCOM input files to the `input` folder, and a file called `M.npy` used by other setup routines.
 
 #### The mesh in the nesting zone
 fvtools support two nesting types:
@@ -94,9 +94,14 @@ gn.main('M.npy', mother='mother_fvcom.nc')
 ### Nesting (OBC forcing)
 Interpolating ocean state to the FVCOM nesting zone.
 
-`FVCOM to FVCOM nesting` requires a [filelist](https://source.coderefinery.org/apn/fvtools/-/blob/hes/README.md#a-filelist-linking-to-fvcom-results) for the mother grid and must be executed from the linux terminal.
-```bash
-python fvcom2fvcom_nesting.py -n ngrd.npy -f fileList.txt -o ./input/my_experiment_nest.nc -s 2018-01-01-00 -e 2018-02-01-00
+`FVCOM to FVCOM nesting` requires a [filelist](https://source.coderefinery.org/apn/fvtools/-/blob/hes/README.md#a-filelist-linking-to-fvcom-results).
+```python
+import fvtools.nesting.fvcom2fvcom_nesting as f2f
+f2f.main(ngrd = 'ngrd.npy', 
+         fileList = 'fileList.txt', 
+         output_file = '/input/my_experiment_nest.nc', 
+         start_time = '2018-01-01-00', 
+         stop_time = '2018-02-01-00')
 
 ```
 
@@ -134,13 +139,13 @@ python run_gap_filler.py
 
 ```
 
-`Currently supports`
+`ROMS2FVCOM currently supports these ROMS models/setups`
 - Met office NorKyst `MET-NK`
 - IMR NorKyst `HI-NK`
 - Hourly NorShelf `H-NS`
-- Daily NorShelf `D-NS`
+- Daily averaged NorShelf `D-NS`
 
-Support for other models can be done by adding a ROMS reader to `fvtools.grid.roms_grd`.
+Other ROMS experiments can be supported by adding a ROMS reader to `fvtools.grid.roms_grd`.
 
 ### River runoff
 River runoff is given for geographical catchment areas ids (vassdrag), the ids are available mapped at https://atlas.nve.no/.
