@@ -10,7 +10,7 @@
 # hes@akvaplan.niva.no
 import sys
 import numpy as np
-
+import fvtools.grid.fvgrid as fvg
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from scipy.spatial import cKDTree as KDTree
 from operator import add
@@ -20,14 +20,15 @@ def main(meshname, res, rows):
     Build a nestzone-grid suitable for roms-fvcom nesting
     '''
     print(f'Read: {meshname}')
-    t, n, x, y, z, types, nstr = fvg.read_sms_mesh(meshname, nodestrings = True)
-
+    t, _, x, y, _, _, nstr = fvg.read_sms_mesh(meshname, nodestrings = True)
+    M = FVCOM_grid(meshname)
+    
     print('\nMake the OBC mesh')
     p,tri = obcgridding(x, y, t, nstr, res, rows)
-    new_name = meshname.split('.')[0]+'_with_nest.2dm'
+    new_name = meshname.split('.')[0]+'_with_nest'
 
     print(f'\nThe new mesh file is called: {new_name}')
-    fvg.write_2dm(new_name, p, tri, name = new_name, casename = 'obcgridding')
+    fvg.write_2dm(p[:,0], p[:,1], tri, name = new_name, casename = 'obcgridding')
 
     print('Fin.')
     

@@ -1,83 +1,56 @@
 import numpy as np
-from netCDF4 import Dataset
+from numba import njit
 
-
-def add_vertical_interpolation2N4(N4, coords = ['rho', 'u', 'v']):
-    '''Adds matrices for vertical interpolation to N4 object.'''    
+def add_vertical_interpolation2N4(N4, coords = ['rho', 'u', 'v'], widget_tile = ''):
+    '''
+    Adds matrices for vertical interpolation to N4 object.
+    - This is in fact a bit tedious, would be better to just give the fields, not getattr them within the routine
+    '''    
     for c in coords:
-        z_roms = getattr(N4.ROMS, 'z_' + c)                   # z at all points in ROMS grid
-        z_roms = z_roms[getattr(N4.ROMS, 'fv_' + c + '_mask'), :]      # z cropped
-        z_roms = np.sum(z_roms[getattr(N4, c + '_index'), :] 
-                        * getattr(N4, c + '_coef')[:, :, None],
-                        axis=1)                                   # z interpolated to fvcom-points
+        print(f'  - Finding vertical {c} weights:')
+        z_roms = getattr(N4.ROMS, f'z_{c}')                  # z at all points in ROMS grid
+        z_roms = z_roms[getattr(N4.ROMS, f'fv_{c}_mask'), :] # z cropped
 
-        z_roms = np.flip(z_roms, axis=1) 
-        
+        # z interpolated to fvcom-points
+        z_roms = np.sum(z_roms[getattr(N4, f'{c}_index'), :] * getattr(N4, f'{c}_coef')[:, :, None], axis=1)
+        z_roms = np.flip(z_roms, axis=1)
+
+        # Find FVCOM depth
         if c == 'rho':
-            try:
-                z_fvcom = getattr(N4.NEST, 'siglay') * N4.fvcom_rho_dpt[:, None]
-            except:
-                z_fvcom = getattr(N4.NEST, 'siglay') * N4.fvcom_rho_dpt[:]
+            z_fvcom = getattr(N4.FV, 'siglay') * N4.fvcom_rho_dpt[:, None]
         else:
-            z_fvcom = getattr(N4.NEST, 'siglay_center')  \
-                    * (0.5*N4.fvcom_u_dpt[:, None] + 0.5*N4.fvcom_v_dpt[:, None])
+            z_fvcom = getattr(N4.FV, 'siglay_center') * (0.5*N4.fvcom_u_dpt[:, None] + 0.5*N4.fvcom_v_dpt[:, None])
          
-
-        ind1, ind2, weigths1, weigths2 = calc_interp_matrices(-z_roms.T, -z_fvcom.T)
-
+        z_roms, z_fvcom = prepare_z_dimensions(z_roms.T, z_fvcom.T)
+        ind1, ind2, weigths1, weigths2 = calc_interp_matrices(-z_roms, -z_fvcom)
         
-        setattr(N4, 'vi_ind1_' + c, ind1) 
-        setattr(N4, 'vi_ind2_' + c, ind2)
-        setattr(N4, 'vi_weigths1_' + c, weigths1) 
-        setattr(N4, 'vi_weigths2_' + c, weigths2) 
-    
+        setattr(N4, f'vi_ind1_{c}', ind1) 
+        setattr(N4, f'vi_ind2_{c}', ind2)
+        setattr(N4, f'vi_weigths1_{c}', weigths1) 
+        setattr(N4, f'vi_weigths2_{c}', weigths2)     
     return N4
 
-# For data from nearest neighbor interpolation
-def add_vertical_interpolation2N1(N1, coords = ['u','v','rho']):
+def prepare_z_dimensions(z_roms, z_fvcom):
     '''
-    Adds matrices for vertical interpolation to the N1 object.
+    So that it does not need to be done within the numba compiled routine
     '''
-    for c in coords:
-        z_roms  = getattr(N1.ROMS, 'z_' + c)              # z at all points in ROMS grid
-        z_roms  = z_roms[getattr(N1, 'fv_' + c + '_mask'), :] # z cropped
-        z_roms  = z_roms[getattr(N1, 'Land_'+c)==0]
-        z_roms  = z_roms[getattr(N1, c + '_index'), :]      # z at the points nearest the FVCOM points
-    
-        z_roms  = np.flip(z_roms, axis=1) 
-        if c == 'rho':
-            try:
-                z_fvcom = getattr(N1.NEST, 'siglay').T * N1.fvcom_rho_dpt[:, None]
-            except:
-                z_fvcom = getattr(N1.NEST, 'siglay').T * N1.fvcom_rho_dpt[:]
-
-        else:
-            try:
-                z_fvcom = getattr(N1.NEST, 'siglay_c').T  \
-                          * (0.5*N1.fvcom_u_dpt[:, None] + 0.5*N1.fvcom_v_dpt[:, None])
-            except:
-                z_fvcom = getattr(N1.NEST, 'siglay_c').T  \
-                          * (0.5*N1.fvcom_u_dpt[:] + 0.5*N1.fvcom_v_dpt[:])
-
-        ind1, ind2, weigths1, weigths2 = calc_interp_matrices(-z_roms.T, -z_fvcom)
-        
-        setattr(N1, 'vi_ind1_' + c, ind1)
-        setattr(N1, 'vi_ind2_' + c, ind2)
-        setattr(N1, 'vi_weigths1_' + c, weigths1)
-        setattr(N1, 'vi_weigths2_' + c, weigths2)
-    
-    return N1
-
+    if len(z_roms.shape) == 1:
+        z_roms = z_roms[:, None]
+    if len(z_fvcom.shape) == 1:
+        z_fvcom = z_fvcom[:, None]
+    return z_roms, z_fvcom
+@njit
 def calc_interp_matrices(z1, z2):
-    '''Calculate matrices for linear interpolation.
+    '''
+    Calculate matrices for linear interpolation.
     
     Parameters
     ----------
-    x: array (m x n) 
+    z1: array (m x n) 
        The x-coordinate of the data points.
 
-    xi: array (k x n) 
-        The coordinates at which to evaluate the interpolated values. 
+    z2: array (k x n) 
+       The coordinates at which to evaluate the interpolated values. 
 
     Returns
     -------
@@ -95,7 +68,6 @@ def calc_interp_matrices(z1, z2):
     For values in xi outside the range of x, the highest/lowest values 
     in x are used. No extrapolation is carried out.  
 
-
     Example
     --------
     x = np.arange(0, 2*np.pi, 0.5)
@@ -106,95 +78,78 @@ def calc_interp_matrices(z1, z2):
     ind1, ind2, weigths1, weigths2 = calc_interp_indices(x, new_x)
     new_y = y[ind1]*weigths1 + y[ind2]*weigths2 
     '''
-   
-    if len(z2.shape) == 1:
-        z2 = z2[:, None]
-    if len(z1.shape) == 1:
-        z1 = z1[:, None]
+    indices1 = np.zeros(z2.shape, dtype = np.int64)
+    indices2 = np.zeros(z2.shape, dtype = np.int64)
+    weigths1 = np.zeros(z2.shape, dtype = np.float64)
+    weigths2 = np.zeros(z2.shape, dtype = np.float64)
 
-    indices1 = np.zeros(z2.shape)
-    indices2 = np.zeros(z2.shape)
-    weigths1 = np.zeros(z2.shape)
-    weigths2 = np.zeros(z2.shape)
-  
     for n in range(0, z2.shape[-1]):
-
+        # look at the depth in this FVCOM grid point
         z1_n = z1[:, n]
         z2_n = z2[:, n] 
         
-        absdiff = np.abs((z2_n[:, None] - z1_n[None, :]))
-
-        ind1 = np.argmin(absdiff, axis=1)
-        ind2 = np.zeros(len(ind1))        
-        w1 = np.zeros(len(ind1))
-        w2 = np.zeros(len(ind2))
-        
-        # If the shallowest depth in z2_n is shallower than the shallowest depth in z1_n,
-        # use the shallowest z2_n value. 
-        shallow_ind = z2_n <= z1_n[0]
-        w1[shallow_ind] = 1
-        
-        # If the deepest depth in z2_n is deeper than the deepest depth in z1_n,
-        # use the deepest z2_n value. 
-        deep_ind = z2_n >= z1_n[-1]
-        w1[deep_ind] = 1
-        
-        # If a value in z2_n is equal to a value in z1_n, no interpolation is necessary,
-        # and z1_n value is used
-        zero_ind =  z2_n-z1_n[ind1] == 0
-        w1[zero_ind] = 1
-        
-        
-        # Handle values in between
-        between_ind = (~shallow_ind) & (~deep_ind) & (~zero_ind)
-        smaller_ind = (z1_n[ind1] > z2_n) & between_ind
-        ind2[smaller_ind] = ind1[smaller_ind] - 1
-        ind2 = ind2.astype('int')
-        
-        larger_ind = (z1_n[ind1] < z2_n) & between_ind
-        ind2[larger_ind] = ind1[larger_ind] + 1
-        
-        dz1 = z1_n[ind1[smaller_ind]] - z1_n[ind2[smaller_ind]]
-        dz2 = z1_n[ind2[larger_ind]] - z1_n[ind1[larger_ind]]
-        
-        w2[smaller_ind] = (z1_n[ind1[smaller_ind]] - z2_n[smaller_ind]) / dz1
-        w2[larger_ind] = (z2_n[larger_ind] - z1_n[ind1[larger_ind]]) / dz2
-        
-        w1[smaller_ind] = (z2_n[smaller_ind] - z1_n[ind2[smaller_ind]]) / dz1
-        w1[larger_ind] = (z1_n[ind2[larger_ind]] - z2_n[larger_ind]) / dz2
-
+        # Difference between each sigma layer
+        absdiff = numba_absdiff(z2_n, z1_n)
+        ind1    = np.argmin(absdiff, axis=1)
+        ind1, ind2, w1, w2 = find_inds_and_weights(ind1, z1_n, z2_n)
 
         indices1[:, n] = ind1
         indices2[:, n] = ind2
         weigths1[:, n] = w1
         weigths2[:, n] = w2
 
-    indices1 = indices1.astype('int')
-    indices2 = indices2.astype('int')
+    return indices1, indices2, weigths1, weigths2
 
-    return indices1, indices2, weigths1, weigths2 
+@njit
+def numba_absdiff(z2_n, z1_n):
+    '''
+    Find the absolute difference between mother- and child mother depth levels at each fvcom points.
+    Significantly faster than the broadcasting operation z2_n[:,None]-z1_n[None,:]
+    '''
+    out = np.zeros((z2_n.shape[0], z1_n.shape[0]))
+    for i, first_depth in enumerate(z2_n):
+        for j, second_depth in enumerate(z1_n):
+            out[i, j] = np.abs(first_depth - second_depth)
+    return out
 
+@njit
+def find_inds_and_weights(ind1, z1_n, z2_n):
+    '''
+    Find the nearest sigma layer(s) and find interpolation weights
+    '''
+    ind2 = np.zeros(len(ind1), dtype = np.int64)        
+    w1 = np.zeros(len(ind1))
+    w2 = np.zeros(len(ind2))
 
-def calc_uv_bar(ncfile, ngrd, M):
-    '''Calculate vertical average of velocity (ubar, vbar) and write to ncfile.'''
-    h_uv = np.squeeze(M.h_uv[ngrd.cid])
-    siglevz = ngrd.siglev_center * h_uv[:, None] 
-    dz = np.abs(np.diff(siglevz, axis=1))
-
-    nc = Dataset(ncfile, 'r+')
-    ubar = nc.variables['ua']
-    vbar = nc.variables['va']
-
-    number_of_timesteps = ubar.shape[0]
-
-    for n in range(0, number_of_timesteps):
-        u = nc.variables['u'][n, :, :].T
-        ubar[n, :] = np.sum(u*dz, axis=1) / h_uv
-
-        v = nc.variables['v'][n, :, :].T
-        vbar[n, :] = np.sum(v*dz, axis=1) / h_uv
-
-    nc.close()
-
- 
-
+    # If the shallowest depth in z2_n is shallower than the shallowest depth in z1_n,
+    # use the shallowest z2_n value. 
+    shallow_ind = z2_n <= z1_n[0]
+    w1[shallow_ind] = 1
+    
+    # If the deepest depth in z2_n is deeper than the deepest depth in z1_n,
+    # use the deepest z2_n value. 
+    deep_ind = z2_n >= z1_n[-1]
+    w1[deep_ind] = 1
+    
+    # If a value in z2_n is equal to a value in z1_n, no interpolation is necessary,
+    # and z1_n value is used
+    zero_ind = z2_n-z1_n[ind1] == 0
+    w1[zero_ind] = 1
+    
+    # Handle values in between
+    between_ind = (~shallow_ind) & (~deep_ind) & (~zero_ind)
+    smaller_ind = (z1_n[ind1] > z2_n) & between_ind
+    ind2[smaller_ind] = ind1[smaller_ind] - 1
+    
+    larger_ind = (z1_n[ind1] < z2_n) & between_ind
+    ind2[larger_ind] = ind1[larger_ind] + 1
+    
+    dz1 = z1_n[ind1[smaller_ind]] - z1_n[ind2[smaller_ind]]
+    dz2 = z1_n[ind2[larger_ind]] - z1_n[ind1[larger_ind]]
+    
+    w2[smaller_ind] = (z1_n[ind1[smaller_ind]] - z2_n[smaller_ind]) / dz1
+    w2[larger_ind] = (z2_n[larger_ind] - z1_n[ind1[larger_ind]]) / dz2
+    
+    w1[smaller_ind] = (z2_n[smaller_ind] - z1_n[ind2[smaller_ind]]) / dz1
+    w1[larger_ind] = (z1_n[ind2[larger_ind]] - z2_n[larger_ind]) / dz2
+    return ind1, ind2, w1, w2

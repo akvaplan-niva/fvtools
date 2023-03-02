@@ -99,7 +99,39 @@ python fvcom2fvcom_nesting.py -n ngrd.npy -f fileList.txt -o ./input/my_experime
 ROMS-FVCOM nesting will automatically find the forcing it need at thredds.met.no:
 ```python
 import fvtools.nesting.roms_nesting_fg as rn
-rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='MET-NK')
+rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='NS')
+```
+
+MET Norway can _not_ guarantee to publish continuous data. The main problem here is to keep the tides continuous, which we do using `fvtools.nesting.fill_nesting.gaps`. The harmonic analysis software, `utide`, is very slow. We use it to do a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell`. This obciously requires some time, so we distribute the job over many CPUs to speed things up, e.g.
+```
+## Example use:
+## file: run_gap_filler.py
+
+ import sys
+ sys.path.append('/cluster/home/hes001/fvtools')
+ import fvtools.nesting.fill_nesting_gaps as fg
+ fg.main('PO10_v2_nest_feb.nc', nprocs = None)
+
+## file: run_python.sh (on Betzy using 4 nodes, normal partition)
+
+#!/bin/bash
+#
+#SBATCH --account=nn9238k
+#SBATCH --job-name=fillgaps
+#SBATCH --nodes=4
+#SBATCH --ntasks-per-node=128
+##SBATCH --qos=devel
+#SBATCH --time=02-00:00:00
+#SBATCH --mail-type=ALL
+##SBATCH --mem-per-cpu=1G
+
+module load IPython/7.18.1-GCCcore-10.2.0
+module load GEOS/3.9.1-GCC-10.2.0
+
+source /cluster/work/users/hes001/pyipy/bin/activate
+
+python run_gap_filler.py
+
 ```
 
 Currently supports

@@ -13,7 +13,6 @@ from fvtools.plot.geoplot import geoplot
 from netCDF4 import Dataset, date2num
 from datetime import datetime
 
-
 # ---------------------------------------------------------------------------------------
 #             Interpolate velocity data to depths of interest, create
 #             a movie showing velocity maxima/minima and streamlines
@@ -29,6 +28,7 @@ def main(filelist = None,
          vlev   = None,
          hres   = None,
          mname  = None,
+         verbose = False,
          fps    = 12):
     '''
     Interpolate velocity data to depths of interest, create
@@ -47,6 +47,7 @@ def main(filelist = None,
     - start:      start limit
     - stop:       stop limit
     - fps:        framerate
+    - verbose:    the routine will tell you where it is
     '''
     # To remove one input:
     if sigma is None and z is None:
@@ -55,19 +56,18 @@ def main(filelist = None,
         avg = False
     
     # Initialize the filelist
-    #fl          = Filelist(filelist, start_time = start, stop_time = stop)
     fl  = parse_input(folder, filelist, start, stop)
 
     # Establish a grid object
-    M   = FVCOM_grid(fl.path[0], verbose = False)
+    M   = FVCOM_grid(fl.path[0], verbose = verbose)
 
     # Check if we can use a cropped version of the grid
     if xlim is not None and ylim is not None:
-        M.subgrid(xlim, ylim, full = True)
+        M.subgrid(xlim, ylim)
 
     # Establish the streamline maker
-    stream         = streamlines(M, color = 'w')
-    stream.verbose = False
+    stream         = streamlines(M, color = 'w', verbose = verbose)
+    stream.verbose = verbose
         
     # Inititalize movie maker
     UV          = UVmov(M, fl, stream, xlim, ylim, hres, avg, vlev)
@@ -91,9 +91,9 @@ def main(filelist = None,
 
     # Choose a savaname, save the animation, close progressbar and return.
     if mname is None:
-        savename = 'velocities.'+codec
+        savename = f'velocities.{codec}'
     else:
-        savename = mname + '.' + codec
+        savename = f'{mname}.{codec}'
     anim.save(savename, writer = writer)
     UV.progress.bar.finish()
 
@@ -121,10 +121,10 @@ def get_animator():
     else:
         raise ValueError('None of the standard animators are available')
     
-    print(f'- Chose {codec} for this movie.')
+    print(f'- This movie will be written as a {codec} file')
     return FuncAnimation, codec
     
-class progress():
+class progress:
     '''
     Add a progressbar to the loop
     '''
@@ -132,8 +132,7 @@ class progress():
         '''
         pre-define number of frames etc.
         '''
-        self.widget = ['- streamline movie: ', pb.Percentage(), pb.Bar()]
-        self.bar    = pb.ProgressBar(widgets = self.widget, maxval = frames)
+        self.bar = pb.ProgressBar(widgets = ['- streamline movie: ', pb.Percentage(), pb.Bar(), pb.ETA()], maxval = frames)
         self.bar.start()
 
 class UVmov():
@@ -150,9 +149,6 @@ class UVmov():
         self.xlim = xlim; self.ylim = ylim
         self.avg  = avg
         self.vlev = vlev
-
-        # Prepare triangles for cells
-        self.M.ctri = self.M.cell_tri()
 
         # Prepare streamlines
         self.stream.initialize_positions(xlim, ylim, hres)
@@ -227,7 +223,7 @@ class UVmov():
             self.old_path   = self.fl.path[i]
 
     def load_data(self, i):
-        if self.M.cropped_object:
+        if any(self.M.cropped_cells):
             if self.avg:
                 self.ufv = self.d['ua'][self.fl.index[i], self.M.cropped_cells]
                 self.vfv = self.d['va'][self.fl.index[i], self.M.cropped_cells]
@@ -258,6 +254,7 @@ class UVmov():
                     raise ValueError('Neither avg, sig or z is defined - what happened???')
                     
         # Compute speed
+        # ----
         self.sp_fv = np.sqrt(self.ufv**2+self.vfv**2)
         if self.vlev is None:
             self.vlev = np.linspace(0, np.nanmax(self.sp_fv), 20)
@@ -271,7 +268,7 @@ def parse_input(folder, filelist, start, stop):
             files = allFiles(folder)
 
         else:
-            raise ValueError('You must provide the routine one of: folder or filelist')
+            raise ValueError('You must provide either lead me to a folder or a filelist')
 
         # Prepare time (string to fvcom time)
         # ----
@@ -286,7 +283,7 @@ def parse_input(folder, filelist, start, stop):
 
         # Print time
         # ----
-        print(f'Start: {start}')
+        print(f'\nStart: {start}')
         print(f'End:   {stop}\n')
         
     else:
@@ -300,7 +297,7 @@ def parse_input(folder, filelist, start, stop):
 
         # Print time
         # ----
-        print(f'Start: {start}')
+        print(f'\nStart: {start}')
         print(f'End:   {stop}')
 
     # Mimic the filelist structure
@@ -394,30 +391,6 @@ def allFiles(folder):
 
 def elements(array):
     return array.ndim and array.size
-
-def crop_M(M, xlim, ylim):
-    '''
-    Crop M to a smaller grid
-    '''
-    M.subgrid(xlim, ylim)
-    # We for sure need these:
-    M.x = M.cropped_x
-    M.y = M.cropped_y
-    M.xc = M.xc[M.cropped_cells]
-    M.yc = M.yc[M.cropped_cells]
-    M.tri = M.cropped_nv
-    M.h = M.h[M.cropped_nodes]
-    M.h_uv = M.h_uv[M.cropped_cells]
-
-    # These may be needed
-    try:
-        M.siglev_center = M.siglev_center[M.cropped_cells,:]
-        M.siglev = M.siglev[M.cropped_nodes,:]
-        M.siglay_center = M.siglay_center[M.cropped_cells,:]
-        M.siglay = M.siglay[M.cropped_nodes,:]
-    except:
-        print(f'The sigma layer parameters could not be cropped for some reason, continuing...')
-    return M
 
 class mini_filelist():
     pass

@@ -12,6 +12,7 @@ from netCDF4 import Dataset
 from time import gmtime, strftime
 from fvtools.plot.geoplot import geoplot
 from fvtools.grid.fvcom_grd import FVCOM_grid
+from fvtools.grid.tools import num2date
 
 def main(M, 
          start_year, start_month, start_day, NumDays,
@@ -41,44 +42,38 @@ def main(M,
     '''
     # See if we support the requested file
     # ----
-    if verbose: print(f'Julian time elevation forcing for {M.casename}:\n----')
+    print(f'Julian time elevation forcing for {M.casename}:\n----')
     if model_dir == '/data/Tides_hes/TPXO9_atlas/':
         source = 'TPXO9-atlas-v4'
-        if verbose: print(f'- Reading data from TPXO9-atlas-v5 located at: {model_dir}')
     else:
-        raise InputError(f'This routine is not prepared to work with {model_dir}')
+        source = os.listdir(model_dir)[0].replace('_', '-')
 
+    print(f'- Reading data from TPXO9-atlas-v5 located at: {model_dir}')
     if netcdf_name is None:
         netcdf_name = f'{M.casename}_jul_el_obc.nc'
         
     # Get time
-    # ---
-    if verbose: print('- Create time arrays')
+    print('- Create time arrays')
     fvcom_time, tide_time = get_tide_time(NumDays, min_int, start_year, start_month, start_day)
+    datetimes = num2date(fvcom_time)
+    print(f'  - Starting: {datetimes[0]}, stopping {datetimes[-1]}')
 
     # Initialize the TMD reader
-    # ----
-    if verbose: print('- Preparing pyTMD to read results from OTIS formatted tidal model')
-    model = pyTMD.model(directory = model_dir, format = 'OTIS')
+    print('- Preparing pyTMD to read results from OTIS formatted tidal model')
+    model = pyTMD.io.model(directory = model_dir, format = 'OTIS')
     model.elevation(m = source)
 
     # Read model and dump data to FVCOM forcing file
-    # ----
-    if verbose: print('\nCompute tidally driven sea surface elevation at obc')
+    print('\nCompute tidally driven sea surface elevation at obc')
     amp, c = get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose)
 
     # Visualize amplitudes
-    # ----
     visualize_amplitudes(M, amp, c, verbose = verbose)
 
 def create_nc_forcing_file(name, M):
     '''
     Creates empty nc file formatted to fit FVCOM open boundary ocean forcing
     '''
-    obc = []
-    for i in range(len(M.obcnodes)):
-        obc.extend(M.obcnodes[i])
-
     nc = Dataset(name, 'w', format = 'NETCDF4')
 
     # Write global attributes
@@ -93,7 +88,7 @@ def create_nc_forcing_file(name, M):
     # Create dimensions
     # ----
     nc.createDimension('time', 0)
-    nc.createDimension('nobc', len(obc))
+    nc.createDimension('nobc', len(M.obc_nodes))
     nc.createDimension('DateStrLen', 26)
 
     # Create variables and variable attributes
@@ -122,17 +117,14 @@ def create_nc_forcing_file(name, M):
 
     # Dump a reference to the OBC nodes (in fortran notation) before continuing
     # ----
-    nc.variables['obc_nodes'][:] = np.array(obc) + 1
+    nc.variables['obc_nodes'][:] = M.obc_nodes + 1
     nc.close()
 
 def handle_obc(M):
     '''
     Load obc, return all obcs as one continuous array
     '''
-    M.get_obc()
-
-    # Loop over all obcs to get all lat/lons, concatenate them to a cohesive list
-    # ----
+    # Loop over all obcs to get all lat/lons, concatenate them to a list (doesn't need to be done like this btw)
     lat = []; lon = []
     for i in range(M.lon_obc.shape[0]):
         lon.extend(M.lon_obc[i])
@@ -149,30 +141,28 @@ def get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose):
     # Interpolate data from tide model to FVCOM
     # ----
     #  - Get position of FVCOM obc nodes
-    if verbose: print('- Reading obc')
+    print('- Reading obc')
     lat, lon = handle_obc(M)
 
     # - Write netcdf file
-    if verbose: print(f'- Writing {netcdf_name} forcing file')
+    print(f'- Writing {netcdf_name} forcing file')
     create_nc_forcing_file(netcdf_name, M)
 
     # - Read and interpolate tide model (everything from here to the Dataset command is copied from this pyTMD example page:
     #   https://github.com/tsutterley/pyTMD/blob/main/notebooks/Plot%20Tide%20Forecasts.ipynb
-    if verbose: print('- Extracting tidal constants')
-    amp, ph, D, c = pyTMD.extract_tidal_constants(np.atleast_1d(lon), np.atleast_1d(lat), 
-                                                  model.grid_file, model.model_file, model.projection,
-                                                  TYPE = model.type, METHOD = 'spline', EXTRAPOLATE = True, GRID = model.format)
+    print('- Read harmonic constants')
+    amp, ph, D, c = pyTMD.io.OTIS.extract_constants(np.atleast_1d(lon), np.atleast_1d(lat), 
+                                                    model.grid_file, model.model_file, model.projection,
+                                                    TYPE = model.type, METHOD = 'spline', EXTRAPOLATE = True, GRID = model.format)
 
     # - Report back which constituents we use
-    print(f'- Including {len(c)} constituents: {c}')
+    print(f'- Using {len(c)} constituents: {c}')
 
     # Phase and amplitudes as complex numbers at reference time
-    # ----
     cph = -1j*ph*np.pi/180.0 
     hc  = amp*np.exp(cph)
 
     # Dump time to netCDF tile
-    # ----
     Itime, Itime2  = get_Itime(fvcom_time)
 
     d = Dataset(netcdf_name, mode = 'r+')
@@ -182,17 +172,14 @@ def get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose):
 
     # Compute tidal range
     # ----
-    print(f'- Computing tidally driven elevation at each obc node')
-    widget = ['  - Progress: ', pb.Percentage(), ' ', pb.Bar()]
+    widget = ['  - Computing tidally driven elevation at each obc node: ', pb.Percentage(), ' ', pb.Bar(), pb.ETA()]
     bar = pb.ProgressBar(widgets=widget, maxval=hc.shape[0])
     bar.start()
-    bar_count = 1
     for node in range(hc.shape[0]):
-        bar.update(bar_count)
-        major     = pyTMD.predict_tidal_ts(tide_time, hc[node,:][None, :], c, CORRECTIONS=model.format)
-        minor     = pyTMD.infer_minor_corrections(tide_time, hc[node,:][None, :], c, CORRECTIONS=model.format)
+        bar.update(node)
+        major = pyTMD.predict.time_series(tide_time, hc[node,:][None, :], c, corrections=model.format)
+        minor = pyTMD.predict.infer_minor(tide_time, hc[node,:][None, :], c, corrections=model.format)
         d['elevation'][:, node] = major + minor
-        bar_count += 1
     bar.finish()
     
     # Done, tag with date and time and close file
@@ -233,21 +220,14 @@ def visualize_amplitudes(M, amp, c, wewant = ['m2','s2', 'n2', 'k1'], verbose = 
     if verbose: print('\nQC: Visualizing amplitudes of some tidal components')
 
     # Find extent
-    xlim = [np.min(M.x), np.max(M.x)]
-    ylim = [np.min(M.y), np.max(M.y)]
-    dx   = np.diff(xlim)
-    dy   = np.diff(ylim)
+    xlim, ylim = [np.min(M.x), np.max(M.x)], [np.min(M.y), np.max(M.y)]
+    dx, dy = np.diff(xlim), np.diff(ylim)
 
     # Define positions
-    x = []; y = []
-    for i in range(len(M.obcnodes)):
-        x.extend(M.x_obc[i])
-        y.extend(M.y_obc[i])
+    x, y = M.x[M.obc_nodes], M.y[M.obc_nodes]
 
     # Number of nodes
-    non  = 0
-    for i in range(len(M.obcnodes)):
-        non += len(M.obcnodes[i])
+    non  = len(M.obc_nodes)
 
     # Bigger scope to fit the georeference
     xlim = [xlim[0]-0.15*dx, xlim[1]+0.15*dx] 
@@ -282,81 +262,78 @@ def ModifyForcing(ncfile, gridfile):
     bad data and replace them with a nearby acceptable datapoint
     '''
     # Open forcing file in read+write mode
-    d = Dataset(ncfile, 'r+')
-    obcnodes = d['obc_nodes'][:]-1
-    
-    # Load grid
-    M = FVCOM_grid(gridfile)
-    x = M.x[obcnodes]
-    y = M.y[obcnodes]
+    with Dataset(ncfile, 'r+') as d:
+        obcnodes = d['obc_nodes'][:]-1
+        
+        # Load grid
+        M = FVCOM_grid(gridfile)
+        x = M.x[obcnodes]
+        y = M.y[obcnodes]
 
-    # Create georeference
-    # Find extent
-    xlim = [np.min(x), np.max(x)]
-    ylim = [np.min(y), np.max(y)]
-    dx   = np.diff(xlim)
-    dy   = np.diff(ylim)
+        # Create georeference
+        # Find extent
+        xlim = [np.min(x), np.max(x)]
+        ylim = [np.min(y), np.max(y)]
+        dx   = np.diff(xlim)
+        dy   = np.diff(ylim)
 
-    # Bigger scope to fit the georeference
-    xlim = [xlim[0]-0.15*dx, xlim[1]+0.15*dx] 
-    ylim = [ylim[0]-0.15*dy, ylim[1]+0.15*dy] 
+        # Bigger scope to fit the georeference
+        xlim = [xlim[0]-0.15*dx, xlim[1]+0.15*dx] 
+        ylim = [ylim[0]-0.15*dy, ylim[1]+0.15*dy] 
 
-    # Get georeference
-    gp   = geoplot(xlim, ylim)
+        # Get georeference
+        gp   = geoplot(xlim, ylim)
 
-    # Load sea surface elevation amplitude
-    amplitudes = d['elevation'][:].max(axis=0)
-    
-    # Find and tag nodes to overwrite
-    plt.figure()
-    plt.imshow(gp.img, extent = gp.extent) 
-    cpl = plt.scatter(x, y, c = amplitudes, cmap = cmo.cm.matter)
-    plt.colorbar(cpl, label = 'm')
-    plt.xlim([np.min(M.x)-0.05*dx, np.max(M.x)+0.05*dx])
-    plt.ylim([np.min(M.y)-0.05*dy, np.max(M.y)+0.05*dy])
-    plt.title('Amplitude at each obc node, click at those you want to overwrite')
-    plt.xticks([])
-    plt.yticks([])
-    plt.show(block = False)
-    
-    pout = np.array(plt.ginput(n = -1, timeout = -1))
-    plt.scatter(pout[:,0], pout[:,1], marker = '+', c = 'r')
-    plt.title('Click at the node you want to get replacement-data from')
-    pin  = np.array(plt.ginput(n = -1, timeout = -1))
-    plt.scatter(pin[0,0], pin[0,1], c = 'g')
-    plt.title('Close the figure when you are done')
-    plt.show()
+        # Load sea surface elevation amplitude
+        amplitudes = d['elevation'][:].max(axis=0)
+        
+        # Find and tag nodes to overwrite
+        plt.figure()
+        plt.imshow(gp.img, extent = gp.extent) 
+        cpl = plt.scatter(x, y, c = amplitudes, cmap = cmo.cm.matter)
+        plt.colorbar(cpl, label = 'm')
+        plt.xlim([np.min(M.x)-0.05*dx, np.max(M.x)+0.05*dx])
+        plt.ylim([np.min(M.y)-0.05*dy, np.max(M.y)+0.05*dy])
+        plt.title('Amplitude at each obc node, click at those you want to overwrite')
+        plt.xticks([])
+        plt.yticks([])
+        plt.show(block = False)
+        
+        pout = np.array(plt.ginput(n = -1, timeout = -1))
+        plt.scatter(pout[:,0], pout[:,1], marker = '+', c = 'r')
+        plt.title('Click at the node you want to get replacement-data from')
+        pin  = np.array(plt.ginput(n = -1, timeout = -1))
 
-    # Figure out the indexing
-    outind = []
-    for p in pout:
-        dst = np.sqrt((x-p[0])**2+(y-p[1])**2)
-        outind.append(np.where(dst == dst.min())[0][0])
-    outind = np.array(outind)
-    dst = np.sqrt((x-pin[0][0])**2 + (y-pin[0][1])**2)
-    inind = np.where(dst == dst.min())[0][0]
+        # Figure out the indexing
+        outind = M.find_nearest(pout[:,0], pout[:,1])
+        inind = M.find_nearest(pin[0,0], pin[0,1])
 
-    # Overwrite the actual file
-    print('Overwriting the chosen nodes')
-    timeseries = np.copy(d['elevation'][:, inind])[:,None]
-    d['elevation'][:,outind] = timeseries
-    
-    # Copy the field from in-node
-    print('Plot the new field')
-    amplitudes = d['elevation'][:].max(axis=0)
-    
-    # Check if its better now?
-    plt.figure()
-    plt.imshow(gp.img, extent = gp.extent) 
-    cpl = plt.scatter(x, y, c = amplitudes, cmap = cmo.cm.matter)
-    plt.colorbar(cpl, label = 'm')
-    plt.xlim([np.min(M.x)-0.05*dx, np.max(M.x)+0.05*dx])
-    plt.ylim([np.min(M.y)-0.05*dy, np.max(M.y)+0.05*dy])
-    plt.title('Amplitude at each obc node after overwriting.')
-    plt.xticks([])
-    plt.yticks([])
-    plt.show(block = False)
+        # Illustrate before moving on
+        plt.scatter(x[inind], y[inind], 40, c = 'g')
+        plt.scatter(x[outind], y[outind], 40, c='r')
+        plt.title('Replacing data in red crosses with data from the green dot')
+        plt.draw()
+        plt.pause(0.1)
 
-    d.close()
+        # Overwrite the actual file
+        print('Overwriting the chosen nodes')
+        timeseries = np.copy(d['elevation'][:, inind])[:]
+        d['elevation'][:, outind] = np.tile(timeseries[:,None], (1, len(outind)))
+        
+        # Copy the field from in-node
+        print('Plot the new field')
+        amplitudes = d['elevation'][:].max(axis=0)
+        
+        # Check if its better now?
+        plt.figure()
+        plt.imshow(gp.img, extent = gp.extent) 
+        cpl = plt.scatter(x, y, c = amplitudes, cmap = cmo.cm.matter)
+        plt.colorbar(cpl, label = 'm')
+        plt.xlim([np.min(M.x)-0.05*dx, np.max(M.x)+0.05*dx])
+        plt.ylim([np.min(M.y)-0.05*dy, np.max(M.y)+0.05*dy])
+        plt.title('Amplitude at each obc node after overwriting.')
+        plt.xticks([])
+        plt.yticks([])
+        plt.show(block = False)
 
 class InputError(Exception): pass

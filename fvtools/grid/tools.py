@@ -51,8 +51,12 @@ class Filelist():
 
 
         #self.datetime = netCDF4.num2date(self.time, units = self.time_units)
-        self.datetime = num2date(time = self.time, year = self.time_units[0], month = self.time_units[1], 
-                                 day = self.time_units[2], time_type = self.time_type)
+        self.datetime = num2date(time = self.time, 
+                                 year = self.time_units[0], 
+                                 month = self.time_units[1], 
+                                 day = self.time_units[2], 
+                                 time_type = self.time_type
+                                 )
         self.crop_list(start_time, stop_time)
 
 
@@ -60,13 +64,12 @@ class Filelist():
         '''Remove values oustide specified time range.'''
         
         if start_time is not None:
-
             year = int(start_time.split('-')[0])
             month = int(start_time.split('-')[1])
             day = int(start_time.split('-')[2])
             hour = int(start_time.split('-')[3])
             
-            t1 = datetime.datetime(year, month, day, hour)
+            t1 = datetime.datetime(year, month, day, hour, tzinfo = datetime.timezone.utc)
             ind = np.where(self.datetime >= t1)[0]
             self.time = self.time[ind]
             self.datetime = self.datetime[ind]
@@ -74,12 +77,11 @@ class Filelist():
             self.index = [self.index[i] for i in list(ind)]
 
         if stop_time is not None:
-
             year = int(stop_time.split('-')[0])
             month = int(stop_time.split('-')[1])
             day = int(stop_time.split('-')[2])
             hour = int(stop_time.split('-')[3])
-            t1 = datetime.datetime(year, month, day, hour)
+            t1 = datetime.datetime(year, month, day, hour, tzinfo = datetime.timezone.utc)
             
             ind = np.where(self.datetime <= t1)[0]
             self.time = self.time[ind]
@@ -87,29 +89,20 @@ class Filelist():
             self.path =  [self.path[i] for i in list(ind)]
             self.index = [self.index[i] for i in list(ind)]
 
-
-
     def find_nearest(self, yyyy, mm, dd, HH=0):
         '''Find index of nearest fileList entry to given point in time.'''
         
-        t = datetime.datetime(yyyy, mm, dd, HH)
-        fvcom_time = netCDF4.date2num(t, units
-                =self.time_units)
+        t = datetime.datetime(yyyy, mm, dd, HH, tzinfo = datetime.timezone.utc)
+        fvcom_time = netCDF4.date2num(t, units = self.time_units)
         dt = np.abs(self.time - fvcom_time)
-        ind = np.argmin(dt)
-
-        return ind
+        return np.argmin(dt)
 
     def write2file(self, name):
         '''Write to file.'''
-
-        fid = open(name, 'w')
-        for t, p, i in zip(self.time, self.path, self.index):
-            line = str(t) + '\t' + p + '\t' + str(i) + '\n'
-            fid.write(line)
-
-        fid.close()
-
+        with open(name, 'w') as fid:
+            for t, p, i in zip(self.time, self.path, self.index):
+                line = f'{t}\t{p}\t{i}\n'
+                fid.write(line)
 
     def unique_files(self):
         '''Find unique files (paths) in fileList.'''
@@ -143,7 +136,7 @@ def num2date(time = None, Itime = None, Itime2 = None, year = 1858, month = 11, 
     '''
     # Assuming julian day:
     # ----
-    reference_time = datetime.datetime(year,month,day,0,0,0)
+    reference_time = datetime.datetime(year, month, day, 0, 0, 0, tzinfo = datetime.timezone.utc)
 
     # Time type:
     # ----
@@ -188,12 +181,12 @@ def num2date(time = None, Itime = None, Itime2 = None, year = 1858, month = 11, 
 
     return out
 
-def date2num(date, reference_time = datetime.datetime(1858,11,17)):
+def date2num(date, reference_time = datetime.datetime(1858, 11, 17, tzinfo = datetime.timezone.utc)):
     '''
     returns time as decimal number of days since reference
+    - reference_time is the FVCOM datum (1858-11-17)
     '''
     return np.array([(d-reference_time).total_seconds()/86400 for d in date])
-
 
 def load(name):
     '''Load object stored as p-file.'''

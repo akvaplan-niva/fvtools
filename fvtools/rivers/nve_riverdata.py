@@ -27,10 +27,11 @@ Improves upon existing scripts in the following way:
 - Reports on missing data, both total days without data and info about resolved days
 - Compiles a seasonal runoff-pattern to fill gaps in hydrological data rather than using last available value.
 
-Fuure work:
+Future work:
 ----
 - Fill gaps in-between recordings using a weight function instead of season average? Using time-series forecasting (skforecasting)?
 - Distribute runoff to rivers in this routine, rather that in BuildRivers (better way to conserve freshwater to the domain)?
+- NVE suggests using https://hydapi.nve.no/ instead
 '''
 
 
@@ -72,7 +73,7 @@ def main(days = 8000,
 
    # Show gaps in the downloaded data
    # ----
-   show_data_availabliity(Downloader.dateobj, Downloader.data, title = 'River runoff availability as downloaded')
+   show_data_availablity(Downloader.dateobj, Downloader.data, title = 'River runoff availability as downloaded')
 
    # Remove obvious spikes, fill gaps with season-averages
    # ----
@@ -80,7 +81,7 @@ def main(days = 8000,
 
    # Fill gaps, show potential gaps in the treated data
    # ----
-   show_data_availabliity(Downloader.dateobj, Filled.data, title = 'Processed river runoff availabliy to be stored')
+   show_data_availablity(Downloader.dateobj, Filled.data, title = 'Processed river runoff availabliy to be stored')
 
    # Store to riverdata.dat file
    # ----
@@ -89,6 +90,9 @@ def main(days = 8000,
    # Fin.
 
 class KystSerieReader:
+   '''
+   Reads kystserie file
+   '''
    def __init__(self, csvfile):
       '''
       Load the stations that will be used to 
@@ -222,8 +226,7 @@ class RunoffDownloader:
    def _insert_runoff_to_corresponding_times_in_data_matrix(self, xml, segment_nr):
       if len(xml.datenum)>0:
          corresponding_times, ind_self, ind_xml = np.intersect1d(self.datenum, np.array(xml.datenum), return_indices = True)
-         if len(ind_xml) != len(xml.runoff):
-            raise ValueError(f'Unexpected error, not all data could be dumped to riverdata')
+         assert (len(ind_xml) == len(xml.runoff)), f'Unexpected error, not all data could be dumped to riverdata'
 
          if len(self.weight[segment_nr]) == 1:
             self.data[ind_self, self.KystSerie.vassdrags_here[segment_nr]+2] = xml.runoff*self.weight[segment_nr]
@@ -241,7 +244,7 @@ class RunoffDownloader:
          Archive: 2  has sort of good data
          Archive: 18 has raw data
       '''
-      return f'http://h-web01.nve.no/ChartServer/ShowData.aspx?req=getchart&ver=1.0&time=-{self.days};0&vfmt=xml&chd=ds=htsr,rt=1,da={archive},id=700.{from_vassdrag}.{to_vassdrag}.1001.0'
+      return f'http://h-web01.nve.no/ChartServer/ShowData.aspx?req=getchart&ver=1.0&time=-{self.days-1};0&vfmt=xml&chd=ds=htsr,rt=1,da={archive},id=700.{from_vassdrag}.{to_vassdrag}.1001.0'
 
 class XMLreader:
    '''
@@ -337,7 +340,7 @@ class DataCheckerAndFiller:
 
       return data
 
-def show_data_availabliity(datetime, data, title = ' '):
+def show_data_availablity(datetime, data, title = ' '):
    '''
    plot to show data availability during period
    '''
