@@ -18,7 +18,7 @@ We always:
 
 We most of the time:
 - Work in Norway, where input data are most easilly accessible in `UTM33W` coordinates
-- Nest into existing FVCOM experiments using files stored on `Betzy` or on `Stokes`
+- Nest into existing `FVCOM` experiments using files stored on `Betzy` or on `Stokes`
 
 We sometimes:
 - Nest into larger domain ROMS models operated by the met office
@@ -70,8 +70,8 @@ BuildCase returns `casename_*.dat` FVCOM input files to the `input` folder, and 
 
 #### The mesh in the nesting zone
 fvtools support two nesting types:
-- From ROMS (either NorKyst or NorShelf)
-- From FVCOM (from any FVCOM model that overlaps with this mesh)
+- From `ROMS` (either `NorKyst` or `NorShelf`)
+- From `FVCOM` (from any `FVCOM` model that overlaps with this mesh)
 
 ```python
 import fvtools.nesting.get_ngrd as gn
@@ -129,7 +129,7 @@ python run_gap_filler.py
 
 ```
 
-Currently supports
+`Currently supports`
 - Met office NorKyst `MET-NK`
 - IMR NorKyst `HI-NK`
 - Hourly NorShelf `H-NS`
@@ -161,8 +161,6 @@ rm.main("M.npy", "./input/casename_atm.nc", "2018-01-01-00", "2018-02-01-00")
 ```
 
 ### Initial conditions
-We interpolate data to restart files using `interpol_restart` (for fvcom2fvcom experiments) or `interpol_roms_restart` (for roms2fvcom experiments):
-
 #### interpol_restart
 Interpolates inital fields from a FVCOM mother to a restart file.
 - using an existing `restartfile.nc`
@@ -210,17 +208,11 @@ They are helpful to look for dynamically active regions so that you can avoid pu
 Plots any field stored on nodes, either as a sigma-layer movie, a z-level movie or a transect movie. It accepts a filename, a folder or a filelist as input.
 ```python
 import fvtools.plot.qc_gif as qc
-
-# sigma level movie
 qc.main(folder='output01', var=['salinity', 'temp'], sigma=0)
-
-# z-level movie
 qc.main(filelist='filelist.txt', var=['salinity', 'temp'], z=10)
 
-# transect movie (either with a transect.txt input file with lon lat as colums)
+# transect movie (from file by setting setting=file.txt, or graphically by setting section = True)
 qc.main(fname='output01/casename.nc', var=['salinity', 'temp', 'tracer_01'], section='transect.txt')
-
-# --> or as graphical input
 qc.main(folder='output01', var=['salinity', 'temp'], section=True)
 ```
 
@@ -233,10 +225,17 @@ qc.main(folder='output01', z=10)
 
 ```
 ## The mesh object - FVCOM_grid
-The mesh object is the main interface for a quick look at an FVCOM grid. It reads a variety of input formats (`casename_xxxx.nc`, `casename_restart_xxxx.nc`, `M.npy`, `M.mat`, `casename.2dm` or `smeshing.txt`).
+The mesh object is the main interface for a quick look at an FVCOM grid. It reads a variety of input formats:
+- `casename_xxxx.nc`
+- `casename_restart_xxxx.nc`
+- `M.npy`
+- `M.mat`
+- `casename.2dm`
+- `smeshing.txt`
+
 Provides simple functions to look at a mesh and results. Methods to export the mesh, write `*.dat` input files etc.
 
-Example use:
+`Example use:`
 ```python
 from fvtools.grid.fvcom_grd import FVCOM_grid
 M = FVCOM_grid("casename_0001.nc")
@@ -254,14 +253,12 @@ M.write_2dm()
 
 You can georeference data
 ```python
-from fvtools.plot.geoplot import geoplot
-import matplotlib.pyplot as plt
 M.georeference()
 M.plot_grid()
 ```
 
 ### Plot results
-Data stored on nodes can be plotted on visible node-based control volumes, for example:
+Data stored on nodes can be plotted on node-based control volumes patches, for example:
 ```python
 M.georeference()
 M.plot_cvs(M.h)
@@ -269,7 +266,6 @@ M.plot_cvs(M.h)
 ```
 alternatively plot on triangle patches (much faster the first time):
 ```python
-plt.imshow(gp, extent=gp.extent)
 M.plot_field(M.h)
 
 ```
