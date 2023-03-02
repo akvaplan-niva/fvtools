@@ -69,9 +69,10 @@ bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 `Mesh quality`: BuildCase prepares the grid before a simulation. It checks if there are invalid triangles (triangles with more than one side facing the boundary), and will remove such triangles if present.
 
 `Bathymetry`: BuildCase smooths the bathymetry to a  [rx0](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwil_uzfvL39AhWPnYsKHZREAtAQFnoECAUQAQ&url=http%3A%2F%2Fmathieudutour.altervista.org%2FPresentations%2FSteepnessPresExt.pdf&usg=AOvVaw1bBZEBsmkvWmSeCkxlrE3y) factor less than `rx0max`. 
+
 `Boundary setup`: It finds the `OBC`nodes, the `sponge nodes` and sets a `sponge factor`if asked to (defaults to 0).
 
-BuildCase returns `casename_*.dat` FVCOM input files to the `input` folder, and a file called `M.npy` used by other setup routines.
+`BuildCase` returns `casename_*.dat` FVCOM input files to the `input` folder, and a file called `M.npy` used by other setup routines.
 
 #### The mesh in the nesting zone
 fvtools support two nesting types:
@@ -148,8 +149,9 @@ python run_gap_filler.py
 Other ROMS experiments can be supported by adding a ROMS reader to `fvtools.grid.roms_grd`.
 
 ### River runoff
-River runoff is given for geographical catchment areas ids (vassdrag), the ids are available mapped at https://atlas.nve.no/.
-- river temperatures are read from NVE text-files. For a new "FVCOM-mother" grid, you will need to compile a new rivertemp.npy file.
+River runoff is given for geographical catchment areas ids (vassdrag), the ids are mapped at [nve atlas](https://atlas.nve.no/)
+- river temperatures are read from NVE text-files. 
+- a new "FVCOM-mother" grid requires you to compile a new rivertemp.npy file.
 
 Temperature files used to force the FVCOM-mother models are stored on the Stokes and Betzy, use these when nesting in a smaller model.
   - Stokes: `/data/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
