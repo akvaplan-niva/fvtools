@@ -156,6 +156,8 @@ Interpolates inital fields from a FVCOM mother to a restart file.
 import fvtools.pre_pro.interpol_restart as ir
 ir.main(childfn="casename_restart_0001.nc", 
         filelist="filelist_restart.txt")
+
+# alternatively if you need to make a restart file
 ir.main(startdate="2023-01-31-00", 
         filelist="filelist_restart.txt")
 
@@ -169,8 +171,7 @@ ir.main(childfn="casename_restart_0001.nc",
 Interpolated initial fields from a ROMS model to your restartfile, but be warned: the model may crash if you set `uv=True`.
 ```python
 import fvtools.pre_pro.interpol_roms_restart as ir 
-ir.main("casename_restart_0001.nc", "NS", 
-        uv=True, avg=True)
+ir.main("casename_restart_0001.nc", "NS", uv=True)
 ```
 
 ## After an experiment
