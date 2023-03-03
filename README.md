@@ -60,7 +60,7 @@ DL = 0.5
 ```
 
 ### Preparing the mesh
-#### The full mesh
+#### Writing .dat grid files
 You have a `casename.2dm` file (either from smeshing or from SMS), create the FVCOM grid input files using `BuildCase`:
 ```python
 import fvtools.pre_pro.BuildCase as bc
