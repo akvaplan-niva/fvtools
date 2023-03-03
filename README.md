@@ -112,33 +112,7 @@ import fvtools.nesting.roms_nesting_fg as rn
 rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='NS')
 ```
 
-MET Norway does _not_ guarantee data continuous in time. We need to keep the tides continuous, for that we use `fvtools.nesting.fill_nesting.gaps`. It performs a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell` to fill gaps. Temperature and salinity are linearly interpolated. The script runs the tidal analysis in parallel, see these scripts:
-```
-## file: run_gap_filler.py
-
- import sys
- sys.path.append('/cluster/home/hes001/fvtools')
- import fvtools.nesting.fill_nesting_gaps as fg
- fg.main('PO10_v2_nest_feb.nc', nprocs = None)
-
-## file: run_python.sh (on Betzy using 4 nodes, normal partition)
-
-#!/bin/bash
-#
-#SBATCH --account=nn9238k
-#SBATCH --job-name=fillgaps
-#SBATCH --nodes=4
-#SBATCH --ntasks-per-node=128
-#SBATCH --time=02-00:00:00
-#SBATCH --mail-type=ALL
-
-module load IPython/7.18.1-GCCcore-10.2.0
-module load GEOS/3.9.1-GCC-10.2.0
-
-source /cluster/work/users/hes001/pyipy/bin/activate
-python run_gap_filler.py
-
-```
+MET Norway does _not_ guarantee data continuous in time. We need to keep the tides continuous, for that we use `fvtools.nesting.fill_nesting.gaps`. It performs a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell` to fill gaps. Temperature and salinity are linearly interpolated. See examples/run_gap_filler.py and run_python.sh for example use.
 
 `ROMS2FVCOM currently supports these ROMS models/setups`
 - Met office NorKyst `MET-NK`
