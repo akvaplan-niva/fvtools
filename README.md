@@ -154,18 +154,23 @@ Interpolates inital fields from a FVCOM mother to a restart file.
 
 ```python
 import fvtools.pre_pro.interpol_restart as ir
-ir.main(childfn="casename_restart_0001.nc", filelist="filelist_restart.txt", vinterp=True, speed=True)
-ir.main(startdate="2023-01-31-00", filelist="filelist_restart.txt", vinterp=True, speed=True)
+ir.main(childfn="casename_restart_0001.nc", 
+        filelist="filelist_restart.txt")
+ir.main(startdate="2023-01-31-00", 
+        filelist="filelist_restart.txt")
 
 # If you don't have a filelist
-ir.main(childfn="casename_restart_0001.nc", result_folder="./mother_folder/output01/", name = "mother_restart", vinterp=True, speed=True)
+ir.main(childfn="casename_restart_0001.nc", 
+        result_folder="./mother_folder/output01/", 
+        name = "mother_restart")
 ```
 
 #### interpol_roms_restart
 Interpolated initial fields from a ROMS model to your restartfile, but be warned: the model may crash if you set `uv=True`.
 ```python
 import fvtools.pre_pro.interpol_roms_restart as ir 
-ir.main("casename_restart_0001.nc", "NS", uv=True, avg=True)
+ir.main("casename_restart_0001.nc", "NS", 
+        uv=True, avg=True)
 ```
 
 ## After an experiment
@@ -178,11 +183,9 @@ You have now run FVCOM, and it has stored results to output folders, e.g. output
 /cluster/shared/NS9067K/apn_backup/FVCOM/MATNOC/PO10/output04
 /cluster/shared/NS9067K/apn_backup/FVCOM/MATNOC/PO10/output05
 ```
-
 fvcom_make_file_list.py makes a file that links points in time to files and indices in FVCOM results.
 ```python
 python fvcom_make_filelist.py -d folders.txt -s PO10 -f fileList.txt
-
 ```
 
 ### Take a quick look at the results
