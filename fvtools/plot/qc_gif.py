@@ -16,6 +16,7 @@ from fvtools.grid.tools import Filelist, num2date, date2num
 from fvtools.plot.geoplot import geoplot
 from datetime import datetime, timezone
 from scipy.spatial import cKDTree
+from functools import cached_property
     
 # ----------------------------------------------------------------------------------------
 #                     Create an animation from a number of files
@@ -220,12 +221,12 @@ def section_movie(time, dates, List, index, var, cb, section, section_res, fps, 
         fig   = plt.figure(figsize = (19.2, 8.74), dpi = dpi)
         mmaker.bar.start()
         anim  = manimation.FuncAnimation(fig,
-                                              mmaker.vertical_animate,
-                                              frames           = len(time),
-                                              save_count       = len(time),
-                                              repeat           = False,
-                                              blit             = False,
-                                              cache_frame_data = False)
+                                         mmaker.vertical_animate,
+                                         frames           = len(time),
+                                         save_count       = len(time),
+                                         repeat           = False,
+                                         blit             = False,
+                                         cache_frame_data = False)
         writer = MovieWriter(fps = fps)
         anim.save(f'{mname}_{field}_transect.{codec}', writer = writer)
         plt.close('all')
@@ -254,10 +255,11 @@ def qc_fileList(files, var, start, stop, sigma = None):
     if sigma is None:
         sigma = 0
 
+    def crop_selection(t, indices, inds):
+        return t[inds], indices[inds]
+
     print('Compiling filelist')
-    time  = np.empty(0)
-    List  = []
-    index = []
+    time, List, index  = np.empty(0), [], []
 
     # For contour plots
     cb      = {}
@@ -272,7 +274,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
 
     for this in files:
         with Dataset(this) as d:
-            t = d['time'][:]
+            t = date2num(num2date(Itime = d['Itime'][:], Itime2 = d['Itime2'][:]))
             indices = np.arange(len(t))
             if start is not None:
                 if t.min()<start and t.max()<start:
@@ -281,8 +283,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
                 else:
                     inds = np.where(t>=start)[0]
                     if elements(inds)>0:
-                        t = t[inds]
-                        indices = indices[inds]
+                        t, indices = crop_selection(t, indices, inds)
 
             if stop is not None:
                 if t.min()>stop:
@@ -290,12 +291,11 @@ def qc_fileList(files, var, start, stop, sigma = None):
                     break
                 inds = np.where(t<=stop)[0]
                 if elements(inds) > 0:
-                    t = t[inds]
-                    indices = indices[inds]
+                    t, indices = crop_selection(t, indices, inds)
 
             # If within bounds
             print(f' - {this}')
-            time     = np.append(time, date2num(num2date(Itime = d['Itime'][:], Itime2 = d['Itime2'][:])))
+            time     = np.append(time, t)
             List     = List + [this]*len(t)
             index.extend(list(indices))
 
@@ -316,8 +316,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
                     if d.variables.get(field)[indices, :][:].max() > cb[field]['max']:
                         cb[field]['max'] = d.variables.get(field)[indices, :][:].max()
 
-    dates = num2date(time = time)
-    return time, dates, List, index, cb
+    return time, num2date(time = time), List, index, cb
 
 def parse_time_input(file_in, start, stop):
     """
@@ -325,11 +324,11 @@ def parse_time_input(file_in, start, stop):
     """
     if start is not None:
         start_num = start.split('-')
-        start = date2num(datetime(int(start_num[0]), int(start_num[1]), int(start_num[2]), int(start_num[3]), tzinfo = timezone.utc))
+        start = date2num([datetime(int(start_num[0]), int(start_num[1]), int(start_num[2]), int(start_num[3]), tzinfo = timezone.utc)])
 
     if stop is not None:
         stop_num = stop.split('-')
-        stop = date2num(datetime(int(stop_num[0]), int(stop_num[1]), int(stop_num[2]), int(stop_num[3]), tzinfo = timezone.utc))
+        stop = date2num([datetime(int(stop_num[0]), int(stop_num[1]), int(stop_num[2]), int(stop_num[3]), tzinfo = timezone.utc)])
 
     return start, stop
 
@@ -342,42 +341,19 @@ class AnimationFields:
     def field(self):
         '''
         Loads fields, we assume all "new" fields (ie. fabm tracers) to be 3D
+        - will mask grid points that are dry
         '''
         if self.var in ['pv', 'vorticity', 'sp']:
-             # special fields we need to compute
             field = getattr(self, self.var)
-
-        elif len(self.d[self.var].shape) == 2:
-            field = self.field2d
-
         else:
-            field = self.field3d
-
+            field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i], sig = self.sigma)
         return field
-
-    @property
-    def field2d(self):
-        _field = self.d[self.var][self.index[self.i],:]
-        if any(self.M.cropped_nodes):
-            _field = self.d[self.var][self.index[self.i],:][self.M.cropped_nodes]
-        return _field
-
-    @property
-    def field3d(self):
-        '''field stored as 3D array, will return (n,) array for sigma movies, (n,2) for zeta movies'''
-        if self.sigma is not None:
-            _field = self.d[self.var][self.index[self.i], self.sigma, :]
-            if any(self.M.cropped_nodes):
-                _field = _field[self.M.cropped_nodes]
-        else:
-            _field = self.d[self.var][self.index[self.i], :]
-            if any(self.M.cropped_nodes):
-                _field = self.d[self.var][self.index[self.i], :][:, self.M.cropped_nodes]
-        return _field
     
     @property
     def vorticity(self):
-        _vort = self.T.vorticity(self.d['ua'][self.index[self.i], :], self.d['va'][self.index[self.i],:])
+        '''we load velocities for the entire grid, since the vorticity calculation at boundaries is fizzy, hence we can't necessarilly use the cropped grid'''
+        with Dataset(self.files[i], 'r') as d:
+            _vort = self.T.vorticity(d['ua'][self.index[self.i], :], d['va'][self.index[self.i],:])
         if any(self.M.cropped_cells):
             _vort = _vort[self.M.cropped_cells]
         return _vort
@@ -388,10 +364,7 @@ class AnimationFields:
 
     @property
     def sp(self):
-        field = np.sqrt(self.d['ua'][self.index[self.i], :]**2 + self.d['va'][self.index[self.i], :]**2)
-        if any(self.M.cropped_cells):
-            field = field[self.M.cropped_cells]
-        return field
+        return np.sqrt(self.M.load_netCDF(self.files[i], 'ua', self.index[self.i])**2 + self.M.load_netCDF(self.files[i], 'va', self.index[self.i])**2)
 
 class AnimationColorbars:
     '''
@@ -412,8 +385,8 @@ class AnimationColorbars:
             self.label = '$^\circ$C'
 
         elif var == 'zeta':
-            self.cmap = cmo.cm.amp
             self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
+            self.cmap = cmo.tools.crop(cmo.cm.balance, min(self.colorticks), max(self.colorticks), 0)
             self.label = 'm'
 
         elif var == 'vorticity':
@@ -458,6 +431,8 @@ class GeoReference:
         
         return georef
 
+    # Can actually also just use FVCOM_grids georeference method, look into that once we can expect cartopy on all machines.
+
 class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
     '''
     All the data needed by the 
@@ -472,7 +447,7 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         self.xlim,  self.ylim = xlim, ylim
 
         # Prepare grid
-        self.M = FVCOM_grid(List[0], verbose = False, reference = reference)
+        self.M = FVCOM_grid(List[0], reference = reference)
 
         if self.xlim is not None and self.ylim is not None:
             self.M.subgrid(self.xlim, self.ylim)
@@ -494,6 +469,8 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
             self.T = tge.main(self.M, verbose = True)
             self.T.get_art1(verbose = False)
 
+        self._wetndry = True
+
     def animate(self, i):
         '''
         Write frames
@@ -501,10 +478,9 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         self.bar.update(i)
         self.i = i
         plt.clf()
-        with Dataset(self.files[i], 'r') as self.d:
-            if self.gp is not None:
-                plt.imshow(self.gp.img, extent = self.gp.extent)
-            cont = self.M.plot_cvs(self.field, cmap = cmo.cm.dense, verbose = False)
+        if self.gp is not None:
+            plt.imshow(self.gp.img, extent = self.gp.extent)
+        cont = self.M.plot_cvs(self.field, cmap = cmo.cm.dense, verbose = False)
         self.update_figure(title = self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S') + f' in sigma = {self.sigma}')
         return cont
 
@@ -515,12 +491,11 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         self.bar.update(i)
         self.i = i
         plt.clf()
-        with Dataset(self.files[i], 'r') as self.d:
-            if self.gp is not None:
-                plt.imshow(self.gp.img, extent = self.gp.extent)
-            if self.var in ['vorticity', 'pv', 'sp']:
-                plt.tricontour(self.M.x, self.M.y, self.M.tri, self.M.h, 40, colors = 'gray', alpha = 0.5, linewidths = 0.5, zorder = 10)
-            cont = self.update_figure(field = self.field, title = self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S'))
+        if self.gp is not None:
+            plt.imshow(self.gp.img, extent = self.gp.extent)
+        if self.var in ['vorticity', 'pv', 'sp']:
+            plt.tricontour(self.M.x, self.M.y, self.M.tri, self.M.h, 40, colors = 'gray', alpha = 0.5, linewidths = 0.5, zorder = 10)
+        cont = self.update_figure(field = self.field, title = self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S'))
         return cont
 
     def zlevel_animate(self, i):
@@ -530,10 +505,9 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         self.bar.update(i)
         self.i = i
         plt.clf()
-        with Dataset(self.files[i], 'r') as self.d:
-            if self.gp is not None:
-                plt.imshow(self.gp.img, extent = self.gp.extent)
-            outdata = self.M.interpolate_to_z(self.field, z = self.z, verbose = False)
+        if self.gp is not None:
+            plt.imshow(self.gp.img, extent = self.gp.extent)
+        outdata = self.M.interpolate_to_z(self.field, z = self.z, verbose = False)
         cont = self.update_figure(field = outdata, title = self.datetime[i].strftime('%m/%d, %H:%M:%S') + f' at {self.z} m depth')
         return cont
 
@@ -573,11 +547,11 @@ class VerticalMaker(AnimationFields, AnimationColorbars):
         self.i = i
         self.bar.update(i)
         plt.clf()
-        with Dataset(self.files[i], 'r') as self.d:
-            self.M.zeta = self.d['zeta'][self.index[i], self.M.cropped_nodes]
-            out = self.M.get_section_data(self.field)
-
+        self.M.zeta = self.M.load_netCDF(self.files[i], 'zeta', self.index[i])
+        out = self.M.get_section_data(self.field)
         cont = plt.contourf(out['dst'], out['h'], out['transect'], cmap = self.cmap, levels = self.colorticks, extend = 'both')
+
+        # Settings
         if self.ylimit is not None:
             plt.ylim(self.ylimit)
         plt.colorbar(label = self.label)

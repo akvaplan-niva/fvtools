@@ -23,6 +23,8 @@ from scipy.signal import filtfilt
 from datetime import datetime, timedelta, timezone
 from pyproj import Proj, transform
 
+from fvtools.plot.geoplot import geoplot
+
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -80,7 +82,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
         info['rivertemp']     = temp
         info['compile river'] = False
 
-    M.re_project(info['river_projection']) # its basically this or the other way
+    M.re_project(info['river_projection'])
 
     # Initialize the object that will move rivers to the mesh and ensure numerical stability
     print('Identify FVCOM land:')
@@ -134,11 +136,12 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
 
     # Find edge to connect outflow to. Distribute across rivers.
     print('- Connect the rivers to the FVCOM mesh')
-    Forcing.connect_to_mesh()
+    gp = geoplot(M.x, M.y, projection = M.reference)
+    Forcing.connect_to_mesh(gp)
 
     # Show the variables
     print('\nFinished, plotting the forcing')
-    show_forcing(Forcing)
+    show_forcing(Forcing, gp)
 
     # Write to netCDF, write RiverNamelist.nml
     Forcing.dump()
@@ -792,7 +795,7 @@ class FVCOM_rivers:
 
         return river_object
 
-    def connect_to_mesh(self):
+    def connect_to_mesh(self, gp):
         """
         Figure out which node/cell the flux should go to.
         """
@@ -800,7 +803,7 @@ class FVCOM_rivers:
         while True:
             d, land_loc = self.land_tree.query(np.array([self.xriv, self.yriv]).transpose())
             if first:
-                self.river_connection(land_loc)
+                self.river_connection(land_loc, gp)
                 first = False
 
             d, mesh_location = self.mesh_tree.query(np.array([self.x_land[land_loc], self.y_land[land_loc]]).transpose())
@@ -917,12 +920,12 @@ class FVCOM_rivers:
             self.xriv = np.append(self.xriv, new_x)
             self.yriv = np.append(self.yriv, new_y)
 
-    def river_connection(self, land_loc):
+    def river_connection(self, land_loc, gp):
         """
         Show how far rivers have been moved from NVE location
         """
         plt.figure()
-
+        plt.imshow(gp.img, extent=gp.extent)
         # Make lines connecting rivers to their FVCOM location
         xvec = np.array([self.x_land[land_loc], self.xriv]).transpose()
         yvec = np.array([self.y_land[land_loc], self.yriv]).transpose()
@@ -1057,19 +1060,21 @@ def crop_object(obj, indices):
 
 # Show what we will write to the riverdata forcing
 # ----
-def show_forcing(obj):
+def show_forcing(obj, gp):
     """
     Simple figures to see that the routine got the basics right
     """
     plt.figure()
+    plt.imshow(gp.img, extent = gp.extent)
     plt.plot(obj.x_land, obj.y_land, 'g.', label = 'land nodes', zorder = 1)
     plt.scatter(obj.xriv, obj.yriv, np.mean(obj.RiverTransport, axis = 0), c = np.mean(obj.RiverTransport, axis = 0), zorder = 5)
     plt.title('Average transport')
     plt.axis('equal')
-    plt.colorbar(label = 'm^3 s^-1')
+    plt.colorbar(label = r'm$^3$ s$^{-1}$')
     plt.show(block = False)
 
     plt.figure()
+    plt.imshow(gp.img, extent = gp.extent)
     plt.plot(obj.x_land, obj.y_land, 'g.', label = 'land nodes', zorder = 1)
     plt.scatter(obj.xriv, obj.yriv, obj.RiverTemp.max(axis = 0), c = obj.RiverTemp.max(axis = 0), cmap = 'inferno', zorder = 5)
     plt.title('Max temperature in model period')

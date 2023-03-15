@@ -1375,22 +1375,34 @@ class ExportGrid:
         print(f'- Wrote {filename}')
 
 class PlotFVCOM:
+    @property
+    def transform(self):
+        if not hasattr(self, '_transform'):
+            return None
+        return self._transform
+
+    @transform.setter
+    def transform(self, var):
+        self._transform = var
+
     def plot_grid(self, c = 'g-', linewidth = 0.2, markersize = 0.2, show = True, *args, **kwargs):
         '''
         Plot mesh grid
         - arguments and keyword arguments are passed to pyplot.triplot
         '''
         ax = plt.gca()
+        kwargs = self._transform_to_kwargs(**kwargs)
         ax.triplot(self.x, self.y, self.tri, c, *args, markersize=markersize, linewidth=linewidth, **kwargs)
         ax.set_aspect('equal')
         if show: plt.show(block = False)
 
-    def plot_obc(self):
+    def plot_obc(self, **kwargs):
         '''plot the obc nodes, show different nodestrings'''
         ax = plt.gca()
+        kwargs = self._transform_to_kwargs(**kwargs)
         for i in range(len(self.x_obc)):
-            ax.scatter(self.x_obc[i], self.y_obc[i], zorder = 10, label=f'boundary nr. {i+1}')
-            ax.scatter(self.x_obc[i][[0,-1]], self.y_obc[i][[0,-1]], zorder = 11, c = 'r') # start and end points
+            ax.scatter(self.x_obc[i], self.y_obc[i], zorder = 10, label=f'boundary nr. {i+1}', **kwargs)
+            ax.scatter(self.x_obc[i][[0,-1]], self.y_obc[i][[0,-1]], zorder = 11, c = 'r', **kwargs) # start and end points 
         plt.draw()
 
     def plot_contour(self, field, show = True, *args, **kwargs):
@@ -1405,32 +1417,76 @@ class PlotFVCOM:
 
         # Mask nan values if any and send to plot
         if np.isnan(f).any():
-            mask = np.isnan(f)[tri].any(axis=1)
-            return self._plot_contour(x, y, tri, f, show, mask = mask, *args, **kwargs)
-        else:
-            return self._plot_contour(x, y, tri, f, show, *args, **kwargs)
+            kwargs['mask'] = np.isnan(f)[tri].any(axis=1)
 
-    def georeference(self, url='https://openwms.statkart.no/skwms1/wms.topo4.graatone?service=wms&request=getcapabilities', layers=['topo4graatone_WMS']):
+        # Add transform if the current axes is a GeoAxes (for WMS georeferenced plots)
+        kwargs = self._transform_to_kwargs(**kwargs)
+
+        return self._plot_contour(x, y, tri, f, show, *args, **kwargs)
+
+    def _transform_to_kwargs(self, **kwargs):
+        '''
+        Add a transformation to the plot if the background is a WMS server (and in general when the axes is a cartopy GeoAxes)
+        '''
+        if self.transform is not None:
+            import cartopy.mpl.geoaxes as geoaxes
+            if isinstance(plt.gca(), geoaxes.GeoAxes):
+                kwargs['transform'] = self.transform
+        return kwargs   
+
+    def georeference(self, url='https://openwms.statkart.no/skwms1/wms.topo4.graatone?service=wms&request=getcapabilities', layers=['topo4graatone_WMS'], wms = None):
         '''
         Plot map data from WMS server as georeference. Must be done before plotting grid, contours etc.
+        - requires cartopy
         ---
         url:    defaults to grey norgeskart
         layers: valid layer from the url, must be a tuple with string(s)
+        wms:    overwrites other input if not None, current options: "raster" or "topo4"
 
         Returns:
         ---
         ax, a GeoAxesSubplot
 
-        - for colored norgeskart: url = 'https://openwms.statkart.no/skwms1/wms.topo4?service=wms&request=getcapabilities', layers = ['topo4_WMS']):
-        - airplane fotos:         
         - Also possible to plot fiskeridirektoratet akvakultur lokaliteter WMS on top:
           - ax.add_wms(wms='https://gis.fiskeridir.no/server/services/fiskeridirWMS_akva/MapServer/WMSServer?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetCapabilities', 
                        layers=['akvakultur_lokaliteter'])
         '''
         import cartopy.crs as ccrs
-        ax = plt.axes(projection = ccrs.epsg(int(self.reference.split(':')[-1])))
+        if wms is not None:
+            if wms =='raster':
+                url = 'http://openwms.statkart.no/skwms1/wms.toporaster4?version=1.3.0&service=wms&request=getcapabilities'
+                layers = ['toporaster']
+            elif wms == 'topo4':
+                url = 'https://openwms.statkart.no/skwms1/wms.topo4?service=wms&request=getcapabilities'
+                layers = ['topo4_WMS']
+
+        if int(self.reference.split(':')[-1]) == 4326:
+            lonmin, lonmax = self.lon.min(), self.lon.max()
+            latmin, latmax = self.lat.min(), self.lat.max()
+            aspect_ratio = (float(latmax - latmin) / (float(lonmax - lonmin)))/np.cos(np.radians((latmin + latmax) / 2))
+
+            # Draw, set projection
+            crs = ccrs.Mercator()
+            fig = plt.figure(figsize=(11. / aspect_ratio, 11.))
+            ax = fig.add_subplot(111, projection=crs)
+            self.draw_geo_grid([lonmin, lonmax, latmin, latmax])
+            fig.canvas.draw()         
+            fig.set_tight_layout(True)
+            self.transform = ccrs.PlateCarree(globe=crs.globe)
+        else:
+            ax = plt.axes(projection = ccrs.epsg(int(self.reference.split(':')[-1])))
         ax.add_wms(wms=url, layers=layers)
         return ax
+
+    def draw_geo_grid(self, extent):
+        '''
+        Automatically draw a geo-grid over the extent (lonmin, lonmax, latmin, latmax)
+        '''
+        import cartopy.crs as ccrs
+        ax = plt.gca()
+        ax.set_extent(extent, crs=ccrs.PlateCarree(globe=ccrs.Mercator().globe))
+        gl = ax.gridlines(ccrs.PlateCarree(globe=ccrs.Mercator().globe), draw_labels=True)         
+        gl.top_labels = None
 
     @staticmethod
     def _plot_contour(x, y, tri, field, show, *args, **kwargs):
@@ -1524,9 +1580,66 @@ class OutputLoader:
     '''
     Sub-methods for accessing FVCOM data
     '''
-    def load_netCDF(self, filename):
-        '''returns netCDF4.Dataset(filename, "r")'''
-        return Dataset(filename, 'r')
+    def load_netCDF(self, filepath, field, time, sig = None):
+        '''
+        Reads a timestep from a field in the netCDF file from "filepath"
+        - filename: path to file to be read
+        - field:    field you want (e.g. 'tracer')
+        - time:     time-index in file to read
+
+        optional:
+        - sig:      sigma layer to extract, will automatically return all
+        '''
+        with Dataset(filepath, 'r') as d:
+            # time variables or variables without time can be read directly and returned
+            if 'time' not in d[field].dimensions or len(d[field].dimensions) == 1:
+                return d[field][:]
+
+            if any(self.cropped_nodes) or any(self.cropped_cells):
+                if 'node' in d[field].dimensions:
+                    cropped = self.cropped_nodes
+                elif 'nele' in d[field].dimensions:
+                    cropped = self.cropped_cells
+
+            # Automatically crop data
+            data = self._load_single_nc_field(d, field, cropped, time, sig)
+            
+            # Mask data if wetting/drying
+            try:
+                if 'node' in d[field].dimensions:
+                    wet = np.where(self._load_single_nc_field(d, 'wet_nodes', cropped, time, sig)==0)[0]
+                elif 'nele' in d[field].dimensions:
+                    wet = np.where(self._load_single_nc_field(d, 'wet_cells', cropped, time, sig)==0)[0]
+
+                if len(data.shape)==1:
+                    data[wet] = np.nan
+                else:
+                    data[:, wet] = np.nan
+            except:
+                pass
+        return data
+
+    def _load_single_nc_field(self, d, field, cropped, time, sig):
+        dim = len(d[field].dimensions)
+        if any(self.cropped_nodes) or any(self.cropped_cells):
+            if dim == 2:
+                data = d[field][time, cropped]
+            elif dim == 3:
+                if sig is None:
+                    data = d[field][time, :, cropped]
+                else:
+                    data = d[field][time, sig, cropped]
+
+        else:
+            if dim == 2:
+                data = d[field][time, :]
+
+            if dim == 3:
+                if sig is None:
+                    data = d[field][time,:,:]
+                else:
+                    data = d[field][time, sig, :]
+        return data
 
 class FVCOM_grid(GridLoader, InputCoordinates, Coordinates, PropertiesFromTGE, LegacyPropertyAliases, CellTriangulation, OutputLoader,
                  PlotFVCOM, ControlVolumePlotter, InterpolateToZ, LegacyFunctions, SectionMaker, ExportGrid, CropGrid, AnglesAndPhysics,
