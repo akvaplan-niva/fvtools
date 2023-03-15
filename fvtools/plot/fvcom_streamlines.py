@@ -239,7 +239,8 @@ class streamlines:
         --> More or less pure copy of code from matplotlib.streamplot
         '''        
         # create the streamlines
-        if self.verbose: print('- prepare line and arrow collection')
+        if self.verbose: 
+            print('- prepare line and arrow collection')
         self._create_lines()
         
         # Prepare the arrow patches we want to plot

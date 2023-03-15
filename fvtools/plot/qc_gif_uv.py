@@ -8,10 +8,10 @@ import matplotlib.animation as manimation
 
 from fvtools.plot.fvcom_streamlines import streamlines
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.tools import Filelist, num2date
+from fvtools.grid.tools import Filelist, num2date, date2num
 from fvtools.plot.geoplot import geoplot
-from netCDF4 import Dataset, date2num
-from datetime import datetime
+from netCDF4 import Dataset
+from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------------------
 #             Interpolate velocity data to depths of interest, create
@@ -48,6 +48,7 @@ def main(filelist = None,
     - stop:       stop limit
     - fps:        framerate
     - verbose:    the routine will tell you where it is
+    - vlev:       color levels to plot for the velocity-contour plot
     '''
     # To remove one input:
     if sigma is None and z is None:
@@ -70,8 +71,8 @@ def main(filelist = None,
     stream.verbose = verbose
         
     # Inititalize movie maker
-    UV          = UVmov(M, fl, stream, xlim, ylim, hres, avg, vlev)
-    UV.sig      = sigma; UV.z = z
+    UV           = UVmov(M, fl, stream, xlim, ylim, hres, avg, vlev)
+    UV.sig, UV.z = sigma, z
 
     # Get the movie writer, prepare the show
     MovieWriter, codec = get_animator()
@@ -135,12 +136,12 @@ class progress:
         self.bar = pb.ProgressBar(widgets = ['- streamline movie: ', pb.Percentage(), pb.Bar(), pb.ETA()], maxval = frames)
         self.bar.start()
 
-class UVmov():
+class UVmov:
     '''
     Containts variables and procedures to create a velocity movie with
     streamplots and stuff.
     '''
-    def __init__(self, M, fl, stream, xlim, ylim, hres, avg, vlev, verbose = True):
+    def __init__(self, M, fl, stream, xlim, ylim, hres, avg, vlev = None, verbose = True):
         '''
         Initialize grid, georeferenced image etc. for the movie maker
         '''
@@ -167,6 +168,9 @@ class UVmov():
         # Initialize the figure
         self.fig = plt.figure(figsize = (19.2, 8.74))
 
+        # Use a wet and dry scheme
+        self._wetndry = True
+
     def animate(self, i):
         '''
         Write frames in sigma levels
@@ -176,19 +180,20 @@ class UVmov():
         
         # See if we need to open new netcdf
         self.progress.bar.update(i)
-        self.get_path(i)
 
         # Extract data from netcdf (and compute speed)
         self.load_data(i)
 
         # Add georeference
         plt.imshow(self.gp.img, extent = self.gp.extent)
-        
-        c = plt.tricontourf(self.M.xc, self.M.yc, self.M.ctri, self.sp_fv, 
-                            levels = self.vlev, cmap = 'jet', extend = 'max')
 
-        plt.colorbar(c, label = 'm/s')
-        self.stream.get_streamlines(self.ufv, self.vfv)
+        # If _all_ contour lines are nan, we simply pass (can happen in wetting drying bug scenarios)
+        try:
+            c = self.M.plot_contour(self.sp_fv, levels = self.vlev, cmap = 'jet', extend = 'max', show = False)
+            plt.colorbar(c, label = r'm $s^{-1}$')
+            self.stream.get_streamlines(self.ufv, self.vfv)
+        except:
+            pass
         
         # Title to get when/where
         self.format_figure(i)
@@ -222,40 +227,26 @@ class UVmov():
             self.d          = Dataset(self.fl.path[i])
             self.old_path   = self.fl.path[i]
 
+    # This will need some revision, maybe even using FVCOM_grids load_NETCDF function
     def load_data(self, i):
-        if any(self.M.cropped_cells):
-            if self.avg:
-                self.ufv = self.d['ua'][self.fl.index[i], self.M.cropped_cells]
-                self.vfv = self.d['va'][self.fl.index[i], self.M.cropped_cells]
-            else:
-                if self.sig is not None:
-                    self.ufv = self.d['u'][self.fl.index[i], self.sig, self.M.cropped_cells]
-                    self.vfv = self.d['v'][self.fl.index[i], self.sig, self.M.cropped_cells]
-
-                elif self.z is not None:
-                    self.ufv = self.d['u'][self.fl.index[i], :, self.M.cropped_cells]
-                    self.vfv = self.d['v'][self.fl.index[i], :, self.M.cropped_cells]
-                else:
-                    raise ValueError('Neither avg, sig or z is defined - what happened???')
+        if self.avg:
+            self.ufv = self.M.load_netCDF(self.fl.path[i], 'ua', self.fl.index[i])
+            self.vfv = self.M.load_netCDF(self.fl.path[i], 'va', self.fl.index[i])
 
         else:
-            if self.avg:
-                self.ufv = self.d['ua'][self.fl.index[i], :]
-                self.vfv = self.d['va'][self.fl.index[i], :]
-            else:
-                if self.sig is not None:
-                    self.ufv = self.d['u'][self.fl.index[i], self.sig, :]
-                    self.vfv = self.d['v'][self.fl.index[i], self.sig, :]
+            self.ufv = self.M.load_netCDF(self.fl.path[i], 'u', self.fl.index[i], sig = self.sig)
+            self.vfv = self.M.load_netCDF(self.fl.path[i], 'v', self.fl.index[i], sig = self.sig)
+        
+        # fvcom_streamlines should not be given nans, hence we set to zero
+        if np.isnan(self.ufv).any():
+            naninds = np.where(np.isnan(self.ufv))[0]
+            self.ufv[naninds] = 0
+            self.vfv[naninds] = 0
+            self.sp_fv = np.sqrt(self.ufv**2+self.vfv**2)
+            self.sp_fv[naninds] = np.nan
+        else:
+            self.sp_fv = np.sqrt(self.ufv**2+self.vfv**2)
 
-                elif self.z is not None:
-                    self.ufv = self.d['u'][self.fl.index[i], :]
-                    self.vfv = self.d['v'][self.fl.index[i], :]
-                else:
-                    raise ValueError('Neither avg, sig or z is defined - what happened???')
-                    
-        # Compute speed
-        # ----
-        self.sp_fv = np.sqrt(self.ufv**2+self.vfv**2)
         if self.vlev is None:
             self.vlev = np.linspace(0, np.nanmax(self.sp_fv), 20)
 
@@ -264,53 +255,24 @@ def parse_input(folder, filelist, start, stop):
     Return the fields the routine expects
     '''
     if filelist is None:
-        if folder is not None:
-            files = allFiles(folder)
+        assert folder is not None, 'You must provide either lead me to a folder or a filelist'
+        files = allFiles(folder)
 
-        else:
-            raise ValueError('You must provide either lead me to a folder or a filelist')
+        # Input string to fvcom time, initialize Filelist-like object
+        start, stop = parse_time_input(files[0], start, stop)
+        fl = qc_fileList(files, start, stop)
 
-        # Prepare time (string to fvcom time)
-        # ----
-        start, stop, units = parse_time_input(files[0], start, stop)
-
-        # Couple file to timestep
-        # ----
-        time, dates, List, index = fileList(files, start, stop)
-        dates = num2date(time)
-        start = num2date(time = time[0]).strftime('%d/%B-%Y, %H:%M:%S')
-        stop  = num2date(time = time[-1]).strftime('%d/%B-%Y, %H:%M:%S')
-
-        # Print time
-        # ----
-        print(f'\nStart: {start}')
-        print(f'End:   {stop}\n')
-        
     else:
-        # Prepare the filelist
-        # ----
         fl   = Filelist(filelist, start, stop)
-        time = fl.time; dates = fl.datetime; List = fl.path; index = fl.index
 
-        start = dates[0].strftime('%d/%B-%Y, %H:%M:%S')
-        stop  = dates[-1].strftime('%d/%B-%Y, %H:%M:%S')
-
-        # Print time
-        # ----
-        print(f'\nStart: {start}')
-        print(f'End:   {stop}')
-
-    # Mimic the filelist structure
-    # ----
-    fl_out          = mini_filelist()
-    fl_out.time     = time
-    fl_out.datetime = dates
-    fl_out.path     = List
-    fl_out.index    = index
+    # Print time
+    print(' ')
+    print(f"Start: {fl.datetime[0].strftime('%d/%B-%Y, %H:%M:%S')}")
+    print(f"End:   {fl.datetime[-1].strftime('%d/%B-%Y, %H:%M:%S')}")
     
-    return fl_out
+    return fl
 
-def fileList(files, start, stop):
+def qc_fileList(files, start, stop):
     '''
     Take a timestep, couple it to a file
     ----
@@ -318,66 +280,54 @@ def fileList(files, start, stop):
     - start: Day to start
     - stop:  Day to stop
     '''
-    print('Compiling filelist:\n-----')
-    time  = np.empty(0)
-    List  = []
-    index = []
+    print('Making filelist:\n-----')
+    fl = mini_filelist()
+    time, List, index  = np.empty(0), [], []
 
-    for this in files:
-        d = Dataset(this)
-        t = d['time'][:]
-        indices = np.arange(len(t))
-        if start is not None:
-            if t.min()<start and t.max()<start:
-                print(' - '+this+' is before the date range')
-                continue
+    def crop_selection(t, indices, inds):
+        return t[inds], indices[inds]
 
-            else:
-                inds = np.where(t>=start)[0]
+    for this_file in files:
+        with  Dataset(this_file) as d:
+            t = date2num(num2date(Itime = d['Itime'][:], Itime2 = d['Itime2'][:]))
+            indices = np.arange(len(t))
+            if start is not None:
+                if t.min()<start and t.max()<start:
+                    print(f' - {this_file} is before the date range')
+                    continue
+
+                else:
+                    inds = np.where(t>=start)[0]
+                    if elements(inds)>0:
+                        t, indices = crop_selection(t, indices, inds)
+
+            if stop is not None:
+                if t.min()>stop:
+                    break
+
+                inds = np.where(t<=stop)[0]
                 if elements(inds)>0:
-                    t = t[inds]
-                    indices = indices[inds]
+                    t, indices = crop_selection(t, indices, inds)
+                    
+            print(f' - {this_file}')
+            time     = np.append(time, t)
+            List     = List + [this_file]*len(t)
+            index.extend(list(indices))
 
-        if stop is not None:
-            if t.min()>stop:
-                print(' - '+this+' is after the date range')
-                break
-
-            inds = np.where(t<=stop)[0]
-            if elements(inds) > 0:
-                t = t[inds]
-                indices = indices[inds]
-                
-        print(' - '+this)
-        time     = np.append(time,t)
-        dates    = num2date(time = time)
-        List     = List + [this]*len(t)
-        index.extend(list(indices))
-
-    return time, dates, List, index
+    fl.time, fl.datetime, fl.path, fl.index = time, num2date(time = time), List, index
+    return fl
 
 def parse_time_input(file_in, start, stop):
     """
     Translate time input to FVCOM time
     """
-    d     = Dataset(file_in)
-    units = d['time'].units
-
     if start is not None:
         start_num = start.split('-')
-        start = date2num(datetime(int(start_num[0]), 
-                                  int(start_num[1]), 
-                                  int(start_num[2]), 
-                                  int(start_num[3])),
-                                  units = units)
+        start = date2num([datetime(int(start_num[0]), int(start_num[1]), int(start_num[2]), int(start_num[3]), tzinfo = timezone.utc)])
     if stop is not None:
         stop_num = stop.split('-')
-        stop = date2num(datetime(int(stop_num[0]), 
-                                 int(stop_num[1]), 
-                                 int(stop_num[2]), 
-                                 int(stop_num[3])),
-                                 units = units)
-    return start, stop, units
+        stop = date2num([datetime(int(stop_num[0]), int(stop_num[1]), int(stop_num[2]), int(stop_num[3]), tzinfo = timezone.utc)])
+    return start, stop
 
 def allFiles(folder):
     '''
@@ -392,5 +342,5 @@ def allFiles(folder):
 def elements(array):
     return array.ndim and array.size
 
-class mini_filelist():
+class mini_filelist:
     pass
