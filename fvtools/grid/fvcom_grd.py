@@ -1421,7 +1421,6 @@ class PlotFVCOM:
 
         # Add transform if the current axes is a GeoAxes (for WMS georeferenced plots)
         kwargs = self._transform_to_kwargs(**kwargs)
-
         return self._plot_contour(x, y, tri, f, show, *args, **kwargs)
 
     def _transform_to_kwargs(self, **kwargs):
@@ -1600,6 +1599,8 @@ class OutputLoader:
                     cropped = self.cropped_nodes
                 elif 'nele' in d[field].dimensions:
                     cropped = self.cropped_cells
+            else:
+                cropped = None
 
             # Automatically crop data
             data = self._load_single_nc_field(d, field, cropped, time, sig)
