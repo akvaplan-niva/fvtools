@@ -69,7 +69,7 @@ def main(child_fn      = None,
             data, dpt = nearest_neighbor(mother, M, M_ch, ind, nodefield, cellfield, alias)
 
         # Update depth with zeta for mother and child prior to vertical interpolation
-        M.zeta    = M.load_netCDF(M.filepath)['zeta'][ind, M.cropped_nodes]
+        M.zeta    = M.load_netCDF(M.filepath, 'zeta', ind)
         M_ch.zeta = data['zeta']
 
         print('\n- Vertical interpolation') 
