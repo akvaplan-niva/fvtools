@@ -110,7 +110,7 @@ def get_animator():
         FuncAnimation = manimation.writers['html']
         codec = 'html'
     else:
-        raise ValueError('None of the standard animators are available')
+        raise ValueError('None of the standard animators are available, can not make the movie')
     return FuncAnimation, codec
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -122,7 +122,7 @@ def surface_movie(time, dates, List, index, var, sigma, cb, xlim, ylim, fps, cti
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma)
+    fig, mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma, dpi = dpi)
     MovieWriter, codec = get_animator()
 
     for field in var:
@@ -132,7 +132,7 @@ def surface_movie(time, dates, List, index, var, sigma, cb, xlim, ylim, fps, cti
         mmaker.get_cmap(field, cb, cticks)
 
         # Prepare figure
-        fig = plt.figure(figsize = (19.2, 8.74), dpi = dpi)
+        fig = mmaker.make_figure(dpi = dpi)
 
         # prepare movie maker
         mmaker.bar.start()
@@ -156,7 +156,7 @@ def zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, 
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, z=z)
+    fig, mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, z=z, dpi = dpi)
     MovieWriter, codec = get_animator()
     
     for field in var:
@@ -166,7 +166,6 @@ def zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, 
         widget        = [f'- Make z-level {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
         mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(time))
         mmaker.get_cmap(field, cb, cticks)
-        fig = plt.figure(figsize = (19.2, 8.74), dpi = dpi)
         mmaker.bar.start()
         anim           = manimation.FuncAnimation(fig,
                                                   mmaker.zlevel_animate,
@@ -242,15 +241,15 @@ def allFiles(folder):
     ncfiles = [folder + file for file in ncfiles]
     return ncfiles
 
+# Still some cleaning upping to do here
 def qc_fileList(files, var, start, stop, sigma = None):
     '''
     Take a timestep, couple it to a file
-    ----
     - files: FileList
     - var:   Field to read
     - sigma: Sigma layer to extract
-    - start: Day to start
-    - stop:  Day to stop
+    - start: time to start. format: (yyyy-mm-dd-HH)
+    - stop:  time to stop.  format: (yyyy-mm-dd-HH)
     '''
     if sigma is None:
         sigma = 0
@@ -265,10 +264,10 @@ def qc_fileList(files, var, start, stop, sigma = None):
     cb      = {}
     for field in var:
         cb[field]        = {}
-        cb[field]['max'] = -100
-        cb[field]['min'] =  100
+        cb[field]['max'], cb[field]['min'] = -100, 100
         if field in ['pv', 'vorticity', 'sp']:
             continue
+
         with Dataset(files[0]) as d:
             cb[field]['units'] = d[field].units
 
@@ -295,8 +294,8 @@ def qc_fileList(files, var, start, stop, sigma = None):
 
             # If within bounds
             print(f' - {this}')
-            time     = np.append(time, t)
-            List     = List + [this]*len(t)
+            time = np.append(time, t)
+            List = List + [this]*len(t)
             index.extend(list(indices))
 
             for field in var:
@@ -471,6 +470,12 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
 
         self._wetndry = True
 
+    def make_figure(self, size = 15., dpi = 300):
+        dx = self.M.x.max() - self.M.x.min()
+        dy = self.M.y.max() - self.M.y.min()
+        aspect_ratio = float(dy)/(float(dx)*1.2)
+        return plt.figure(figsize=(size / aspect_ratio, size), dpi = dpi)
+
     def animate(self, i):
         '''
         Write frames
@@ -520,7 +525,7 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         if self.xlim is not None and self.ylim is not None:
             plt.xlim(self.xlim)
             plt.ylim(self.ylim)
-        plt.colorbar(cont, label = self.label)
+        plt.colorbar(cont, label = self.label, shrink = 0.5)
         plt.title(title)   
         if field is not None:
             return cont
@@ -597,7 +602,7 @@ def parse_input(folder, fname, filelist, start, stop, sigma, var):
             cb[field]['min'] = min(d_min[field][:].min(), d_max[field][:].min())
             if field == 'salinity':
                 cb['salinity']['min'] = 29
-            with netCDF4.Dataset(fl.path[0]) as d:
+            with Dataset(fl.path[0]) as d:
                 cb[field]['units'] = d[field].units
 
     print(f"Start: {dates[0].strftime('%d/%B-%Y, %H:%M:%S')}")
