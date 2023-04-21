@@ -29,7 +29,8 @@ def main(filelist = None,
          hres   = None,
          mname  = None,
          verbose = False,
-         fps    = 12):
+         fps    = 12,
+         dpi    = 100):
     '''
     Interpolate velocity data to depths of interest, create
     a movie showing velocity maxima/minima and streamlines
@@ -50,12 +51,11 @@ def main(filelist = None,
     - verbose:    the routine will tell you where it is
     - vlev:       color levels to plot for the velocity-contour plot
     '''
-    # To remove one input:
+    # Figure out wether to read u, v or ua, va
+    avg = False
     if sigma is None and z is None:
         avg = True
-    else:
-        avg = False
-    
+        
     # Initialize the filelist
     fl  = parse_input(folder, filelist, start, stop)
 
@@ -71,7 +71,7 @@ def main(filelist = None,
     stream.verbose = verbose
         
     # Inititalize movie maker
-    UV           = UVmov(M, fl, stream, xlim, ylim, hres, avg, vlev)
+    UV           = UVmov(M, fl, stream, xlim, ylim, hres, avg, vlev, dpi = dpi)
     UV.sig, UV.z = sigma, z
 
     # Get the movie writer, prepare the show
@@ -141,7 +141,7 @@ class UVmov:
     Containts variables and procedures to create a velocity movie with
     streamplots and stuff.
     '''
-    def __init__(self, M, fl, stream, xlim, ylim, hres, avg, vlev = None, verbose = True):
+    def __init__(self, M, fl, stream, xlim, ylim, hres, avg, vlev = None, verbose = True, dpi = 300):
         '''
         Initialize grid, georeferenced image etc. for the movie maker
         '''
@@ -166,16 +166,23 @@ class UVmov:
             self.gp  = geoplot(self.M.xc, self.M.yc)
         
         # Initialize the figure
-        self.fig = plt.figure(figsize = (19.2, 8.74))
+        self.fig = self.make_figure(dpi = dpi)
 
         # Use a wet and dry scheme
         self._wetndry = True
+
+    def make_figure(self, size = 15., dpi = 300):
+        dx = self.M.x.max() - self.M.x.min()
+        dy = self.M.y.max() - self.M.y.min()
+        aspect_ratio = float(dy)/float(dx)
+        return plt.figure(figsize=(size / aspect_ratio, size), dpi = dpi)
 
     def animate(self, i):
         '''
         Write frames in sigma levels
         '''
         # Clean the frame
+        # - future: remove contour and colorbar, keep georeference? Might not be too significant performance wise though
         plt.clf()
         
         # See if we need to open new netcdf
@@ -190,8 +197,8 @@ class UVmov:
         # If _all_ contour lines are nan, we simply pass (can happen in wetting drying bug scenarios)
         try:
             c = self.M.plot_contour(self.sp_fv, levels = self.vlev, cmap = 'jet', extend = 'max', show = False)
-            plt.colorbar(c, label = r'm $s^{-1}$')
             self.stream.get_streamlines(self.ufv, self.vfv)
+            self.fig.colorbar(c, ax = plt.gca(), label = r'm$s^{-1}$', shrink = 0.5)
         except:
             pass
         
