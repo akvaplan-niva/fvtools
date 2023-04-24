@@ -103,7 +103,7 @@ class GridLoader:
         with Dataset(self.filepath) as d:
             obc_nodes = []
             if 'obc_nodes' in d.variables.keys():
-                obc_nodes = list(d['obc_nodes'][:])
+                obc_nodes = list(d['obc_nodes'][:]-1) # fortran to python indexing
 
             if 'siglay' in d.dimensions.keys():  
                 self._direct_initialization(x = d['x'][:], y = d['y'][:], 
