@@ -92,7 +92,7 @@ def main(filelist = None,
 
     # Choose a savaname, save the animation, close progressbar and return.
     if mname is None:
-        savename = f'velocities.{codec}'
+        savename = f'{M.casename}_velocities.{codec}'
     else:
         savename = f'{mname}.{codec}'
     anim.save(savename, writer = writer)
@@ -174,7 +174,7 @@ class UVmov:
     def make_figure(self, size = 15., dpi = 300):
         dx = self.M.x.max() - self.M.x.min()
         dy = self.M.y.max() - self.M.y.min()
-        aspect_ratio = float(dy)/float(dx)
+        aspect_ratio = float(dy)/(float(dx)*1.2)
         return plt.figure(figsize=(size / aspect_ratio, size), dpi = dpi)
 
     def animate(self, i):
