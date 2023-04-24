@@ -19,73 +19,134 @@ class GridLoader:
     '''
     Loads relevant grid data to be used as instance attributes
     '''
-    def _load_2dm(self):
+    def _direct_initialization(self, x = None, y = None, tri = None,
+                               lon = None, lat = None,
+                               h = None, siglay = None, siglev = None,
+                               obc_nodes = [], cropped_nodes = np.array(0), cropped_cells = np.array(0)):
+        '''
+        Initialize a new FVCOM_grid object using known fields
+        '''
+        # Assertions to make sure that input is consistent, regardless of source
+        assert tri.min() == 0, 'Triangulation is invalid'
+        assert type(obc_nodes) == list, 'obc_nodes must be given as a list'
+        assert type(cropped_nodes) == np.ndarray, 'cropped nodes must be a numpy array'
+        assert type(cropped_cells) == np.ndarray, 'cropped cells must be a numpy array'
+        if h is not None: assert h.min() > 0, 'Minimum depth is invalid'
+
+        # Add more tests when bugs appear
+        self.tri = tri
+        if x is None and y is None:
+            self.x, self.y = np.zeros(tri.max()+1), np.zeros(tri.max()+1)
+        else:
+            self.x, self.y = np.squeeze(x), np.squeeze(y)
+
+        if lon is None and lat is None:
+            self.lon, self.lat = np.zeros(x.shape), np.zeros(y.shape)
+        else:
+            self.lon, self.lat = lon, lat
+
+        if h is not None:   
+            self.h = np.squeeze(h)
+        else:
+            self.h = h
+
+        if siglay is not None and siglev is not None:
+            self.siglay, self.siglev = siglay, siglev
+
+        # Identifiers
+        self.obc_nodes, self.cropped_nodes, self.cropped_cells = obc_nodes, cropped_nodes, cropped_cells
+
+        assert self.x.shape == self.y.shape, 'x, y shapes do not match'
+        assert len(self.x.shape) == 1 and len(self.y.shape) == 1, 'shape of x and y needs to be (N,)'
+        assert self.lon.shape == self.lat.shape, 'lon, lat shapes do not match'
+
+    def _add_grid_parameters_2dm(self):
         '''
         Grid parameters from a .2dm file
         - assumes that .2dm files are always projected to carthesian coordinates
         '''
         import fvtools.grid.fvgrid as fvgrid
-        self.tri, nodes, self.x, self.y, _, _, types = fvgrid.read_sms_mesh(self.filepath, nodestrings = True)
+        tri, nodes, x, y, _, _, types = fvgrid.read_sms_mesh(self.filepath, nodestrings = True)
         l = []
         for nstr in types:
             l.extend(nstr)
-        self.obc_nodes = np.array(l, dtype = np.int32)
-        self.lon, self.lat = np.zeros(self.x.shape), np.zeros(self.x.shape)
+        self._direct_initialization(x=x, y=y, tri=tri, obc_nodes = l)
         self.casename = self.filepath.split('.2dm')[0]
 
-    def _add_grid_parameters(self, names):
+    def _add_grid_parameters_mat(self):
         '''
         Read grid attributes from matlab grid file and add them to the FVCOM_grid instance
         - Probably won't work that well anymore
         '''
         from scipy.io import loadmat
         grid_mfile = loadmat(self.filepath)
-        if type(names) is str:
-            names=[names]
-        for name in names:
-            setattr(self, name, np.squeeze(grid_mfile['Mobj'][0,0][name]))
         self.casename = 'from_mat_file'
+        self._direct_initialization(x = grid_mfile['Mobj']['x'][0][0][:,0], 
+                                    y = grid_mfile['Mobj']['y'][0][0][:,0],
+                                    tri = grid_mfile['Mobj']['tri'][0][0][:]-1, 
+                                    h = grid_mfile['Mobj']['h'][0][0][:,0],
+                                    siglay = grid_mfile['Mobj']['siglay'][0][0], 
+                                    siglev = grid_mfile['Mobj']['siglev'][0][0], 
+                                    obc_nodes = list(grid_mfile['Mobj']['obc_nodes'][0][0][0]-1),
+                                    lon = grid_mfile['Mobj']['lon'][0][0][:,0],
+                                    lat = grid_mfile['Mobj']['lat'][0][0][:,0])
 
-    def _add_nc_grid(self, names, grid = False, transpose = False):
+    def _add_grid_parameters_nc(self):
         """
         Load ncdata from a fvcom-formated netCDF file
         """
-        with Dataset(self.filepath) as data:
-            for name in names:
-                try:
-                    d = data[name][:].data
-                    if transpose: d = d.T
-                    if grid: d = d-1
-                    setattr(self, name, d)
-                except:
-                    pass
-
         # Add casename
-        file = self.filepath.split('/')[-1]
-        self.casename = file.split(file.split('_')[-1])[0][:-1]
-        if 'restart' in file:
-            self.casename = file.split('_restart')[0]
+        self.casename = self.filepath.split('/')[-1].split(self.filepath.split('/')[-1].split('_')[-1])[0][:-1]
+        if 'restart' in self.filepath.split('/')[-1]:
+            self.casename = self.filepath.split('/')[-1].split('_restart')[0]
 
-    def _add_grid_parameters_npy(self, names):
+        with Dataset(self.filepath) as d:
+            obc_nodes = []
+            if 'obc_nodes' in d.variables.keys():
+                obc_nodes = list(d['obc_nodes'][:])
+
+            if 'siglay' in d.dimensions.keys():  
+                self._direct_initialization(x = d['x'][:], y = d['y'][:], 
+                                            lon = d['lon'][:], lat = d['lat'][:],
+                                            tri = d['nv'][:].T-1, h = d['h'][:], obc_nodes = obc_nodes)
+            else:
+                self._direct_initialization(x = d['x'][:], y = d['y'][:], 
+                                            lon = d['lon'][:], lat = d['lat'][:],
+                                            tri = d['nv'][:].T-1, h = d['h'][:], 
+                                            siglev = d['siglev'][:].T, siglay = d['siglay'][:].T,
+                                            obc_nodes = obc_nodes)
+
+    def _add_grid_parameters_npy(self):
         '''
         Load grid information stored in a M.npy file
         '''
         grid = np.load(self.filepath, allow_pickle=True).item()
-        for key in names:
-            if key == 'read_obc_nodes':
-                if not any(self.obc_nodes):
-                    try:
-                        self.obc_nodes = np.array(nodestring[0] for nodestring in grid[key])
-                    except:
-                        pass
-                continue
-            try:
-                setattr(self, key, grid[key])
-            except:
-                pass
+        obc_nodes = []
+        if 'obc_nodes' not in list(grid.keys()):
+            obcs = [list(nodestring[0]) for nodestring in grid['read_obc_nodes'][0]]
+            for obc in obcs:
+                obc_nodes.extend(obc)
+        else:
+            obc_nodes = list(grid['obc_nodes'])
 
+        self._direct_initialization(x = grid['x'], y = grid['y'], 
+                                    lon = grid['lon'], lat = grid['lat'],
+                                    tri = grid['nv'], h = grid['h'], 
+                                    siglay = grid['siglay'], siglev = grid['siglev'], 
+                                    obc_nodes = obc_nodes)
+        
         if hasattr(self, 'info'):
             self.casename = self.info['casename']
+            self.reference = grid['info']['reference']
+
+    def _add_grid_parameters_txt(self):
+        '''Grid parameters from smeshing file'''
+        with open(self.filepath) as f:
+            nodenum = int(f.readline())
+            points  = np.loadtxt(f, delimiter = ' ', max_rows = nodenum)
+            trinum  = int(f.readline())
+            tri     = np.loadtxt(f, delimiter = ' ', max_rows = trinum, dtype=int)
+        self._direct_initialization(x = points[:,0], y = points[:,1], tri = tri)
 
 class InputCoordinates:
     @property
@@ -588,11 +649,13 @@ class CellTriangulation:
         return masked_ctris
 
 class CropGrid:
-    '''It is convenient to extract a subset of the FVCOM grid, such as done here'''
+    '''
+    It is convenient to extract a subset of the FVCOM grid, such as done here
+    '''
     @property
     def cropped_nodes(self):
         if not hasattr(self, '_cropped_nodes'):
-            return []
+            return np.array(0)
         return self._cropped_nodes
 
     @cropped_nodes.setter 
@@ -602,7 +665,7 @@ class CropGrid:
     @property
     def cropped_cells(self):
         if not hasattr(self, '_cropped_cells'):
-            return []
+            return np.array(0)
         return self._cropped_cells
 
     @cropped_cells.setter 
@@ -610,7 +673,9 @@ class CropGrid:
         self._cropped_cells = var
 
     def interactive_cell_selection(self, xlim = None, ylim = None, inverse = False):
-        '''Get cells within (or outside) a user defined polygon'''
+        '''
+        Get cells within (or outside) a user defined polygon
+        '''
         from matplotlib.widgets import PolygonSelector
         from matplotlib.path import Path
         ax = plt.gca()
@@ -638,33 +703,46 @@ class CropGrid:
         Two input options:
         - xlim, ylim: subdomain (x, y)-limits in carthesian coordinates (list, np.array)
         - cells:      Cells to use in cropped mesh (if chosen, we will *not* use xlim, ylim) (np.array)
+
+        Returns:
+        - FVCOM_grid instance for the cropped mesh.
+          - nodestrings where the cropped mesh connects to the original mesh
+          - same depth information as the original mesh
+          - same mesh reference as the original mesh
+          - same casenane as the original mesh
+          - properties through TGE needs to be re-calculated
         '''
-        # Define which triangles to keep in cropped version
         if cells is None: 
             cells = self._find_cells_in_box(xlim, ylim)
-        coastline_bool = np.zeros(self.x.shape, dtype = bool)
-        self.x, self.y, self.tri, nodes, cells = self.remap(self.x, self.y, self.tri, cells)
-        self.lon, self.lat = np.zeros(self.x.shape), np.zeros(self.y.shape)
-        self._update_coastline_nodes(coastline_bool, nodes)
+        x, y, tri, nodes, cells = self.remap(self.x, self.y, self.tri, cells)
 
-        if hasattr(self, '_obc_nodes'):
-            delattr(self, '_obc_nodes')
-
-        # Make nodestrings for the mesh
-        self._update_obc()
-
-        # Delete cached attributes, re-project so that we have both x,y and lon,lat
-        self._delete_cached_attributes(nodes)
-        self._project_xy()
-
-        # To make sure we have consistent reference to the original node- and cell numbering
-        if not any(self.cropped_nodes):
-            self.cropped_nodes, self.cropped_cells = nodes, cells
+        # Create the cropped FVCOM_grid object
+        kwargs = {}
+        kwargs['x'], kwargs['y'], kwargs['tri'] = x, y, tri
+        if hasattr(self, '_h'): kwargs['h'] = self.h[nodes]
+        if hasattr(self, '_siglev'): kwargs['siglev'] = self.siglev[nodes, :]
+        if hasattr(self, '_siglay'): kwargs['siglay'] = self.siglay[nodes, :]
+        if self.cropped_nodes.any(): 
+            kwargs['cropped_nodes'] = self.cropped_nodes[nodes]
+            kwargs['cropped_cells'] = self.cropped_cells[cells]
         else:
-            self.cropped_nodes, self.cropped_cells = self.cropped_nodes[nodes], self.cropped_cells[cells]
+            kwargs['cropped_nodes'] = nodes
+            kwargs['cropped_cells'] = cells
+
+        new_self = type(self)(reference = self.reference, **kwargs)
+        new_self.casename = self.casename
+
+        coastline_bool = np.zeros(self.x.shape, dtype = bool)
+        coastline_bool[self.coastline_nodes] = True
+        new_self._update_coastline_nodes(coastline_bool[nodes])
+        new_self._update_obc()
+        new_self._project_xy()
+        return new_self
 
     def remap(self, x, y, nv, cropped_cells):
-        '''Returns a remapped version of the mesh, quarantees a valid mesh as output'''
+        '''
+        Returns a remapped version of the mesh, guarantees a valid mesh as output
+        '''
         while True:
             # See which nodes to keep (node_ind) and define new node indices
             cropped_nodes = np.unique(nv[cropped_cells])
@@ -681,6 +759,9 @@ class CropGrid:
         return x[cropped_nodes], y[cropped_nodes], all_nodes[nv[cropped_cells]], cropped_nodes, cropped_cells
 
     def _return_valid_triangles(self, x, y, tri):
+        '''
+        Only return valid triangles
+        '''
         _tri  = matplotlib.tri.Triangulation(x, y, tri)
         _nbrs = _tri.neighbors
         _nbrs[np.where(_nbrs > 0)] = 0
@@ -688,18 +769,15 @@ class CropGrid:
         return np.array([element for element in range(tri.shape[0]) if element not in _illegal])
 
     def _update_obc(self):
-        '''Update local land nodes, and local obc_nodes.'''
-        if hasattr(self, '_full_model_boundary'):
-            delattr(self, '_full_model_boundary')
+        '''
+        Update local land nodes, and local obc_nodes.
+        '''
         if any(self.coastline_nodes):
             ocean_obc_nodes, cells_connected_to_boundary = self._find_ocean_obc_nodes()
             self.obc_nodes = self._connect_ocean_obc_to_land(ocean_obc_nodes, cells_connected_to_boundary)
-        else:
-            self.obc_nodes = []
 
-    def _update_coastline_nodes(self, coastline_bool, cropped_nodes):
-        coastline_bool[self.coastline_nodes] = True
-        self.coastline_nodes = np.where(coastline_bool[cropped_nodes])[0].tolist()
+    def _update_coastline_nodes(self, coastline_bool):
+        self.coastline_nodes = np.where(coastline_bool)[0].tolist()
 
     def _find_ocean_obc_nodes(self):
         '''Finds all obc-nodes that are not in touch with the original grids coast'''
@@ -718,17 +796,7 @@ class CropGrid:
         _bool[ocean_obc_nodes] = True
         _tribool = _bool[self.tri].any(axis=1)
         obc_side_nodes = np.intersect1d(np.unique(self.tri[_tribool,:]), np.unique(self.coastline_nodes)).astype(int)
-        return np.append(ocean_obc_nodes, obc_side_nodes)     
-
-    def _delete_cached_attributes(self, cropped_nodes):
-        '''Delete fields that must be re-calculated when the triangulation changes (FVCOM_grid caches by using _field attributes)'''
-        if hasattr(self, '_h'):
-            self.h = self.h[cropped_nodes]
-        if hasattr(self,'_siglev'):
-            self.siglev, self.siglay = self.siglev[cropped_nodes, :], self.siglay[cropped_nodes, :]
-        for this in ['_zeta', '_nbe', '_nbse', '_nbsn', '_nbve', '_nese', '_ntve', '_latc', '_lonc', '_nodestrings', '_art1', '_ctri', '_T', '_model_boundary']:
-            if hasattr(self, this): 
-                delattr(self, this)
+        return list(np.append(ocean_obc_nodes, obc_side_nodes))
 
 class CoastLine:
     '''
@@ -1645,121 +1713,9 @@ class OutputLoader:
 class FVCOM_grid(GridLoader, InputCoordinates, Coordinates, PropertiesFromTGE, LegacyPropertyAliases, CellTriangulation, OutputLoader,
                  PlotFVCOM, ControlVolumePlotter, InterpolateToZ, LegacyFunctions, SectionMaker, ExportGrid, CropGrid, AnglesAndPhysics,
                  CoastLine, OBC, GridProximity):
-    '''
-    Easy access to any FVCOM grid source used by Akvaplan.
-    Used for post processing of data/grid + plotting of data.
-    Assumes that you are using UTM33W coordinates by default, but any can be provided. 
-    '''
-    def __init__(self,
-                 pathToFile = None,
-                 reference = 'epsg:32633',
-                 verbose   = False,
-                 static_depth = False,
-                 x = None, y = None, tri = None,
-                 h = None, siglay = None, siglev = None,
-                 obc_nodes = None, land_nodes = None,
-                 cropped_nodes = [], cropped_cells = []):
-        '''
-        pathToFile (if you want to read from a supported file format: 
-        - .2dm, .mat, .npy, .nc or .txt
+    '''FVCOM grid class compatible with ApN FVCOM workflows, and Akvaplan-branch uk-fvcom.
 
-        or direct input of grid metrixs
-        - x, y, tri      -- node locations, triangulation
-        - h, siglay, siglev -- vertical grid information (depth, vertical splits)
-        - obc_nodes, land_nodes -- boundary identifiers
-        - cropped_nodes, cropped_cells -- linking this mesh to a mother mesh
-
-        reference:
-        - by default UTM33W
-
-        verbose:
-        - set True if you want to get progress reports
-
-        static_depth:
-        - used when interpolating sections. The bottom z-level depth in a sigma-layer model is not static, since the water column thickness is not 
-          constant over the simulation period. When plotting section movies, however, it is convenient to force it to be stationary, not to confuse 
-          people unfamiliar with sigma layer discretizations too much.
-        '''
-        self.filepath       = pathToFile
-        self.reference      = reference
-        self.verbose        = verbose
-        self._static_depth  = static_depth
-
-        if pathToFile is None:
-            self._direct_initialization(x, y, tri, h, siglay, siglev, obc_nodes, land_nodes, cropped_nodes, cropped_cells)
-
-        elif pathToFile[-3:]   == 'mat':
-            self._load_mat()
-
-        elif pathToFile[-3:] == 'npy':
-            self._load_npy()
-
-        elif pathToFile[-3:] == '2dm':
-            self._load_2dm()
-
-        elif pathToFile[-3:] == '.nc':
-            self._load_nc()
-
-        elif pathToFile[-3:] == 'txt':
-            self._load_txt()
-
-        else:
-            assert False, f'{self.filepath} can not be read by FVCOM_grid'
-
-        self.Proj = self._get_proj()
-        self._project_xy()
-
-        # Initialize the coastline nodes
-        if not any(self.coastline_nodes):
-            _ = self.coastline_nodes
-
-    def _load_nc(self):
-        '''Grid parameters from .nc file'''
-        self._add_nc_grid(['x', 'y', 'lon', 'lat', 'h', 'art1', 'obc_type'])
-        self._add_nc_grid(['nv', 'nbe', 'nbve', 'nbsn','ntsn', 'ntve'], grid = True, transpose = True)
-        self._add_nc_grid(['siglev', 'siglay'], transpose = True)
-        self._add_nc_grid(['obc_nodes'], grid = True)
-        self.tri = self.__dict__.pop('nv')
-
-    def _load_mat(self):
-        '''Grid parameters from .mat file (legacy)'''
-        self._add_grid_parameters(['x', 'y', 'tri', 'lon', 'lat', 'h', 'hraw',\
-                                   'siglay', 'siglev', 'obc_nodes'])
-        self.tri   = np.array(self.tri)-1
-        self.nbsn -= 1
-
-    def _load_npy(self):
-        '''Grid parameters from M.npy file'''
-        self._add_grid_parameters_npy(['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'nv','siglay','siglev',\
-                                       'obc_nodes', 'read_obc_nodes', 'info', 'ts'])
-        self.tri = self.__dict__.pop('nv')
-
-    def _load_txt(self):
-        '''Grid parameters from smeshing file'''
-        with open(self.filepath) as f:
-            nodenum = int(f.readline())
-            points  = np.loadtxt(f, delimiter = ' ', max_rows = nodenum)
-            trinum  = int(f.readline())
-            tri     = np.loadtxt(f, delimiter = ' ', max_rows = trinum, dtype=int)
-        self.tri = tri
-        self.x, self.y  = points[:,0], points[:,1]
-        self.lon, self.lat = np.zeros(self.x.shape), np.zeros(self.y.shape)
-
-    def _direct_initialization(self, x, y, tri, h, siglay, siglev, obc_nodes, land_nodes, cropped_nodes, cropped_cells):
-        '''
-        Initialize a new FVCOM_grid object using known fields
-
-        TBD:
-        - Look into forcing all self._load_* routines to do call this initialization method?
-        - Do light safety check of input fields to make sure it can't be initialized wrong?
-        '''
-        self.x, self.y, self.tri = np.squeeze(x), np.squeeze(y), tri
-        self.h, self.siglay, self.siglev = np.squeeze(h), siglay, siglev
-        self.obc_nodes, self.land_nodes, = obc_nodes, land_nodes
-        self.cropped_nodes, self.cropped_cells = cropped_nodes, cropped_cells
-
-    def __str__(self):
-        return f'''Attributes:
+Attributes:
         Position data
             x, y   (lon, lat)   - node position
             xc, yc (lonc, latc) - cell position
@@ -1818,7 +1774,7 @@ Functions:
             .isinside()       - find nodes inside a search area
 
         Transect maker
-            .prepare_section() - Create a transect by selecting points on a map, will store to {self.casename}_section.py
+            .prepare_section() - Create a transect by selecting points on a map, will store to casename_section.py
 
         Physics
             .get_coriolis()   - Computes the coriolis parameter
@@ -1853,9 +1809,72 @@ Extended features through the mesh-connectivity TGE (.T) class:
         - .T.vorticity()         - vorticity of depth-averaged currents
         - .T.vorticity_3D()      - vorticity of 3D-currents
         - .T.okubo_weiss()       - okubo weiss parameter (for eddy detection)
+    '''
+    def __init__(self,
+                 pathToFile = None,
+                 reference = 'epsg:32633',
+                 verbose   = False,
+                 static_depth = False,
+                 x = None, y = None, 
+                 lon = None, lat = None,
+                 tri = None,
+                 h = None, siglay = None, siglev = None,
+                 obc_nodes = [],
+                 cropped_nodes = np.array(0), cropped_cells = np.array(0)):
+        '''
+        pathToFile (if you want to read from a supported file format: 
+        - .2dm, .mat, .npy, .nc or .txt
 
--------------------------------------------------------------------------------------------------------
+        or direct input of grid metrixs
+        - x, y, tri                    - node locations, triangulation
+        - lon, lat                     - node locations in spherical coordinates
+        - h, siglay, siglev            - vertical grid information (depth, vertical splits)
+        - obc_nodes                    - boundary identifiers
+        - cropped_nodes, cropped_cells - linking a cropped mesh to a mother mesh
 
+        reference:
+        - by default UTM33W
+
+        verbose:
+        - set True if you want to get progress reports
+
+        static_depth:
+        - used when interpolating sections. The bottom z-level depth in a sigma-layer model is not static, since the water column thickness is not 
+          constant over the simulation period. When plotting section movies, however, it is convenient to force it to be stationary, not to confuse 
+          people unfamiliar with sigma layer discretizations too much.
+        '''
+        self.filepath       = pathToFile
+        self.reference      = reference
+        self.verbose        = verbose
+        self._static_depth  = static_depth
+
+        if pathToFile is None:
+            self._direct_initialization(x=x, y=y, lon = lon, lat = lat, tri = tri, h = h, siglay = siglay, siglev = siglev, 
+                                        obc_nodes=obc_nodes, cropped_nodes=cropped_nodes, cropped_cells=cropped_cells)
+
+        elif pathToFile[-3:]   == 'mat':
+            self._add_grid_parameters_mat()
+
+        elif pathToFile[-3:] == 'npy':
+            self._add_grid_parameters_npy()
+
+        elif pathToFile[-3:] == '2dm':
+            self._add_grid_parameters_2dm()
+
+        elif pathToFile[-3:] == '.nc':
+            self._add_grid_parameters_nc()
+
+        elif pathToFile[-3:] == 'txt':
+            self._add_grid_parameters_txt()
+
+        else:
+            assert False, f'{self.filepath} can not be read by FVCOM_grid' # Add new readers when needbe
+
+        self.Proj = self._get_proj()
+        self._project_xy()
+
+    def __str__(self):
+        return f'''
 Grid read from:        {self.filepath}
 Number of nodes:       {len(self.x)}
 Number of triangles:   {len(self.xc)}
@@ -1866,11 +1885,18 @@ Reference:             {self.reference}
 '''
 
     def __repr__(self):
-        return f'{self.casename} FVCOM grid object'
+        return f'''{self.casename} FVCOM grid object
+
+Grid read from:        {self.filepath}
+Number of nodes:       {len(self.x)}
+Number of triangles:   {len(self.xc)}
+Grid resolution:       min: {np.min(self.grid_res):.2f} m, max: {np.max(self.grid_res):.2f} m
+Grid angles (degrees): min: {np.min(self.grid_angles):.2f}, max: {np.max(self.grid_angles):.2f}
+Reference:             {self.reference}'''
 
     @property
     def casename(self):
-        if any(self.cropped_nodes):
+        if self.cropped_nodes.any():
             return f'Cropped {self._casename}'
         else:
             return self._casename
