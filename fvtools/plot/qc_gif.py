@@ -35,7 +35,7 @@ def main(folder = None,
          section_res  = None,
          fps    = 12,
          cticks = None,
-         mname  = 'out',
+         mname  = None,
          dpi    = 100,
          reference = 'epsg:32633'):
     '''
@@ -113,6 +113,14 @@ def get_animator():
         raise ValueError('None of the standard animators are available, can not make the movie')
     return FuncAnimation, codec
 
+def write_movie(mmaker, anim, mname, field, codec, writer):
+    if mname is None:
+        mname = mmaker.M.casename
+
+    anim.save(f'{mname}_{field}.{codec}', writer = writer)
+    plt.close('all')
+    mmaker.bar.finish()
+    
 # ----------------------------------------------------------------------------------------------------------------------
 #                            For plotting movies of a sigma layer surface
 # ----------------------------------------------------------------------------------------------------------------------
@@ -122,7 +130,7 @@ def surface_movie(time, dates, List, index, var, sigma, cb, xlim, ylim, fps, cti
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    fig, mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma)
+    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma)
     MovieWriter, codec = get_animator()
 
     for field in var:
@@ -143,20 +151,18 @@ def surface_movie(time, dates, List, index, var, sigma, cb, xlim, ylim, fps, cti
                                                   repeat           = False,
                                                   blit             = False,
                                                   cache_frame_data = False)
+        writer = MovieWriter(fps = fps)
 
         # Set framerate, write the movie
-        writer = MovieWriter(fps = fps)
-        anim.save(f'{mname}_{field}.{codec}', writer = writer)
-        plt.close('all')
-        mmaker.bar.finish()
-    
+        write_movie(mmaker, anim, mname, field, codec, writer)
+
 def zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, mname, dpi, reference):
     '''
     Surface movie maker
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    fig, mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, z=z)
+    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, z=z)
     MovieWriter, codec = get_animator()
     
     for field in var:
@@ -167,6 +173,7 @@ def zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, 
         mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(time))
         mmaker.get_cmap(field, cb, cticks)
         mmaker.bar.start()
+        fig = mmaker.make_figure(dpi = dpi)
         anim           = manimation.FuncAnimation(fig,
                                                   mmaker.zlevel_animate,
                                                   frames           = len(time),
@@ -175,9 +182,7 @@ def zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, 
                                                   blit             = False,
                                                   cache_frame_data = False)
         writer = MovieWriter(fps = fps)
-        anim.save(f'{mname}_{field}_{z}m.{codec}', writer = writer)
-        plt.close('all')
-        mmaker.bar.finish()
+        write_movie(mmaker, anim, mname, field, codec, writer)
 
 def section_movie(time, dates, List, index, var, cb, section, section_res, fps, cticks, mname, dpi, reference):
     '''
@@ -227,9 +232,7 @@ def section_movie(time, dates, List, index, var, cb, section, section_res, fps, 
                                          blit             = False,
                                          cache_frame_data = False)
         writer = MovieWriter(fps = fps)
-        anim.save(f'{mname}_{field}_transect.{codec}', writer = writer)
-        plt.close('all')
-        mmaker.bar.finish()
+        write_movie(mmaker, anim, mname, field, codec, writer)
         
 def allFiles(folder):
     '''
@@ -353,7 +356,7 @@ class AnimationFields:
         '''we load velocities for the entire grid, since the vorticity calculation at boundaries is fizzy, hence we can't necessarilly use the cropped grid'''
         with Dataset(self.files[i], 'r') as d:
             _vort = self.T.vorticity(d['ua'][self.index[self.i], :], d['va'][self.index[self.i],:])
-        if any(self.M.cropped_cells):
+        if self.M.cropped_cells.any():
             _vort = _vort[self.M.cropped_cells]
         return _vort
     

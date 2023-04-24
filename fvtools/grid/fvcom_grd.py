@@ -134,10 +134,15 @@ class GridLoader:
                                     tri = grid['nv'], h = grid['h'], 
                                     siglay = grid['siglay'], siglev = grid['siglev'], 
                                     obc_nodes = obc_nodes)
-        
-        if hasattr(self, 'info'):
+        if 'info' in grid.keys():
+            self.info = grid['info']
             self.casename = self.info['casename']
-            self.reference = grid['info']['reference']
+            try:
+                self.reference = self.info['reference']
+            except:
+                pass
+        else:
+            self.casename = 'FVCOM experiment'
 
     def _add_grid_parameters_txt(self):
         '''Grid parameters from smeshing file'''
@@ -756,7 +761,7 @@ class CropGrid:
                 break
             else:
                 cropped_cells = cropped_cells[cropped_cells_tmp.astype(int)]
-        return x[cropped_nodes], y[cropped_nodes], all_nodes[nv[cropped_cells]], cropped_nodes, cropped_cells
+        return x[cropped_nodes], y[cropped_nodes], all_nodes[nv[cropped_cells]], np.array(cropped_nodes), cropped_cells
 
     def _return_valid_triangles(self, x, y, tri):
         '''
@@ -1645,7 +1650,7 @@ class LegacyFunctions:
 
 class OutputLoader:
     '''
-    Sub-methods for accessing FVCOM data
+    Methods used to load FVCOM data from netCDF file (will automatically crop to a subgrid)
     '''
     def load_netCDF(self, filepath, field, time, sig = None):
         '''
@@ -1662,7 +1667,7 @@ class OutputLoader:
             if 'time' not in d[field].dimensions or len(d[field].dimensions) == 1:
                 return d[field][:]
 
-            if any(self.cropped_nodes) or any(self.cropped_cells):
+            if self.cropped_nodes.any() or self.cropped_cells.any():
                 if 'node' in d[field].dimensions:
                     cropped = self.cropped_nodes
                 elif 'nele' in d[field].dimensions:
@@ -1690,7 +1695,7 @@ class OutputLoader:
 
     def _load_single_nc_field(self, d, field, cropped, time, sig):
         dim = len(d[field].dimensions)
-        if any(self.cropped_nodes) or any(self.cropped_cells):
+        if self.cropped_nodes.any() or self.cropped_cells.any():
             if dim == 2:
                 data = d[field][time, cropped]
             elif dim == 3:
@@ -1872,17 +1877,6 @@ Extended features through the mesh-connectivity TGE (.T) class:
 
         self.Proj = self._get_proj()
         self._project_xy()
-
-    def __str__(self):
-        return f'''
-Grid read from:        {self.filepath}
-Number of nodes:       {len(self.x)}
-Number of triangles:   {len(self.xc)}
-Grid resolution:       min: {np.min(self.grid_res):.2f} m, max: {np.max(self.grid_res):.2f} m
-Grid angles (degrees): min: {np.min(self.grid_angles):.2f}, max: {np.max(self.grid_angles):.2f}
-Casename:              {self.casename}
-Reference:             {self.reference}
-'''
 
     def __repr__(self):
         return f'''{self.casename} FVCOM grid object

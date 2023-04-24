@@ -1,18 +1,19 @@
 # this is just a draft and has not been tested in any way
-
 progressbar
 f90nml
-
+networkx
 numpy
 scipy
-pandas
+numba
 xarray
+netCDF4
+contextily
 cmocean
 matplotlib
-netCDF4
 utm
-PIL
-numba
 shapely
 pyproj
 pyTMD
+geopandas
+pandas
+ipython
