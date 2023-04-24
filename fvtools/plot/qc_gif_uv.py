@@ -64,7 +64,7 @@ def main(filelist = None,
 
     # Check if we can use a cropped version of the grid
     if xlim is not None and ylim is not None:
-        M.subgrid(xlim, ylim)
+        M = M.subgrid(xlim, ylim)
 
     # Establish the streamline maker
     stream         = streamlines(M, color = 'w', verbose = verbose)

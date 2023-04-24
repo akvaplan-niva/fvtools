@@ -57,8 +57,8 @@ def main(child_fn      = None,
         print(f'  Mother: {M.casename}\n')
 
         # Crop mother grid to just cover the child grid
-        M.subgrid([np.min(M_ch.x)-10000, np.max(M_ch.x)+10000], 
-                  [np.min(M_ch.y)-10000, np.max(M_ch.y)+10000])
+        M = M.subgrid([np.min(M_ch.x)-10000, np.max(M_ch.x)+10000], 
+                      [np.min(M_ch.y)-10000, np.max(M_ch.y)+10000])
 
         print('Searching for correct time index, prepare grid metrics')
         with netCDF4.Dataset(mother_fn,'r', format='NETCDF4') as mother:

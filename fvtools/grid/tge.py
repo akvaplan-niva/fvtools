@@ -191,10 +191,6 @@ def main(M, verbose = False):
     out.A1U, out.A2U = shape_coefficients(out.NT, out.XC, out.YC, out.NBE, out.ISBCE)
     if verbose: print('- Found shape coefficients for gradient calculation')
 
-    # Construct a dict containing all fields and store to .npy
-    out.write_data()
-    if verbose: print(f'- Stored the TGE coefficients to tge.npy')
-
     # Add reference to M to object if needed later?
     out.M = M
 
@@ -1307,7 +1303,6 @@ class TGE():
         outdict  = {}
         for key in datakeys:
             outdict[key] = getattr(self, key)
-
         np.save(fname, outdict)
 
     def get_art1(self, verbose = True):

@@ -122,7 +122,7 @@ def surface_movie(time, dates, List, index, var, sigma, cb, xlim, ylim, fps, cti
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    fig, mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma, dpi = dpi)
+    fig, mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma)
     MovieWriter, codec = get_animator()
 
     for field in var:
@@ -156,7 +156,7 @@ def zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, 
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    fig, mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, z=z, dpi = dpi)
+    fig, mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, z=z)
     MovieWriter, codec = get_animator()
     
     for field in var:
@@ -199,7 +199,7 @@ def section_movie(time, dates, List, index, var, cb, section, section_res, fps, 
 
     # Temporarilly store x_sec and y_sec
     x_sec, y_sec = np.copy(M.x_sec), np.copy(M.y_sec)
-    M.subgrid(cells=np.unique(indices))
+    M = M.subgrid(cells=np.unique(indices))
     M.x_sec, M.y_sec = x_sec, y_sec
     section = M.get_section_data(M.h)
 
@@ -449,7 +449,7 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         self.M = FVCOM_grid(List[0], reference = reference)
 
         if self.xlim is not None and self.ylim is not None:
-            self.M.subgrid(self.xlim, self.ylim)
+            self.M = self.M.subgrid(self.xlim, self.ylim)
 
         if 'pv' in var:
             self.M.get_coriolis()

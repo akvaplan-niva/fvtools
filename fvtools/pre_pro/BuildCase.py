@@ -413,14 +413,15 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         '''
         # Some names are expected by GridLoader and Coordinates - such as filepath and reference
         self.latlon = latlon
+        self.filepath, self.sigmafile, self.depth_file, self.reference = dmfile, sigma_file, depth_file, dm_projection
         self.verbose = False # since FVCOM_grid expects this one
         if latlon:
             print(f'\nBuilding case: {casename} from: {dmfile} with bathymetry from: {depth_file.split("/")[-1]} in spherical coordinates')
         else:
             print(f'\nBuilding case: {casename} from: {dmfile} with bathymetry from: {depth_file.split("/")[-1]} in carthesian coordinates')
 
-        self.filepath, self.sigmafile, self.depth_file, self.reference = dmfile, sigma_file, depth_file, dm_projection
-        self._load_2dm()
+        # read file, update input fields
+        self._add_grid_parameters_2dm()
         self.casename = casename
         self.Proj = self._get_proj()
         self._project_xy()
@@ -436,7 +437,10 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
             print(f'  - There are {len(self.xc)-len(cells)} illegal nodes in this mesh, removing those')
             plt.figure()
             self.plot_grid(label='input grid')
-            self.subgrid(cells = cells)
+
+            # subgrid (returns a FVCOM_grid instance, we update necessary fields)
+            new = self.subgrid(cells = cells)
+            self.x, self.y, self.lon, self.lat, self.tri, self.obc_nodes = new.x, new.y, new.lon, new.lat, new.tri, new.obc_nodes
             self.plot_grid(c='r-', label='fixed grid')
             self.plot_obc()
             plt.legend()
@@ -451,6 +455,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
             self.main()
         else:
             print('- The grid was changed, you may want to inspect it before running BuildCase.main()')
+            return self
 
     def __str__(self):
         return f'''
