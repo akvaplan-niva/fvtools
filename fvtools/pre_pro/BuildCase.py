@@ -410,6 +410,11 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
            import fvtools.pre_pro.BuildCase as bc
            case = bc.main( ... )
         -> case is the BuildCase object
+
+        if the mesh is invalid, BuildCase will pause to let you assess if the fixed mesh is ok for your purpose. If so call;
+           case.main()
+
+        and it will run and generate all necessary input files.
         '''
         # Some names are expected by GridLoader and Coordinates - such as filepath and reference
         self.latlon = latlon
@@ -439,8 +444,12 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
             self.plot_grid(label='input grid')
 
             # subgrid (returns a FVCOM_grid instance, we update necessary fields)
+            # - a BuildCase class is not a FVCOM_grid, so the subgridding is a bit of a hack - to get the nodestrings, we must delete the _full_model_boundary
             new = self.subgrid(cells = cells)
             self.x, self.y, self.lon, self.lat, self.tri, self.obc_nodes = new.x, new.y, new.lon, new.lat, new.tri, new.obc_nodes
+            for attr in ['full_model_boundary', 'nodestrings', 'coastline_nodes']:
+                delattr(self, attr)
+
             self.plot_grid(c='r-', label='fixed grid')
             self.plot_obc()
             plt.legend()
@@ -455,7 +464,6 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
             self.main()
         else:
             print('- The grid was changed, you may want to inspect it before running BuildCase.main()')
-            return self
 
     def __str__(self):
         return f'''
