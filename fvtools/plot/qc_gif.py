@@ -515,7 +515,7 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         plt.clf()
         if self.gp is not None:
             plt.imshow(self.gp.img, extent = self.gp.extent)
-        outdata = self.M.interpolate_to_z(self.field, z = self.z, verbose = False)
+        outdata = self.M.interpolate_to_z(self.field, z = self.z)
         cont = self.update_figure(field = outdata, title = self.datetime[i].strftime('%m/%d, %H:%M:%S') + f' at {self.z} m depth')
         return cont
 
