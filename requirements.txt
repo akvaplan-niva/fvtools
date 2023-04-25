@@ -17,3 +17,4 @@ pyTMD
 geopandas
 pandas
 ipython
+seawater
