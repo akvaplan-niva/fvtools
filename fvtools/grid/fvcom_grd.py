@@ -95,6 +95,7 @@ class GridLoader:
         """
         Load ncdata from a fvcom-formated netCDF file
         """
+        kwargs = {}
         # Add casename
         self.casename = self.filepath.split('/')[-1].split(self.filepath.split('/')[-1].split('_')[-1])[0][:-1]
         if 'restart' in self.filepath.split('/')[-1]:
@@ -103,18 +104,12 @@ class GridLoader:
         with Dataset(self.filepath) as d:
             obc_nodes = []
             if 'obc_nodes' in d.variables.keys():
-                obc_nodes = list(d['obc_nodes'][:]-1) # fortran to python indexing
-
-            if 'siglay' in d.dimensions.keys():  
-                self._direct_initialization(x = d['x'][:], y = d['y'][:], 
-                                            lon = d['lon'][:], lat = d['lat'][:],
-                                            tri = d['nv'][:].T-1, h = d['h'][:], obc_nodes = obc_nodes)
-            else:
-                self._direct_initialization(x = d['x'][:], y = d['y'][:], 
-                                            lon = d['lon'][:], lat = d['lat'][:],
-                                            tri = d['nv'][:].T-1, h = d['h'][:], 
-                                            siglev = d['siglev'][:].T, siglay = d['siglay'][:].T,
-                                            obc_nodes = obc_nodes)
+                kwargs['obc_nodes'] = list(d['obc_nodes'][:]-1) # fortran to python indexing
+            kwargs['x'], kwargs['y'], kwargs['lon'], kwargs['lat'], kwargs['tri'] = d['x'][:], d['y'][:], d['lon'][:], d['lat'][:], d['nv'][:].T-1
+            kwargs['h'] = d['h'][:]
+            if 'siglay' in d.dimensions.keys():
+                kwargs['siglev'], kwargs['siglay'] = d['siglev'][:].T, d['siglay'][:].T
+        self._direct_initialization(**kwargs)
 
     def _add_grid_parameters_npy(self):
         '''
@@ -1671,6 +1666,7 @@ class OutputLoader:
             try:
                 if 'node' in d[field].dimensions:
                     wet = np.where(self._load_single_nc_field(d, 'wet_nodes', cropped, time, sig)==0)[0]
+
                 elif 'nele' in d[field].dimensions:
                     wet = np.where(self._load_single_nc_field(d, 'wet_cells', cropped, time, sig)==0)[0]
 
@@ -1683,15 +1679,18 @@ class OutputLoader:
         return data
 
     def _load_single_nc_field(self, d, field, cropped, time, sig):
+        '''
+        Loads data from a netCDF file, crops to mesh if needbe
+        '''
         dim = len(d[field].dimensions)
         if self.cropped_nodes.any() or self.cropped_cells.any():
             if dim == 2:
-                data = d[field][time, cropped]
+                data = d[field][time, : ][cropped]
             elif dim == 3:
                 if sig is None:
-                    data = d[field][time, :, cropped]
+                    data = d[field][time, :, :][:, cropped]
                 else:
-                    data = d[field][time, sig, cropped]
+                    data = d[field][time, sig, :][cropped]
 
         else:
             if dim == 2:
@@ -1699,7 +1698,7 @@ class OutputLoader:
 
             if dim == 3:
                 if sig is None:
-                    data = d[field][time,:,:]
+                    data = d[field][time, :, :]
                 else:
                     data = d[field][time, sig, :]
         return data

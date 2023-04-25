@@ -195,6 +195,8 @@ def section_movie(time, dates, List, index, var, cb, section, section_res, fps, 
     # Find grid info
     print('- Get grid info, section points and triangulation')
     M = FVCOM_grid(List[0], verbose = False, reference = reference, static_depth = True)
+    if section is True:
+        section = None
     M.prepare_section(section_file = section, res = section_res, store_transect_img = True)
 
     # Crop grid to a sausage covering the transect (so we don't need to load excessive amounts of data to memory)
@@ -203,19 +205,17 @@ def section_movie(time, dates, List, index, var, cb, section, section_res, fps, 
         indices.extend(i)
 
     # Temporarilly store x_sec and y_sec
-    x_sec, y_sec = np.copy(M.x_sec), np.copy(M.y_sec)
-    M = M.subgrid(cells=np.unique(indices))
-    M.x_sec, M.y_sec = x_sec, y_sec
-    section = M.get_section_data(M.h)
+    C = M.subgrid(cells=np.unique(indices))
+    C.x_sec, C.y_sec = M.x_sec, M.y_sec
+    section = C.get_section_data(C.h)
 
     # Create the movie maker
     print('- Prepare the movie maker')
     mmaker   = VerticalMaker(time, dates, List, index, ylimit = [section['h'].min()-1, 2])
-    mmaker.M = M
+    mmaker.M = C
 
     print('\nMovie maker:')
     for field in var:
-        mmaker.M.fresh_section = True
         if field == 'zeta':
             continue
         mmaker.var = field
