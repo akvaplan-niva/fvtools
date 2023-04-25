@@ -11,6 +11,7 @@ from netCDF4 import Dataset
 from matplotlib.collections import PatchCollection
 from scipy.spatial import cKDTree as KDTree
 from numba import njit
+from functools import cached_property
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -50,8 +51,7 @@ class GridLoader:
         else:
             self.h = h
 
-        if siglay is not None and siglev is not None:
-            self.siglay, self.siglev = siglay, siglev
+        self.siglay, self.siglev = siglay, siglev
 
         # Identifiers
         self.obc_nodes, self.cropped_nodes, self.cropped_cells = obc_nodes, cropped_nodes, cropped_cells
@@ -724,9 +724,9 @@ class CropGrid:
         # Create the cropped FVCOM_grid object
         kwargs = {}
         kwargs['x'], kwargs['y'], kwargs['tri'] = x, y, tri
-        if hasattr(self, '_h'): kwargs['h'] = self.h[nodes]
-        if hasattr(self, '_siglev'): kwargs['siglev'] = self.siglev[nodes, :]
-        if hasattr(self, '_siglay'): kwargs['siglay'] = self.siglay[nodes, :]
+        if self.h is not None: kwargs['h'] = self.h[nodes]
+        if self.siglev is not None: kwargs['siglev'] = self.siglev[nodes, :]
+        if self.siglay is not None: kwargs['siglay'] = self.siglay[nodes, :]
         if self.cropped_nodes.any(): 
             kwargs['cropped_nodes'] = self.cropped_nodes[nodes]
             kwargs['cropped_cells'] = self.cropped_cells[cells]
@@ -734,7 +734,7 @@ class CropGrid:
             kwargs['cropped_nodes'] = nodes
             kwargs['cropped_cells'] = cells
 
-        new_self = type(self)(reference = self.reference, **kwargs)
+        new_self = FVCOM_grid(reference = self.reference, **kwargs)
         new_self.casename = self.casename
 
         coastline_bool = np.zeros(self.x.shape, dtype = bool)
@@ -807,46 +807,45 @@ class CoastLine:
     '''
     Identify the coastline nodes (boundary nodes that are not in the obc)
     '''
-    @property
+    @cached_property
     def coastline_nodes(self):
-        if not hasattr(self, '_coastline_nodes'):
-            self.find_coastline_nodes()
-        return self._coastline_nodes
-    
-    @coastline_nodes.setter
-    def coastline_nodes(self, var):
-        self._coastline_nodes = var
-
-    def find_coastline_nodes(self):
-        '''Find nodes that are part of the coastline'''
-        self._coastline_nodes = [node for node in self.full_model_boundary if node not in self.obc_nodes]
+        '''
+        Model nodes at the coastline
+        '''
+        coastline_nodes = [node for node in self.full_model_boundary if node not in self.obc_nodes]
 
         # Add the points connecting of the nodestrings to the coastline
         for nodestring in self.nodestrings:
-            self._coastline_nodes.extend(nodestring[[0,-1]].tolist())
+            coastline_nodes.extend(nodestring[[0,-1]].tolist())
+        return coastline_nodes
 
-    @property
+    @cached_property
     def model_boundary(self):
-        '''outer boundary of this model domain (x,y)'''
-        if not hasattr(self, '_model_boundary'):
-            polygons = self.get_land_polygons()
-            areas = [p.area for p in polygons]
-            polygon = [l for l, a in zip(polygons, areas) if a==max(areas)]
-            self._model_boundary = polygon[0].exterior
-        return self._model_boundary
+        '''
+        Outer boundary of this model domain (x,y)
+        '''
+        polygons = self.get_land_polygons()
+        areas = [p.area for p in polygons]
+        polygon = [l for l, a in zip(polygons, areas) if a==max(areas)]
+        _model_boundary = polygon[0].exterior
+        return _model_boundary
 
-    @model_boundary.setter
-    def model_boundary(self, var):
-        self._model_boundary = var
-
-    @property
+    @cached_property
     def full_model_boundary(self):
-        if not hasattr(self, '_full_model_boundary'):
-            self._full_model_boundary = self._get_all_boundary_nodes()
-        return self._full_model_boundary
+        '''
+        An array containing all nodes connected to the boundary (i.e. OBC and all coastline nodes)
+        '''
+        x, y = [], []
+        for pol in self.get_land_polygons():
+            xtmp, ytmp = pol.exterior.xy
+            x.extend(xtmp)
+            y.extend(ytmp)
+        return np.unique(self.find_nearest(x, y, grid = 'node'))
 
     def get_land_polygons(self):
-        '''the same way as done in trigrid'''
+        '''
+        the same way as done in trigrid
+        '''
         from shapely.ops import polygonize
         self._check_nv()
 
@@ -858,15 +857,6 @@ class CoastLine:
                                   )
                         )
         return polygons
-
-    def _get_all_boundary_nodes(self):
-        landpols = self.get_land_polygons()
-        x, y = [], []
-        for pol in self.get_land_polygons():
-            xtmp, ytmp = pol.exterior.xy
-            x.extend(xtmp)
-            y.extend(ytmp)
-        return np.unique(self.find_nearest(x, y, grid = 'node'))
 
     def _get_land_segments(self):
         '''Construct segments connected to land'''
@@ -889,15 +879,14 @@ class OBC:
     def obc_nodes(self, var):
         self._obc_nodes = var
 
-    @property
+    @cached_property
     def nodestrings(self):
         '''Each OBC nodestring stored as numpy arrays in a list [np.array(nodestring1), np.array(nodestring2), ...]'''
-        if not hasattr(self, '_nodestrings'):
-            if any(self.obc_nodes):
-                self._nodestrings = self._get_nodestrings(self.obc_nodes)
-            else:
-                self._nodestrings = []
-        return self._nodestrings
+        if any(self.obc_nodes):
+            nodestrings = self._get_nodestrings(self.obc_nodes)
+        else:
+            nodestrings = []
+        return nodestrings
 
     @property
     def x_obc(self):
