@@ -288,7 +288,7 @@ def get_MAXNBR(MT, NT, NV):
     for I in prange(MT):
         NCNT = 0
         for J in range(NT):
-            if np.float(NV[J,0] - I)*np.float(NV[J,1] - I)*np.float(NV[J,2] - I) == 0:
+            if float(NV[J,0] - I)*float(NV[J,1] - I)*float(NV[J,2] - I) == 0:
                 NCNT += 1
         elems_with_this_node[I] = NCNT
 
@@ -307,7 +307,7 @@ def get_NBVE_NBVT(MT, NT, NV, MXNBR_ELEMS):
     for I in prange(MT):
         NCNT = -1      # nodecount, negative by default
         for J in range(NT):
-            if np.float(NV[J,0] - I)*np.float(NV[J,1] - I)*np.float(NV[J,2] - I) == 0:
+            if float(NV[J,0] - I)*float(NV[J,1] - I)*float(NV[J,2] - I) == 0:
                 NCNT         += 1
                 NBVE[I,NCNT]  = J
                 for K in range(3):
@@ -336,7 +336,7 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
             for J in range(1, NTVE[I]+1):              # Loop over triangles connected to node
                 element    = nearby_elements[J-1, 0]   # II are thus indicies of neighboring elements to node I)
                 tri_corner = nearby_elements[J-1, 1]   # JJ is thus the index of nodes in the neighboring element)
-                nearby_elements[J,0] = NBE[element, np.int(tri_corner+1-np.floor((tri_corner+2)/4)*3)] # first element clockwise of start
+                nearby_elements[J,0] = NBE[element, int(tri_corner+1-np.floor((tri_corner+2)/4)*3)] # first element clockwise of start
 
                 # This was even sloppier coding for a while...
                 element = nearby_elements[J,0]
@@ -357,7 +357,7 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
             for J in range(NTSN[I]):
                 element    = NBVE[I,J]
                 tri_corner = NBVT[I,J]
-                NBSN[I,J]  = NV[element, np.int(tri_corner+1-np.floor((tri_corner+2)/4)*3)]
+                NBSN[I,J]  = NV[element, int(tri_corner+1-np.floor((tri_corner+2)/4)*3)]
 
             NTSN[I]          += 1
             NBSN[I,NTSN[I]-1] = NBSN[I,0]
@@ -370,7 +370,7 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
                 tri_corner = NBVT[I,J]
 
                 # check to find the boundary side of triangle
-                if NBE[NBVE[I,J], np.int(tri_corner+2-np.floor((tri_corner+3)/4)*3)] == -1: # if cell in counterclockwise direction is boundary cell
+                if NBE[NBVE[I,J], int(tri_corner+2-np.floor((tri_corner+3)/4)*3)] == -1: # if cell in counterclockwise direction is boundary cell
                     JJB +=1
                     nearby_elements[0, 0] = NBVE[I,J] # Store the triangle next to the boundary
                     nearby_elements[0, 1] = NBVT[I,J] # And the corner counter-clockwise to land
@@ -383,7 +383,7 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
             for J in range(1, NTVE[I]):
                 element    = nearby_elements[J-1,0]
                 tri_corner = nearby_elements[J-1,1]
-                nearby_elements[J,0] = NBE[element, np.int(tri_corner+1-np.floor((tri_corner+2)/4)*3)] # next node in clockwise direction
+                nearby_elements[J,0] = NBE[element, int(tri_corner+1-np.floor((tri_corner+2)/4)*3)] # next node in clockwise direction
                 element    = nearby_elements[J,0]
 
                 for K in range(3):
@@ -403,12 +403,12 @@ def get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, MXNBR, MT):
             for J in range(NTSN[I]-1):
                 element = NBVE[I,J]
                 tri_corner = NBVT[I,J]
-                NBSN[I,J+1] = NV[element, np.int(tri_corner+1-np.floor((tri_corner+2)/4)*3)]
+                NBSN[I,J+1] = NV[element, int(tri_corner+1-np.floor((tri_corner+2)/4)*3)]
 
             J  = NTSN[I]
             element    = NBVE[I,J-2]
             tri_corner = NBVT[I,J-2]
-            shift_counter_clockwise = np.int(tri_corner+2-np.floor((tri_corner+3)/4)*3)
+            shift_counter_clockwise = int(tri_corner+2-np.floor((tri_corner+3)/4)*3)
             NBSN[I,J]  = NV[element,shift_counter_clockwise]
             NTSN[I]   += 2
             NBSN[I,NTSN[I]-1] = I
@@ -443,8 +443,8 @@ def get_TRI_EDGE_PARAM(NT, NBE, NV):
                 TEMP[NE,1]  = element_other_side
 
                 # Update the nodes spanning the wall
-                TEMP2[NE,0] = NV[I, np.int(J+1-np.floor((J+2)/4)*3)]
-                TEMP2[NE,1] = NV[I, np.int(J+2-np.floor((J+3)/4)*3)]
+                TEMP2[NE,0] = NV[I, int(J+1-np.floor((J+2)/4)*3)]
+                TEMP2[NE,1] = NV[I, int(J+2-np.floor((J+3)/4)*3)]
 
                 NE         += 1                # Count number of unique edges
 
@@ -840,8 +840,7 @@ def get_art1(NT, MT, VX, VY, XC, YC, NV, ISONB, NTVE, NBVE, NBVT, NBSN):
                 J1 = NBVT[I,J-1] # Triangle nearby
 
                 # Cycle clockwise
-                J2 = np.int(J1+1-np.floor((J1+2)/4)*3)
-
+                J2 = int(J1+1-np.floor((J1+2)/4)*3)
 
                 XX[2*J-2] = (VX[NV[II,J1]]+VX[NV[II,J2]])*0.5-VX[I] # dx to midpoint on triangle wall
                 YY[2*J-2] = (VY[NV[II,J1]]+VY[NV[II,J2]])*0.5-VY[I] # dy to midpoint on triangle wall
@@ -860,7 +859,7 @@ def get_art1(NT, MT, VX, VY, XC, YC, NV, ISONB, NTVE, NBVE, NBVT, NBSN):
             for J in range(1,NTVE[I]+1):
                 II = NBVE[I,J-1]
                 J1 = NBVT[I,J-1]
-                J2 = np.int(J1+1-np.floor((J1+2)/4)*3)
+                J2 = int(J1+1-np.floor((J1+2)/4)*3)
                 XX[2*J-2] = (VX[NV[II,J1]]+VX[NV[II,J2]])*0.5-VX[I]
                 YY[2*J-2] = (VY[NV[II,J1]]+VY[NV[II,J2]])*0.5-VY[I]
                 XX[2*J-1] = XC[II]-VX[I]
@@ -869,7 +868,7 @@ def get_art1(NT, MT, VX, VY, XC, YC, NV, ISONB, NTVE, NBVE, NBVT, NBSN):
             J  = NTVE[I]+1
             II = NBVE[I,J-2]
             J1 = NBVT[I, NTVE[I]-1]
-            J2 = np.int(J1+2-np.floor((J1+3)/4)*3) # cycle counter-clockwise
+            J2 = int(J1+2-np.floor((J1+3)/4)*3) # cycle counter-clockwise
 
             XX[2*J-2] = (VX[NV[II,J1]]+VX[NV[II,J2]])*0.5-VX[I]
             YY[2*J-2] = (VY[NV[II,J1]]+VY[NV[II,J2]])*0.5-VY[I]
@@ -1021,8 +1020,8 @@ def cell_gradient(FIELD, XC, YC, NT, NBE, ISBCE, grid_points):
                 if NBE[I,J] == -1:
                     surrounding_cells = np.zeros((2,), dtype = np.int64)
                     # Cycle to the non-negative indices
-                    J1 = np.int(J+2-np.floor((J+3)/4)*3)
-                    J2 = np.int(J+1-np.floor((J+2)/4)*3)
+                    J1 = int(J+2-np.floor((J+3)/4)*3)
+                    J2 = int(J+1-np.floor((J+2)/4)*3)
                     surrounding_cells[0] = NBE[I,J1]
                     surrounding_cells[1] = NBE[I,J2]
                     break

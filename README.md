@@ -1,6 +1,31 @@
-# About the workflow in this repository
+# On the workflow in this repository
 
 This repo has two main branches: `master` and `dev`. Master is protected (meaning you have to open a merge request to get stuff in there). `dev` is for active development and is occasionally merged into `master`.
+
+# Setup
+We recommend using a singularity container, a Singularity.def definitions file is provided. Create a singularity image from a linux terminal on a machine where you have sudo privileges, and type:
+```
+sudo singularity build python.sif Singularity.def
+```
+You will need Singularity.def and requirements.txt in the directory from where you build this image. Activate the image by calling;
+```
+singularity shell python.sif
+```
+
+Bind paths and mounts to the image, like this on sigma2 clusters
+```
+singularity shell --bind /cluster python.sif
+```
+or like this on Stokes
+```
+singularity shell --bind "/work,/data" /home/hes/python.sif
+```
+
+Once having activated the singularity shell, you're effectively running a Ubuntu machine with python and all python modules necessary to use fvtools interatively on the cluster. I like to work in ipyton, and this simply just need to call it to get started;
+```singularity
+ipython
+```
+Make sure to add your `fvtools` folder to your path before attempting to follow the examples listed herein.
 
 # fvtools - tools to interact with FVCOM data
 a variety of scripts to interact with FVCOM data before, during and after a model run.
@@ -231,7 +256,7 @@ from fvtools.grid.fvcom_grd import FVCOM_grid
 M = FVCOM_grid("casename_0001.nc")
 
 # Get a quick summary of all attributes and functions:
-print(M)
+M?
 
 # See the mesh
 M.plot_grid()
@@ -262,7 +287,7 @@ M.plot_field(M.h)
 
 ### Check mass conservation
 ```python
-tracer = d['fabm_tracer'][:]
+tracer = M.load_netCDF('casename_0001.nc', 'fabm_tracer')
 for i in range(len(tracer[:,0,0])):
   mass = np.sum(M.node_volume * tracer[i,:].T)
   plt.scatter(i, mass)
@@ -273,8 +298,7 @@ for i in range(len(tracer[:,0,0])):
 ```python
 # Get salinity at 50 m depth and look at it
 from netCDF4 import Dataset
-data = Dataset('casename_0001.nc')
-salt = data['salinity'][0,:]
+salt = M.load_netCDF('casename_0001.nc', 'salinity' 0)
 salt_50m = M.interpolate_to_z(salt, 50)
 M.georeference()
 M.plot_contour(salt_50m)

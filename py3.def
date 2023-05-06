@@ -1,0 +1,23 @@
+Bootstrap: docker
+From: python:bullseye
+Stage: build
+
+%files
+	requirements.txt
+
+%environment
+	export PATH="/opt:$PATH"
+	export MY_ENV='python3'
+
+%post
+	apt update
+	apt install -y git gcc build-essential python3-dev libgeos-dev
+	pip install --upgrade pip
+	pip install -r requirements.txt
+
+%labels
+	Author hes@akvaplan.niva.no
+	Version 0.0.1
+
+%help
+	None provided -- rather much needed -- I find this confusing :)

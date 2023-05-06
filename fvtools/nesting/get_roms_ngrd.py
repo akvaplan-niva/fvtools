@@ -40,7 +40,7 @@ def main(mesh,
     # Adjust sides
     # ----
     circular = False
-    if M.nodestrings.shape[1] == 1:
+    if len(M.nodestrings) == 1:
         if M.nodestrings[0][0] == M.nodestrings[0][-1]:
             print('-- this nest is circular')
             circular = True
