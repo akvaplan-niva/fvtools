@@ -1,0 +1,64 @@
+BootStrap: library
+From: ubuntu:22.04
+Stage: build
+
+%files
+    requirements.txt
+
+%environment
+    export PATH="/opt:$PATH"
+    export MY_ENV='python3'
+
+%post
+    apt update
+    export DEBIAN_FRONTEND='noninteractive'
+    export TZ='Europe/Oslo'
+
+    apt install -y software-properties-common
+    apt install -y tzdata \
+                   curl \
+                   wget \
+                   vim-tiny \
+                   less \
+                   git \
+                   gcc \
+                   nco \
+                   tmux \
+                   cmake\
+                   build-essential \
+                   libseccomp-dev \
+                   libglib2.0-dev \
+                   pkg-config \
+                   squashfs-tools \
+                   cryptsetup \
+                   runc \
+                   python3-dev libgeos-dev python3 python3-pip python3-pyparsing python3-tk python3-netcdf4 \
+                   ffmpeg
+
+    pip install --upgrade pip
+    pip install numba==0.57.0
+    pip install shapely==2.0.1 cartopy==0.21.1 --no-binary shapely --no-binary cartopy==0.21.1
+    pip install -r requirements.txt
+
+%labels
+    Author hes@akvaplan.niva.no
+    Version 0.1.0
+
+%help
+    This is a singularity container written to be compatible with fvtools.
+    In particular, this container guarantees that:
+      - numpy is compatible with both cartopy and numba.
+      - shapely and cartopy are compatible
+
+    Other modules are well behaved, and subsequently have not received as extensive testing as those aforementioned ones -- please report errors :)
+
+    Known errors when changing module versions:
+    ---
+    - numba or numpy upgrade: tge.py stops working, test by calling;
+      M   = FVCOM_grid(gridfile)
+      M.T # will automatically run tge
+
+    - cartopy or shapely upgrade: segmentation faults when dealing with shapely geometries, test by calling;
+      M.georeference()
+      M.plot_grid()
+      --> If this works, chances are that cartopy was installed correctly.

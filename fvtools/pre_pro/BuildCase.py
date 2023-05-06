@@ -21,7 +21,7 @@ from scipy.interpolate import LinearNDInterpolator
 from matplotlib.tri import Triangulation
 from datetime import datetime
 from numba import jit, njit
-from fvtools.grid.fvcom_grd import GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropGrid, ExportGrid, CellTriangulation, PropertiesFromTGE, GridProximity, CoastLine
+from fvtools.grid.fvcom_grd import GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropGrid, ExportGrid, CellTriangulation, PropertiesFromTGE, GridProximity, CoastLine, AnglesAndPhysics
 from fvtools.grid.tge import get_NBE
 from functools import cached_property
 
@@ -114,7 +114,7 @@ class DepthHandler:
             depth = self.crop(depth)
             h_raw = self.interpolate_to_mesh(depth)
 
-        if np.argwhere(np.isnan(h_raw)).size >0:
+        if np.argwhere(np.isnan(h_raw)).size > 0:
             print(f'Nan found in h_raw. Nans are set to {self.min_depth} m. '+\
                   'Consider using a better bathymetry that has good coverage of the entire domain.'+\
                   'Number of nans found: {np.argwhere(np.isnan(h_raw)).size}')
@@ -185,9 +185,9 @@ class DepthHandler:
             nlev = int(data[0,1])
             lev = np.zeros(nlev)
             p_sigma = np.double(data[2,1])
-            for k in range(1,np.int(np.floor((nlev+1)/2)+1)):
+            for k in range(1, int(np.floor((nlev+1)/2)+1)):
                 lev[k-1]=-((k-1)/((nlev+1)/2 - 1))**p_sigma/2
-            for k in range(np.int(np.floor((nlev+1)/2))+1,nlev+1):
+            for k in range(int(np.floor((nlev+1)/2))+1,nlev+1):
                 lev[k-1]=((nlev-k)/((nlev+1)/2-1))**p_sigma/2-1
 
         else:
@@ -343,28 +343,8 @@ class DepthHandler:
                 ntsn[edge[1]] += 1
         return nbsn, ntsn
 
-    def get_cfl(self, z = 1.5, u = 3.0, g = 9.81):
-        '''
-        Estimate the CFD timestep
-        '''
-        # Length of each triangle side
-        lAB, lBC, lCA = self._get_sidewall_lengths()
-        dpt      = np.max(self.h[self.tri], axis = 1) + z
-        cg_speed = np.sqrt(dpt*g) + u
-        ts_AB, ts_BC, ts_CA = np.array(lAB/cg_speed), np.array(lBC/cg_speed), np.array(lCA/cg_speed)
-        ts_walls = np.array([ts_AB, ts_BC, ts_CA])
-        ts_min   = np.min(ts_walls, axis = 0)/np.sqrt(2) # to adjust for transverse wave propagation
-
-        print(f'  - Required timestep approx: {min(ts_min):.2f} s')
-        plt.figure()
-        contour = self.plot_contour(ts_min, cmap = 'jet', levels = np.linspace(min(ts_min), 3*min(ts_min), 20), extend = 'max')
-        plt.colorbar(contour, label = 's')
-        plt.axis('equal')
-        plt.show(block = False)
-        self.ts = ts_min
-
 class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropGrid, GridProximity, CoastLine,
-                ExportGrid, DepthHandler, CellTriangulation, PropertiesFromTGE):
+                ExportGrid, DepthHandler, CellTriangulation, PropertiesFromTGE, AnglesAndPhysics):
     '''
     Class to eat up the functionality in the rest of the script :)
     '''
@@ -434,7 +414,6 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         self.min_depth, self.rx0max, self.SmoothFactor = min_depth, rx0max, SmoothFactor
         self.sponge_factor, self.sponge_radius = sponge_factor, sponge_radius
         print(self)
-        _ = self.coastline_nodes
 
         print('- Check boundary triangles')
         cells = self._return_valid_triangles(self.x, self.y, self.tri)
@@ -569,7 +548,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         ----
         Returns a plot of the raw bathymetry
         """
-        increment = np.int(max(self.h_raw)/100)*10
+        increment = int(max(self.h_raw)/100)*10
         if increment == 0:
             return
 

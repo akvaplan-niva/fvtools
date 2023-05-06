@@ -83,6 +83,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
         info['compile river'] = False
 
     M.re_project(info['river_projection'])
+    M.get_cfl(verbose=False)
 
     # Initialize the object that will move rivers to the mesh and ensure numerical stability
     print('Identify FVCOM land:')

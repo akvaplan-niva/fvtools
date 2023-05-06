@@ -129,6 +129,13 @@ class GridLoader:
                                     tri = grid['nv'], h = grid['h'], 
                                     siglay = grid['siglay'], siglev = grid['siglev'], 
                                     obc_nodes = obc_nodes)
+
+        # Add nodestrings (for convenience, computing them can be quite slow on huge grids)
+        if 'read_obc_nodes' in grid.keys():
+            self.nodestrings = [list(nodestring[0]) for nodestring in grid['read_obc_nodes'][0]]
+        elif 'nodestrings' in grid.keys():
+            self.nodestrings = grid['nodestrings']
+
         if 'info' in grid.keys():
             self.info = grid['info']
             self.casename = self.info['casename']
@@ -807,7 +814,11 @@ class CoastLine:
         '''
         Model nodes at the coastline
         '''
-        coastline_nodes = [node for node in self.full_model_boundary if node not in self.obc_nodes]
+        fb_in_obc = np.intersect1d(self.full_model_boundary, self.obc_nodes)
+        inds_db_in_obc = np.intersect1d(fb_in_obc, self.full_model_boundary, return_indices=True)
+        obc_bool = np.ones(self.full_model_boundary.shape, dtype = bool)
+        obc_bool[inds_db_in_obc[2]] = False
+        coastline_nodes = self.full_model_boundary[obc_bool]
 
         # Add the points connecting of the nodestrings to the coastline
         for nodestring in self.nodestrings:
@@ -874,14 +885,19 @@ class OBC:
     def obc_nodes(self, var):
         self._obc_nodes = var
 
-    @cached_property
+    @property
     def nodestrings(self):
         '''Each OBC nodestring stored as numpy arrays in a list [np.array(nodestring1), np.array(nodestring2), ...]'''
-        if any(self.obc_nodes):
-            nodestrings = self._get_nodestrings(self.obc_nodes)
-        else:
-            nodestrings = []
-        return nodestrings
+        if not hasattr(self, '_nodestrings'):
+            if any(self.obc_nodes):
+                self._nodestrings = self._get_nodestrings(self.obc_nodes)
+            else:
+                self._nodestrings = []
+        return self._nodestrings
+
+    @nodestrings.setter
+    def nodestrings(self, var):
+        self._nodestrings = var
 
     @property
     def x_obc(self):
@@ -1423,7 +1439,7 @@ class ExportGrid:
         '''Write no M.npy file'''
         M = {}
         self.nv = self.tri
-        for var in ['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'nv','siglay','siglev', 'obc_nodes', 'info', 'ts']:
+        for var in ['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'nv', 'siglay', 'siglev', 'obc_nodes', 'nodestrings', 'info', 'ts']:
             try:
                 M[var] = getattr(self, var)
             except:
@@ -1490,7 +1506,9 @@ class PlotFVCOM:
                 kwargs['transform'] = self.transform
         return kwargs   
 
-    def georeference(self, url='https://openwms.statkart.no/skwms1/wms.topo4.graatone?service=wms&request=getcapabilities', layers=['topo4graatone_WMS'], wms = None):
+    def georeference(self, url='https://openwms.statkart.no/skwms1/wms.topo4.graatone?service=wms&request=getcapabilities', 
+                           layers=['topo4graatone_WMS'], wms=None,
+                           depth=True):
         '''
         Plot map data from WMS server as georeference. Must be done before plotting grid, contours etc.
         - requires cartopy
@@ -1498,6 +1516,7 @@ class PlotFVCOM:
         url:    defaults to grey norgeskart
         layers: valid layer from the url, must be a tuple with string(s)
         wms:    overwrites other input if not None, current options: "raster" or "topo4"
+        depth:  plot kartverket bathymetry
 
         Returns:
         ---
@@ -1515,6 +1534,10 @@ class PlotFVCOM:
             elif wms == 'topo4':
                 url = 'https://openwms.statkart.no/skwms1/wms.topo4?service=wms&request=getcapabilities'
                 layers = ['topo4_WMS']
+            elif wms == 'sjokart':
+                url = 'https://wms.geonorge.no/skwms1/wms.sjokartraster2?service=wms&version=1.3.0&request=getcapabilities'
+                layers = ['Overseiling']
+                depth = False
 
         if int(self.reference.split(':')[-1]) == 4326:
             lonmin, lonmax = self.lon.min(), self.lon.max()
@@ -1531,7 +1554,11 @@ class PlotFVCOM:
             self.transform = ccrs.PlateCarree(globe=crs.globe)
         else:
             ax = plt.axes(projection = ccrs.epsg(int(self.reference.split(':')[-1])))
+
         ax.add_wms(wms=url, layers=layers)
+        if wms != 'raster':
+            if depth:
+                ax.add_wms('https://wms.geonorge.no/skwms1/wms.dybdedata2?service=WMS&request=GetCapabilities', layers = ['Dybdedata2'])
         return ax
 
     def draw_geo_grid(self, extent):
@@ -1616,6 +1643,27 @@ class AnglesAndPhysics:
             self.f = np.sin(self.latc*2*np.pi/360)*4*np.pi/(24*60*60)
         else:
             self.f = np.sin(self.lat*2*np.pi/360)*4*np.pi/(24*60*60)
+
+    def get_cfl(self, z = 1.5, u = 3.0, g = 9.81, verbose = True):
+        '''
+        Estimate the CFD timestep
+        '''
+        # Length of each triangle side
+        lAB, lBC, lCA = self._get_sidewall_lengths()
+        dpt      = np.max(self.h[self.tri], axis = 1) + z
+        cg_speed = np.sqrt(dpt*g) + u
+        ts_AB, ts_BC, ts_CA = np.array(lAB/cg_speed), np.array(lBC/cg_speed), np.array(lCA/cg_speed)
+        ts_walls = np.array([ts_AB, ts_BC, ts_CA])
+        ts_min   = np.min(ts_walls, axis = 0)/np.sqrt(2) # to adjust for transverse wave propagation
+
+        if verbose:
+            print(f'  - Required timestep approx: {min(ts_min):.2f} s')
+            plt.figure()
+            contour = self.plot_contour(ts_min, cmap = 'jet', levels = np.linspace(min(ts_min), 3*min(ts_min), 20), extend = 'max')
+            plt.colorbar(contour, label = 's')
+            plt.axis('equal')
+            plt.show(block = False)
+        self.ts = ts_min
 
 class LegacyFunctions:
     def cell2node(self, fieldin):
