@@ -168,7 +168,7 @@ class InputCoordinates:
     @property
     def x(self):
         '''Node x position'''
-        return self._x
+        return np.array(self._x)
 
     @x.setter
     def x(self, var):
@@ -177,7 +177,7 @@ class InputCoordinates:
     @property
     def y(self):
         '''Node y-position'''
-        return self._y
+        return np.array(self._y)
 
     @y.setter
     def y(self, var):
@@ -205,7 +205,7 @@ class InputCoordinates:
     def zeta(self):
         '''Sea surface elevation (must be set by user for each timestep)'''
         if not hasattr(self, '_zeta'): self._zeta = np.zeros(self.x.shape)
-        return self._zeta
+        return np.array(self._zeta)
     
     @zeta.setter
     def zeta(self, var):
@@ -214,7 +214,7 @@ class InputCoordinates:
     @property
     def h(self):
         '''Bathymetric depth relative to mean sea level'''
-        return self._h
+        return np.array(self._h)
     
     @h.setter
     def h(self, var):
@@ -223,7 +223,7 @@ class InputCoordinates:
     @property
     def siglev(self):
         '''Sigma levels - top and bottom interfaces of sigma layers'''
-        return self._siglev
+        return np.array(self._siglev)
 
     @siglev.setter
     def siglev(self, var):
@@ -232,7 +232,7 @@ class InputCoordinates:
     @property
     def siglay(self):
         '''Sigma layer - centre position of sigma layer'''
-        return self._siglay
+        return np.array(self._siglay)
     
     @siglay.setter
     def siglay(self, var):
@@ -1724,7 +1724,7 @@ class OutputLoader:
                     data[:, wet] = np.nan
             except:
                 pass
-        return data
+        return np.array(data)
 
     def _load_single_nc_field(self, d, field, cropped, time, sig):
         '''

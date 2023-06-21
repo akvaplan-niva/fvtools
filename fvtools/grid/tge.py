@@ -792,7 +792,7 @@ def check_nv(nv, x, y, verbose = False):
         if neg.size > 0:
             raise ValueError('*Something* went wrong when trying to re-arrange the triangulation to clockwise direction :(')
         else:
-            if verbose: print('- Triangulation from source was anti-clockwise, it has now been re-arranged to be clockwise')
+            if verbose: print('- Triangulation from source was anti-clockwise. It is now clockwise')
     return nv
 
 def test_nv(x,y,nv):
@@ -1117,7 +1117,6 @@ def fvcom_cell_gradients_scalar(NT, NBE, a1u, a2u, F, grid_points):
             u1k3  = a1u[I,3]*F[NBE[I,2]]; u2k3 = a2u[I,3]*F[NBE[I,2]]
 
         # field gradient
-        # ----
         grad[I,0] = a1u[I,0]*F[I] + u1k1 + u1k2 + u1k3
         grad[I,1] = a2u[I,0]*F[I] + u2k1 + u2k2 + u2k3
 
@@ -1325,7 +1324,7 @@ class TGE():
     def vorticity_3D(self, u, v, h, sigma, grid_points = None, verbose = False):
         '''
         Calculate vorticity in all sigma layers, convert to z-coordinate
-        u,v   = [siglay, grid]
+        u, v  = [siglay, grid]
         h     = [grid]
         sigma = [siglay, grid]
 

@@ -37,16 +37,7 @@ def parse_command_line():
     if args.result_directories is None: 
         results = args.results.split(',')
     else:
-        file = open(args.result_directories, 'r')
-        
-        results = []
-        for line in file:
-            if len(line) > 1:
-                results.append(line.rstrip('\n'))
-            else:
-                pass
-        
-        file.close()
+        results = read_result_directories(args.result_directories)
 
     output = args.output
     simulation_name = args.simulation_name
@@ -54,8 +45,18 @@ def parse_command_line():
      
     return results, output, simulation_name, file_list_name
 
-
-
+def read_result_directories(result_directories):
+    '''
+    Read result directories from txt file
+    '''
+    with open(result_directories, 'r') as file:
+        results = []
+        for line in file:
+            if len(line) > 1:
+                results.append(line.rstrip('\n'))
+            else:
+                pass
+    return results
 
 def make_fileList(name, data_directories):
     ''' Make lists that link a point in time to fvcom result file 

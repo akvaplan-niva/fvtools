@@ -142,7 +142,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
 
     # Show the variables
     print('\nFinished, plotting the forcing')
-    show_forcing(Forcing, gp)
+    show_forcing(Forcing, gp, M)
 
     # Write to netCDF, write RiverNamelist.nml
     Forcing.dump()
@@ -167,7 +167,7 @@ def get_input():
     """
     # Betzy
     if os.getcwd().split('/')[1] == 'cluster':
-        river_data_path = '/cluster/shared/NS9067K/apn_backup/FVCOM/Setup_Files'
+        river_data_path = '/nird/projects/NS9067K/apn_backup/FVCOM/Setup_Files'
 
     # Stokes
     elif os.getcwd().split('/')[1] == 'work' or  os.getcwd().split('/')[1] == 'home':
@@ -275,7 +275,7 @@ class RiverTemperatures:
         data['temp'] = self.river_temp
         data['time'] = self.river_time
         data['vassdrag'] = self.vassdrag
-        print(f" - Store compiled temperature file in: {self.info['rivertemp']}/{self.casename}_temperatures.npy")
+        print(f" - Store compiled temperature file to: {self.info['rivertemp']}{self.casename}_temperatures.npy")
         np.save(f"{self.info['rivertemp']}/{self.casename}_temperatures.npy", data)
 
     def read_river_files(self):
@@ -624,6 +624,7 @@ class FVCOM_rivers:
         if self.info['iloc'] == 'edge':
             x_land  = self.M.xc[self.cells['boundary'][np.where(self.cells['id']==1)[0]]]
             y_land  = self.M.yc[self.cells['boundary'][np.where(self.cells['id']==1)[0]]]
+
         elif self.info['iloc'] == 'node':
             x_land  = self.M.x[self.nodes['boundary'][np.where(self.nodes['id']==1)[0]]]
             y_land  = self.M.y[self.nodes['boundary'][np.where(self.nodes['id']==1)[0]]]
@@ -642,6 +643,7 @@ class FVCOM_rivers:
         if self.info['iloc'] == 'edge':
             x_obc   = self.M.xc[self.cells['boundary'][np.where(self.cells['id']==2)[0]]]
             y_obc   = self.M.yc[self.cells['boundary'][np.where(self.cells['id']==2)[0]]]
+
         elif self.info['iloc'] == 'node':
             x_obc   = self.M.x[self.nodes['boundary'][np.where(self.nodes['id']==2)[0]]]
             y_obc   = self.M.y[self.nodes['boundary'][np.where(self.nodes['id']==2)[0]]]
@@ -1061,12 +1063,15 @@ def crop_object(obj, indices):
 
 # Show what we will write to the riverdata forcing
 # ----
-def show_forcing(obj, gp):
+def show_forcing(obj, gp, M):
     """
     Simple figures to see that the routine got the basics right
     """
     plt.figure()
-    plt.imshow(gp.img, extent = gp.extent)
+    try:
+        M.georeference()
+    except:
+        plt.imshow(gp.img, extent = gp.extent)
     plt.plot(obj.x_land, obj.y_land, 'g.', label = 'land nodes', zorder = 1)
     plt.scatter(obj.xriv, obj.yriv, np.mean(obj.RiverTransport, axis = 0), c = np.mean(obj.RiverTransport, axis = 0), zorder = 5)
     plt.title('Average transport')
@@ -1075,7 +1080,10 @@ def show_forcing(obj, gp):
     plt.show(block = False)
 
     plt.figure()
-    plt.imshow(gp.img, extent = gp.extent)
+    try:
+        M.gereference()
+    except:
+        plt.imshow(gp.img, extent = gp.extent)
     plt.plot(obj.x_land, obj.y_land, 'g.', label = 'land nodes', zorder = 1)
     plt.scatter(obj.xriv, obj.yriv, obj.RiverTemp.max(axis = 0), c = obj.RiverTemp.max(axis = 0), cmap = 'inferno', zorder = 5)
     plt.title('Max temperature in model period')

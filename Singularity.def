@@ -39,6 +39,10 @@ Stage: build
     pip install numba==0.57.0
     pip install shapely==2.0.1 cartopy==0.21.1 --no-binary shapely --no-binary cartopy==0.21.1
     pip install -r requirements.txt
+    pip install tk
+
+%runscript
+    /bin/bash --rcfile /.bashrc "$@"
 
 %labels
     Author hes@akvaplan.niva.no
@@ -50,7 +54,7 @@ Stage: build
       - numpy is compatible with both cartopy and numba.
       - shapely and cartopy are compatible
 
-    Other modules are well behaved, and subsequently have not received as extensive testing as those aforementioned ones -- please report errors :)
+    Other modules seems to be well behaved, and therefore have not received as extensive testing as those aforementioned ones -- please report errors :)
 
     Known errors when changing module versions:
     ---
