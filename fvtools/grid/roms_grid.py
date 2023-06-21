@@ -439,6 +439,7 @@ class HINorKyst(ROMSbase):
     def test_day(self, date):
         '''
         See if the local file exists that day, and has enough data
+        date: datetime object
         '''
         file = self.get_norkyst_local(date)
         self.test_ncfile(file)
@@ -552,7 +553,7 @@ class NorShelf(ROMSbase):
     for accessing NorShelf data
     '''
     def __str__(self):
-        if avg:
+        if self.avg:
             return 'NorShelf daily values'
 
         else:
