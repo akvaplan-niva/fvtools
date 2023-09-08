@@ -1,6 +1,10 @@
 # On the workflow in this repository
 
-This repo has two main branches: `master` and `dev`. Master is protected (meaning you have to open a merge request to get stuff in there). `dev` is for active development and is occasionally merged into `master`.
+This repo has two main branches: `master` and `dev`. 
+
+`master` is protected (you have to open a merge request to get stuff in there). 
+
+`dev` is for active development and is occasionally merged into `master`.
 
 # Setup
 We recommend using a singularity container, a Singularity.def definitions file is provided. Create a singularity image from a linux terminal on a machine where you have sudo privileges, and type:
@@ -21,7 +25,7 @@ or like this on Stokes
 singularity shell --bind "/work,/data" /home/hes/python.sif
 ```
 
-Once having activated the singularity shell, you're effectively running a Ubuntu machine with python and all python modules necessary to use fvtools interatively on the cluster. I like to work in ipyton, and this simply just need to call it to get started;
+I like to work in ipyton, and this simply just need to call it to get started;
 ```singularity
 ipython
 ```
@@ -34,24 +38,22 @@ a variety of scripts to interact with FVCOM data before, during and after a mode
 
 
 # General idea
-These scrips have been developed to emulate the workflow from fvcom_toolbox/fvtools in MATLAB
-
-`We always`:
-- Prepare our mesh in SMS, where we write a `.2dm` file with a nodestring on the outer boundaries
-- Use high-resolution bathymetry datasets downloaded from Kartverket with approval from the Norwegian Navy.
+`We always (or at least most of the time)`:
+- Prepare our mesh in SMS, where we make a `.2dm` file with nodestring(s) on the outer boundaries
+- Use high-resolution bathymetry datasets downloaded from Kartverket.
 - Use atmospheric forcing from the AROME configuration "MetCoOp" which is accessible on thredds.met.no
-
-`We most of the time`:
 - Work in Norway, where input data are most easilly accessible in `UTM33W` coordinates
 - Nest into existing `FVCOM` experiments using files stored on `Betzy` or on `Stokes`
 
 `We sometimes`:
-- Nest into larger domain ROMS models operated by the met office
-  - `NorKyst800` is an 800 m ROMS model configured for near-coast modelling.
-  - `NorShelf2.5km` is an 2500 m resolution data assimilated ROMS model configured for shelf modelling.
+- Nest into larger domain ROMS models operated by the MET office. Either;
+  - `NorKyst800`, an 800 m ROMS model configured for near-coast modelling.
+  - `NorShelf2.5km`, an 2.5 km resolution data assimilated ROMS model configured for shelf modelling.
 
-All standard scripts can be called via the `main` function, which will create input/forcing files following a standardized setup:
-- `fvtools.pre_pro.BuildCase.main` 
+`Quick summary of a typical setup`:
+
+All scripts are called via `main` function. To run FVCOM, you need to build grid-information files, create river forcing, write open boundary forcing and atmospheric forcing;
+- `grid information: fvtools.pre_pro.BuildCase.main` 
   - Quality controls the mesh (not complete, some rare cases such as nodes connected to two boundaries will not be detected yet)
   - Smooths raw bathymetry to desired `rx0` value (i.e. following MetOffice ROMS routines)
   - Returns estimate of necessary CFL criteria
@@ -61,21 +63,29 @@ All standard scripts can be called via the `main` function, which will create in
     - `casename_obc.dat`
     - `casename_spg.dat`
 
-- `fvtools.pre_pro.BuildRivers.main` creates river forcing for your experiment
-- `fvtools.nesting.get_ngrd.main` cuts out a nestingzone mesh from the main mesh
+- `river forcing: fvtools.pre_pro.BuildRivers.main` 
+  - creates river forcing for your experiment
+- `open boundary forcing: fvtools.nesting.fvcom2fvcom_nesting.main`
+  - Create a nestingzone grid: `fvtools.nesting.get_ngrd.main` 
+  - cuts out a nestingzone mesh from the main mesh
   - for fvcom to fvcom nested domains, this routine will dump the `casename_bathymetry.dat` file to your `input` folder 
-- `fvtools.atm.read_metCoop.main` interpolates atmospheric forcing to your domain
+- `atmospheric forcing: fvtools.atm.read_metCoop.main`
+  - interpolates atmospheric forcing to your domain
 
-Nesting is for ROMS nested and FVCOM nested models are done using:
-- `fvtools.nesting.roms_nesting_fg.main`
-  - will dump a `casename_bathymetry.dat` file to your `input` folder
-- `fvtools.nesting.fvcom2fvcom_nesting.main`
+## For forcing a mother model
+
+The mother model, is the model we use to force smaller-domain FVCOM models at their open boundaries. This is typically coarser, but covers a much greater domain. To make open boundary forcing for mother models, we interpolate hydrography from ROMS models operated by the MET office:
+
+  - `nestingzone grid for mother models: fvtools.nesting.get_ngrd`
+  - `make forcing: fvtools.nesting.roms_nesting_fg.main`
+    - will dump a `casename_bathymetry.dat` file to your `input` folder
 
 # Workflow:
-A typical Akvaplan FVCOM experiment goes through some standard steps:
+A typical Akvaplan FVCOM experiment is made following these steps:
 
-## Preparing an experiment
+## Preparing an experiment folder
 1. Create a folder called `casename` and a subfolder of it called `input`.
+
 2. Put a `casename_sigma.dat` file into `casename/input`, for example a TANH sigma coordinate:
 ```dat
 NUMBER OF SIGMA LEVELS = 35
@@ -84,8 +94,8 @@ DU = 2.5
 DL = 0.5
 ```
 
-### Preparing the mesh
-#### Writing .dat grid files
+## Preparing the mesh
+- making .dat grid files
 You have a `casename.2dm` file (either from smeshing or from SMS), create the FVCOM grid input files using `BuildCase`:
 ```python
 import fvtools.pre_pro.BuildCase as bc
@@ -95,7 +105,7 @@ bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 
 `Bathymetry`: BuildCase smooths the bathymetry to a  [rx0](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwil_uzfvL39AhWPnYsKHZREAtAQFnoECAUQAQ&url=http%3A%2F%2Fmathieudutour.altervista.org%2FPresentations%2FSteepnessPresExt.pdf&usg=AOvVaw1bBZEBsmkvWmSeCkxlrE3y) factor less than `rx0max`. 
 
-`Boundary setup`: It finds the `OBC`nodes, the `sponge nodes` and sets a `sponge factor`if asked to (defaults to 0).
+`Boundary setup`: It finds the `OBC` nodes, the `sponge nodes` and sets a `sponge factor`if asked to (defaults to 0).
 
 `BuildCase` returns `casename_*.dat` FVCOM input files to the `input` folder, and a file called `M.npy` used by other setup routines.
 
