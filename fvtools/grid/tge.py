@@ -782,7 +782,7 @@ def check_nv(nv, x, y, verbose = False):
         if verbose: print('- Triangulation from source file is clockwise')
 
     elif neg.size>0:
-        if len(neg) != len(nv[:,0]):
+        if len(neg) != nv.shape[0]:
             raise ValueError('The triangulation direction is inconsistent, either edit tge.py to\n'+\
                              'fix this, or fix the triangulation. TGE will not fix it for now, since\n'+\
                              'I am a bit qurious to see if triangulations can have inconsistent directions.')
@@ -1244,7 +1244,12 @@ def streamfunction(MT, VX, VY, NBSN, NTVE, NTSN, NBVE, NBVT, ISONB, u, v, thresh
 # -------------------------------------------------------------------------------------------------------
 #     Class that will function as a return of the function, and that can be used to load data into
 # -------------------------------------------------------------------------------------------------------
-class TGE():
+class TGE:
+    '''
+    Triangle Grid Edge -- inspired by tge.f in the FVCOM source code
+
+    Used to store and manage all TGE parameters, and call jitted functions
+    '''
     def __init__(self, fname = None):
         '''
         TGE is the output from the function tge.main. This class can also be loaded individually from tge
@@ -1256,6 +1261,14 @@ class TGE():
             elif fname.split('.')[-1] == 'mat':
                 self.load_data_mat(fname)
             self.get_art1()
+
+    def check_input(self, f):
+        '''
+        Numba will not accept masked arrays
+        '''
+        if type(f) == np.ma.core.MaskedArray:
+            f = np.array(f)
+        return f
 
     def load_data_npy(self, fname):
         tge    = np.load(fname, allow_pickle=True)
@@ -1317,6 +1330,8 @@ class TGE():
         plot_CV_points(self.M, self.NBSN, self.NTSN, self.NBVE, self.NTVE, I)
 
     def vorticity(self, u, v):
+        u = self.check_input(u)
+        v = self.check_input(v)
         return vorticity_node(u, v, self.NCV, self.MT, self.NTRG, self.NIEC,
                               self.DLTXE, self.DLTYE, self.art1, self.ISONB,
                               self.NTSN, self.NBSN)
@@ -1373,6 +1388,7 @@ class TGE():
         Vertical difference, centers the data to a new set of depth levels (for convenience)
         '''
         # -> Should not need other stuff than these
+        f = self.check_input(f)
         return vertical_gradient(f, h, sigma)
 
     def node_gradient(self, f):
@@ -1382,6 +1398,7 @@ class TGE():
         The routine is using a least squares method to fit a surface to the data around a node, the
         inclination of this surface is the gradient of the node based field.
         '''
+        f = self.check_input(f)
         return node_gradient(f, self.VX, self.VY, self.MT, self.NBSN, self.NTSN, self.ISONB)
 
     def cell_gradient(self, f, grid_points = None):
@@ -1396,12 +1413,15 @@ class TGE():
         '''
         if grid_points is None:
             grid_points = np.arange(len(f), dtype = np.int32)
+
         return cell_gradient(f, self.XC, self.YC, self.NT, self.NBE, self.ISBCE, grid_points)
 
     def fvcom_cell_gradient(self, u, v = None, grid_points = None):
         '''
         Using the same script as FVCOM uses internally
         '''
+        u = self.check_input(u)
+
         if grid_points is None:
             grid_points = np.arange(u.shape[0], dtype = np.int32)
 
@@ -1409,11 +1429,14 @@ class TGE():
             grad = fvcom_cell_gradients_scalar(self.NT, self.NBE, self.A1U, self.A2U, u, grid_points = grid_points)
 
         else:
+            v = self.check_input(v)
             grad = {}
             grad['u'], grad['v'] = fvcom_cell_gradients_speed(self.NT, self.NBE, self.A1U, self.A2U, u, v, grid_points = grid_points)
 
         return grad
 
+    # Get special values
+    # ----
     def okubo_weiss(self, u, v):
         '''
         Returns the okubo-weiss parameter as defined and described in Wekerle et. al. 2020
@@ -1445,12 +1468,12 @@ class TGE():
         '''
         Compute the streamfunction for a dataset
         '''
+        u = self.check_input(u)
+        v = self.check_input(v)
         return streamfunction(self.MT, self.VX, self.VY,
                               self.NBSN, self.NTVE, self.NTSN, self.NBVE, self.NBVT,
                               self.ISONB, u, v, threshold = threshold, boundary_conditions = boundary_conditions)
 
-    # Needed to compute standard deviation:
-    # --------------------------
     def standard_deviation(self, data):
         '''
         cell area weighted standard deviation

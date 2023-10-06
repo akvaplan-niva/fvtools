@@ -159,7 +159,7 @@ class InputCoordinates:
     @property
     def tri(self):
         '''Triangulation (n, 3) connecting the nodes making up triangle n'''
-        return self._tri
+        return np.array(self._tri)
 
     @tri.setter
     def tri(self, var):
@@ -186,7 +186,7 @@ class InputCoordinates:
     @property
     def lat(self):
         '''Node lat-position'''
-        return self._lat
+        return np.array(self._lat)
     
     @lat.setter
     def lat(self, var):
@@ -195,7 +195,7 @@ class InputCoordinates:
     @property
     def lon(self):
         '''Node lon-position'''
-        return self._lon
+        return np.array(self._lon)
     
     @lon.setter
     def lon(self, var):
@@ -848,6 +848,14 @@ class CoastLine:
             y.extend(ytmp)
         return np.unique(self.find_nearest(x, y, grid = 'node'))
 
+    @property
+    def ocean_polygons(self):
+        polygons = self.get_land_polygons()
+        areas = [p.area for p in polygons]
+        polygon = [l for l, a in zip(polygons, areas) if a==max(areas)]
+        _ = polygons.pop(np.where(np.array(polygons)==polygon)[0][0])
+        return polygons
+
     def get_land_polygons(self):
         '''
         the same way as done in trigrid
@@ -863,6 +871,29 @@ class CoastLine:
                                   )
                         )
         return polygons
+
+    def is_on_mesh(self, x, y):
+        '''
+        Check if points are within the mesh
+        '''
+        # Return points that are within the model domain
+        from matplotlib.path import Path
+        assert len(x)==len(y)
+        points = np.vstack([x,y])
+
+        def check_points(xpol, ypol, points):
+            path   = Path(np.vstack([np.array(xpol), np.array(ypol)]).T)
+            return path.contains_points(points.T)
+            
+        xpol, ypol = self.model_boundary.xy
+        inside = check_points(xpol, ypol, points)
+        points = points[:, inside]
+
+        for pol in self.ocean_polygons:
+            xpol, ypol = pol.exterior.coords.xy
+            inside = check_points(xpol, ypol, points)
+            points = points[:, ~inside]
+        return points
 
     def _get_land_segments(self):
         '''Construct segments connected to land'''
@@ -1811,8 +1842,9 @@ Functions:
 
         Grid:
             .get_land_polygons() - returns shapely land/islands polygons (the one with biggest area is the exterior boundary polygon)
-            .find_nearest()   - find nearest grid point (either grid = cell or grid = node) to input x,y
-            .isinside()       - find nodes inside a search area
+            .find_nearest()      - returns nearest grid point (either grid = cell or grid = node) to input x,y
+            .isinside()          - returns nodes inside a search area
+            .is_on_mesh(x,y)     - returns x,y points located on the mesh
 
         Transect maker
             .prepare_section() - Create a transect by selecting points on a map, will store to casename_section.py
@@ -2150,11 +2182,11 @@ class NEST_grid(LoadNest, NestROMS2FVCOM, Coordinates, PlotFVCOM, AnglesAndPhysi
     # Basic property names to comply with the subclasses we use to derive properties in M    
     @property
     def x(self):
-        return self.xn[:,0]
+        return np.array(self.xn[:,0])
 
     @property
     def y(self):
-        return self.yn[:,0]
+        return np.array(self.yn[:,0])
 
     @property
     def h(self):
@@ -2172,7 +2204,7 @@ class NEST_grid(LoadNest, NestROMS2FVCOM, Coordinates, PlotFVCOM, AnglesAndPhysi
 
     @property
     def tri(self):
-        return self.nv
+        return np.array(self.nv)
 
     @property
     def nid(self):

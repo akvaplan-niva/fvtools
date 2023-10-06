@@ -1,13 +1,9 @@
 # On the workflow in this repository
 
-This repo has two main branches: `master` and `dev`. 
-
-`master` is protected (you have to open a merge request to get stuff in there). 
-
-`dev` is for active development and is occasionally merged into `master`.
+This repo has two main branches: `master` and `dev`. Master is protected (meaning you must open a merge request to get stuff in there). `dev` is for active development and is occasionally merged into `master`.
 
 # Setup
-We recommend using a singularity container, a Singularity.def definitions file is provided. Create a singularity image from a linux terminal on a machine where you have sudo privileges, and type:
+We recommend using a singularity container; a Singularity.def definitions file is provided. Create a singularity image from a Linux terminal on a machine where you have sudo privileges and type:
 ```
 sudo singularity build python.sif Singularity.def
 ```
@@ -16,7 +12,7 @@ You will need Singularity.def and requirements.txt in the directory from where y
 singularity shell python.sif
 ```
 
-Bind paths and mounts to the image, like this on sigma2 clusters
+Bind paths and mounts to the image, like this on sigma2 clusters:
 ```
 singularity shell --bind /cluster python.sif
 ```
@@ -25,11 +21,11 @@ or like this on Stokes
 singularity shell --bind "/work,/data" /home/hes/python.sif
 ```
 
-I like to work in ipyton, and this simply just need to call it to get started;
+Once you have activated the singularity shell, you're effectively running a Ubuntu machine with Python and all Python modules necessary to use fvtools interactively on the cluster. I like to work in ipython, and I just need to call it to get started;
 ```singularity
 ipython
 ```
-Make sure to add your `fvtools` folder to your path before attempting to follow the examples listed herein.
+Add your `fvtools` folder to your path before following the examples.
 
 # fvtools - tools to interact with FVCOM data
 a variety of scripts to interact with FVCOM data before, during and after a model run.
@@ -38,23 +34,25 @@ a variety of scripts to interact with FVCOM data before, during and after a mode
 
 
 # General idea
-`We always (or at least most of the time)`:
-- Prepare our mesh in SMS, where we make a `.2dm` file with nodestring(s) on the outer boundaries
-- Use high-resolution bathymetry datasets downloaded from Kartverket.
+These scrips were developed to emulate the workflow from `fvcom_toolbox/fvtools` in MATLAB
+
+`We always`:
+- Prepare our mesh in SMS, where we write a `.2dm` file with a nodestring on the outer boundaries
+- Use high-resolution bathymetry datasets downloaded from Kartverket with approval from the Norwegian Navy.
 - Use atmospheric forcing from the AROME configuration "MetCoOp" which is accessible on thredds.met.no
-- Work in Norway, where input data are most easilly accessible in `UTM33W` coordinates
+
+`We most of the time`:
+- Work in Norway, where input data are most easily accessible in `UTM33W` coordinates
 - Nest into existing `FVCOM` experiments using files stored on `Betzy` or on `Stokes`
 
 `We sometimes`:
-- Nest into larger domain ROMS models operated by the MET office. Either;
-  - `NorKyst800`, an 800 m ROMS model configured for near-coast modelling.
-  - `NorShelf2.5km`, an 2.5 km resolution data assimilated ROMS model configured for shelf modelling.
+- Nest into larger domain ROMS models operated by the met office
+  - `NorKyst800` is an 800 m ROMS model configured for near-coast modelling.
+  - `NorShelf2.5km` is a 2500 m resolution data assimilated ROMS model configured for shelf modelling.
 
-`Quick summary of a typical setup`:
-
-All scripts are called via `main` function. To run FVCOM, you need to build grid-information files, create river forcing, write open boundary forcing and atmospheric forcing;
-- `grid information: fvtools.pre_pro.BuildCase.main` 
-  - Quality controls the mesh (not complete, some rare cases such as nodes connected to two boundaries will not be detected yet)
+You can call most scripts via the `main` function, which will create input/forcing files following a standardized setup:
+- `fvtools.pre_pro.BuildCase.main` 
+  - Quality controls the mesh (not complete; some rare cases, such as nodes connected to two boundaries, will not be detected yet)
   - Smooths raw bathymetry to desired `rx0` value (i.e. following MetOffice ROMS routines)
   - Returns estimate of necessary CFL criteria
   - Creates FVCOM.dat input files
@@ -63,30 +61,23 @@ All scripts are called via `main` function. To run FVCOM, you need to build grid
     - `casename_obc.dat`
     - `casename_spg.dat`
 
-- `river forcing: fvtools.pre_pro.BuildRivers.main` 
-  - creates river forcing for your experiment
-- `open boundary forcing: fvtools.nesting.fvcom2fvcom_nesting.main`
-  - Create a nestingzone grid: `fvtools.nesting.get_ngrd.main` 
-  - cuts out a nestingzone mesh from the main mesh
+- `fvtools.pre_pro.BuildRivers.main` creates river forcing for your experiment
+- `fvtools.nesting.get_ngrd.main` cuts out a nesting zone mesh from the main mesh
   - for fvcom to fvcom nested domains, this routine will dump the `casename_bathymetry.dat` file to your `input` folder 
 - `atmospheric forcing: fvtools.atm.read_metCoop.main`
   - interpolates atmospheric forcing to your domain
 
-## For forcing a mother model
-
-The mother model, is the model we use to force smaller-domain FVCOM models at their open boundaries. This is typically coarser, but covers a much greater domain. To make open boundary forcing for mother models, we interpolate hydrography from ROMS models operated by the MET office:
-
-  - `nestingzone grid for mother models: fvtools.nesting.get_ngrd`
-  - `make forcing: fvtools.nesting.roms_nesting_fg.main`
-    - will dump a `casename_bathymetry.dat` file to your `input` folder
+Nesting is for ROMS nested, and FVCOM nested models are done using the following:
+- `fvtools.nesting.roms_nesting_fg.main`
+  - will dump a `casename_bathymetry.dat` file to your `input` folder
+- `fvtools.nesting.fvcom2fvcom_nesting.main`
 
 # Workflow:
 A typical Akvaplan FVCOM experiment is made following these steps:
 
-## Preparing an experiment folder
-1. Create a folder called `casename` and a subfolder of it called `input`.
-
-2. Put a `casename_sigma.dat` file into `casename/input`, for example a TANH sigma coordinate:
+## Preparing an experiment
+1. Create a folder called `casename` and a subfolder called `input`.
+2. Put a `casename_sigma.dat` file into `casename/input`, for example, a TANH sigma coordinate:
 ```dat
 NUMBER OF SIGMA LEVELS = 35
 SIGMA COORDINATE TYPE = TANH
@@ -94,20 +85,20 @@ DU = 2.5
 DL = 0.5
 ```
 
-## Preparing the mesh
-- making .dat grid files
-You have a `casename.2dm` file (either from smeshing or from SMS), create the FVCOM grid input files using `BuildCase`:
+### Preparing the mesh
+#### Writing .dat grid files
+You have a `casename.2dm` file (either from smeshing or from SMS); create the FVCOM grid input files using `BuildCase`:
 ```python
 import fvtools.pre_pro.BuildCase as bc
 bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 ```
-`Mesh quality`: BuildCase prepares the grid before a simulation. It checks if there are invalid triangles (triangles with more than one side facing the boundary), and will remove such triangles if present.
+`Mesh quality`: BuildCase prepares the grid before a simulation. It checks if there are invalid triangles (with more than one side facing the boundary) and will remove such triangles if present.
 
-`Bathymetry`: BuildCase smooths the bathymetry to a  [rx0](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwil_uzfvL39AhWPnYsKHZREAtAQFnoECAUQAQ&url=http%3A%2F%2Fmathieudutour.altervista.org%2FPresentations%2FSteepnessPresExt.pdf&usg=AOvVaw1bBZEBsmkvWmSeCkxlrE3y) factor less than `rx0max`. 
+`Bathymetry`: BuildCase smooths the bathymetry to a  [rx0](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwil_uzfvL39AhWPnYsKHZREAtAQFnoECAUQAQ&url=http%3A%2F%2Fmathieudutour.altervista.org%2FPresentations%2FSteepnessPresExt.pdf&usg=AOvVaw1bBZEBsmkvWmSeCkxlrE3y) factor less than `rx0max`. 
 
-`Boundary setup`: It finds the `OBC` nodes, the `sponge nodes` and sets a `sponge factor`if asked to (defaults to 0).
+`Boundary setup`: It finds the `OBC` nodes, the `sponge nodes` and sets a `sponge factor` if asked to (defaults to 0).
 
-`BuildCase` returns `casename_*.dat` FVCOM input files to the `input` folder, and a file called `M.npy` used by other setup routines.
+`BuildCase` returns `casename_*.dat` FVCOM input files to the `input` folder and a file called `M.npy` used by other setup routines.
 
 #### The mesh in the nesting zone
 fvtools support two nesting types:
@@ -124,7 +115,7 @@ gn.main('M.npy', R=4.5*800)
 # FVCOM-FVCOM nesting:
 gn.main('M.npy', mother='mother_fvcom.nc')
 
-# These routines will create a ngrd.npy file in your working directory
+# These routines will create an ngrd.npy file in your working directory
 ```
 
 ### Nesting (OBC forcing)
@@ -141,13 +132,13 @@ f2f.main(ngrd = 'ngrd.npy',
 
 ```
 
-`ROMS-FVCOM nesting` will automatically find the forcing it need at thredds.met.no:
+`ROMS-FVCOM nesting` will automatically find the forcing it needs at thredds.met.no:
 ```python
 import fvtools.nesting.roms_nesting_fg as rn
 rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='NS')
 ```
 
-MET Norway does _not_ guarantee data continuous in time. We need to keep the tides continuous, for that we use `fvtools.nesting.fill_nesting.gaps`. It performs a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell` to fill gaps. Temperature and salinity are linearly interpolated. See examples/run_gap_filler.py and run_python.sh for example use.
+MET Norway does _not_ guarantee data is continuous in time. We must keep the tides continuous; for that, we use `fvtools.nesting.fill_nesting.gaps`. It performs a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell` to fill gaps. Temperature and salinity are interpolated linearly in time. See examples/run_gap_filler.py and run_python.sh for example use.
 
 `ROMS2FVCOM currently supports these ROMS models/setups`
 - Met office NorKyst `MET-NK`
@@ -155,14 +146,14 @@ MET Norway does _not_ guarantee data continuous in time. We need to keep the tid
 - Hourly NorShelf `H-NS`
 - Daily averaged NorShelf `D-NS`
 
-Other ROMS experiments can be supported by adding a ROMS reader to `fvtools.grid.roms_grd`.
+Adding a ROMS reader to `fvtools.grid.roms_grd` can support other ROMS experiments.
 
 ### River runoff
-River runoff is given for geographical catchment areas ids (vassdrag), the ids are mapped at [nve atlas](https://atlas.nve.no/)
+The river runoff is given for geographical catchment areas ids (vassdrag), and the ids are mapped at [nve atlas](https://atlas.nve.no/)
 - river temperatures are read from NVE text-files. 
 - a new "FVCOM-mother" grid requires you to compile a new rivertemp.npy file.
 
-Temperature files used to force the FVCOM-mother models are stored on the Stokes and Betzy, use these when nesting in a smaller model.
+Temperature files used to force the FVCOM-mother models are stored on the Stokes and Betzy; use these when nesting in a smaller model.
   - Stokes: `/data/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
   - Betzy:  `/cluster/shared/NS9067K/apn_backup/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
 
@@ -183,7 +174,7 @@ rm.main("M.npy", "./input/casename_atm.nc", "2018-01-01-00", "2018-02-01-00")
 
 ### Initial conditions
 #### interpol_restart
-Interpolates inital fields from a FVCOM mother to a restart file.
+It interpolates initial fields from an FVCOM mother to a restart file.
 - using an existing `restartfile.nc`
 - make a restartfile for a `startdate`
 
@@ -192,7 +183,7 @@ import fvtools.pre_pro.interpol_restart as ir
 ir.main(childfn="casename_restart_0001.nc", 
         filelist="filelist_restart.txt")
 
-# alternatively if you need to make a restart file
+# alternatively, if you need to make a restart file
 ir.main(startdate="2023-01-31-00", 
         filelist="filelist_restart.txt")
 
@@ -203,7 +194,7 @@ ir.main(childfn="casename_restart_0001.nc",
 ```
 
 #### interpol_roms_restart
-Interpolated initial fields from a ROMS model to your restartfile, but be warned: the model may crash if you set `uv=True`.
+Interpolate initial fields from a ROMS model to your restart file, but be warned: the model may crash if you set `uv=True`.
 ```python
 import fvtools.pre_pro.interpol_roms_restart as ir 
 ir.main("casename_restart_0001.nc", "NS", uv=True)
@@ -211,7 +202,7 @@ ir.main("casename_restart_0001.nc", "NS", uv=True)
 
 ## After an experiment
 ### A filelist linking to FVCOM results
-You have now run FVCOM, and it has stored results to output folders, e.g. output1, output2, output3. Store paths pointing to these folders in a "folders.txt" file:
+You have now run FVCOM, which has stored results to output folders, e.g. output1, output2, output3. Store paths pointing to these folders in a "folders.txt" file:
 ```txt
 /cluster/shared/NS9067K/apn_backup/FVCOM/MATNOC/PO10/output01
 /cluster/shared/NS9067K/apn_backup/FVCOM/MATNOC/PO10/output02
@@ -225,12 +216,12 @@ python fvcom_make_filelist.py -d folders.txt -s PO10 -f fileList.txt
 ```
 
 ### Take a quick look at the results
-`qc_gif` and `qc_gif_uv` creates animations of scalar or velocity fields between `[start, stop]` (or the entire timespan if not specified).
+`qc_gif` and `qc_gif_uv` create animations of scalar or velocity fields between `[start, stop]` (or the entire timespan if not specified).
 
-They are helpful to look for dynamically active regions so that you can avoid putting a nesting zone there. (that is: we want to put the nesting zone in areas where the flow fluctuates on timescales >> 1h to avoid aliasing and false shocks)
+They help look for dynamically active regions so that you can avoid putting a nesting zone there. (we want to put the nesting zone in areas where the flow fluctuates on timescales >> 1h to avoid aliasing and false shocks).
 
 #### qc_gif
-Plots any field stored on nodes, either as a sigma-layer movie, a z-level movie or a transect movie. It accepts a filename, a folder or a filelist as input.
+Plots any field stored on nodes, either as a sigma-layer, z-level, or transect movie. It accepts a filename, a folder or a filelist as input.
 ```python
 import fvtools.plot.qc_gif as qc
 qc.main(folder='output01', var=['salinity', 'temp'], sigma=0)
@@ -242,7 +233,7 @@ qc.main(folder='output01', var=['salinity', 'temp'], section=True)
 ```
 
 #### qc_gif_uv
-Creates quick georeferenced gifs of velocity fields. It accepts `filelist` and `folder`, as well as `sigma` and `z`.
+Creates quick georeferenced gifs of velocity fields. It accepts `filelist` and `folder`, `sigma` and `z`.
 ```python
 import fvtools.plot.qc_gif_uv as qc
 qc.main(folder='output01', sigma=0)
@@ -250,7 +241,7 @@ qc.main(folder='output01', z=10)
 
 ```
 ## The mesh object - FVCOM_grid
-The mesh object is the main interface for a quick look at an FVCOM grid. It reads a variety of input formats:
+The mesh object is the main interface for looking at an FVCOM grid. It reads a variety of input formats:
 - `casename_xxxx.nc`
 - `casename_restart_xxxx.nc`
 - `M.npy`
@@ -258,7 +249,7 @@ The mesh object is the main interface for a quick look at an FVCOM grid. It read
 - `casename.2dm`
 - `smeshing.txt`
 
-Provides simple functions to look at a mesh and results. Methods to export the mesh, write `*.dat` input files etc.
+It provides simple functions to look at a mesh and results. Methods to export the mesh, write `*.dat` input files etc.
 
 `Example use:`
 ```python
@@ -283,13 +274,13 @@ M.plot_grid()
 ```
 
 ### Plot results
-Data stored on nodes can be plotted on node-based control volumes patches, for example:
+Data stored on nodes can be plotted on node-based control volume patches, for example:
 ```python
 M.georeference()
 M.plot_cvs(M.h)
-
 ```
-alternatively plot on triangle patches (much faster the first time):
+
+Alternatively plot on triangle patches (much faster the first time):
 ```python
 M.plot_field(M.h)
 

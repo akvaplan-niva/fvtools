@@ -60,14 +60,13 @@ class streamlines:
         # Interpret grid input
         # ----
         self.verbose = verbose
-        if self.verbose: print('\nInitializing FVCOM streamline maker\n-----------------------')
+        if self.verbose: print('\nInitializing FVCOM streamline maker')
+        if self.verbose: print('-----------------------')
         if self.verbose: print('  - load grid')
         if isinstance(grid, str):
             self.M = FVCOM_grid(grid)
-
         elif isinstance(grid, object):
             self.M = grid
-
         else:
             raise InputError('Grid must either be a string or an object')
 
@@ -80,7 +79,6 @@ class streamlines:
         # ----
         if self.method == 'linear':
             self._prepare_linear()
-
         else:
             self._prepare_nearest()
 
