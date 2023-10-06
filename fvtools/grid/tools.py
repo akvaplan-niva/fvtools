@@ -34,29 +34,20 @@ class Filelist():
         fid.close()
         
         if time_format == 'FVCOM':
-            self.time_units = [1858,11,17] # days since 1858-11-17 00:00:00
-            self.time_type = 'days'
+            self.units = 'days since 1858-11-17 00:00:00'
 
         elif time_format == 'WRF':
-            self.time_units = [1948,1,1]   # days since 1948-01-01 00:00:00
-            self.time_type = 'days'
+            self.units = 'days since 1948-01-01 00:00:00'
 
         elif time_format == 'ROMS':
-            self.time_units = [1970,1,1]   # seconds since 1970-01-01 00:00:00
-            self.time_type = 'seconds'
+            self.units = 'seconds since 1970-01-01 00:00:00'
 
         elif time_format == 'WRF_dk':
-            self.time_units = [1900,1,1]   # minutes since 1900-01-01 00:00:00
-            self.time_type = 'minutes'
+            self.units = 'minutes since 1900-01-01 00:00:00'
 
 
         #self.datetime = netCDF4.num2date(self.time, units = self.time_units)
-        self.datetime = num2date(time = self.time, 
-                                 year = self.time_units[0], 
-                                 month = self.time_units[1], 
-                                 day = self.time_units[2], 
-                                 time_type = self.time_type
-                                 )
+        self.datetime = num2date(time = self.time, units = self.units)
         self.crop_list(start_time, stop_time)
 
 
@@ -113,7 +104,7 @@ class Filelist():
         return unique_files
 
 
-def num2date(time = None, Itime = None, Itime2 = None, year = 1858, month = 11, day = 17, time_type = 'days', units = None):
+def num2date(time = None, Itime = None, Itime2 = None, units = "days since 1858-11-17 00:00:00"):
     '''
     Convert float or integer time from fvcom output to python datetime
 
@@ -136,24 +127,21 @@ def num2date(time = None, Itime = None, Itime2 = None, year = 1858, month = 11, 
     '''
     # Assuming julian day:
     # ----
-    reference_time = datetime.datetime(year, month, day, 0, 0, 0, tzinfo = datetime.timezone.utc)
+    time_rel = units.split('since')[-1].split(' ')
+    date_rel = [int(num) for num in time_rel[1].split('-')]
+    date_rel.extend([int(num) for num in time_rel[2].split(':')])
+    reference_time = datetime.datetime(*date_rel, tzinfo = datetime.timezone.utc)
 
     # Time type:
     # ----
-    if time_type == 'days':
+    if 'days' == units.split(' ')[0]:
         dt = 1.0
-    elif time_type == 'minutes':
-        print('Warning: this feature has not been tested yet, but will return a result. Make sure to QC it.')
-        dt = 1.0/60.0
-    elif time_type == 'seconds':
-        print('Warning: this feature has not been tested yet, but will return a result. Make sure to QC it.')
-        dt = 1.0/(60.0*60.0)
-
-    if units is not None:
-        if '1858' in units:
-            dt = 1.0
-        else:
-            raise ValueError('Sorry, this routine just reads "units" for FVCOM output at the moment')
+    elif 'minutes'  == units.split(' ')[0]:
+        dt = 1.0/(24*60.0)
+    elif 'seconds' == units.split(' ')[0]:
+        dt = 1.0/(24*60.0*60.0)
+    else:
+        raise ValueError(f'{units=} is not a valid unit, must contain "days", "minutes" or "seconds"')
 
     # Timearray
     # ----
@@ -161,21 +149,18 @@ def num2date(time = None, Itime = None, Itime2 = None, year = 1858, month = 11, 
         try:
             raw_fvcom = [reference_time + datetime.timedelta(days = this_time) for this_time in time.astype(np.float64)*dt]
             out = np.array(raw_fvcom)
-            
         except:
             out = reference_time + datetime.timedelta(days = time*dt)
 
-    # Exclusive to FVCOM
+    # FVCOM stores time with higher precision
     # ----
     elif Itime is not None and Itime2 is not None:
         days   = Itime.data.astype(np.float64) + Itime2.data.astype(np.float64)/(24*60*60*1000)
         try:
             raw_fvcom = [reference_time + datetime.timedelta(days = this_time) for this_time in days]
             out = np.array(raw_fvcom)
-            
         except:
             out = reference_time + datetime.timedelta(days = days)
-
     else:
         raise ValueError('You need to specify either time or Itime and Itime2')
 

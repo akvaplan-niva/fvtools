@@ -26,10 +26,8 @@ def parse_command_line():
                               Altenatively, folders can be written in a txt-file and \
                               be given as directories -d (see below).',                          
                         default=os.getcwd()) 
-    parser.add_argument("-result_directories", "-d", help="Path to file with result folders listed",
-                        default=None)
-    parser.add_argument("-output", "-o", help="where to store the file",
-                        default=os.getcwd())
+    parser.add_argument("-result_directories", "-d", help="Path to file with result folders listed", default=None)
+    parser.add_argument("-output", "-o", help="where to store the file", default=os.getcwd())
     parser.add_argument("-simulation_name", "-s", help="Simulation name")
     parser.add_argument("-file_list_name", "-f", help="File list name",default='fileList.txt')
     args = parser.parse_args()
