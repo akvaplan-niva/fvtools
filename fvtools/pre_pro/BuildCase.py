@@ -427,7 +427,11 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
             new = self.subgrid(cells = cells)
             self.x, self.y, self.lon, self.lat, self.tri, self.obc_nodes = new.x, new.y, new.lon, new.lat, new.tri, new.obc_nodes
             for attr in ['full_model_boundary', 'nodestrings', 'coastline_nodes']:
-                delattr(self, attr)
+                if hasattr(self, attr):
+                    try:
+                        delattr(self, attr)
+                    except AttributeError:
+                        print(f"Attribute {attr} could not be deleted.")
 
             self.plot_grid(c='r-', label='fixed grid')
             self.plot_obc()
