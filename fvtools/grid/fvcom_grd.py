@@ -726,9 +726,12 @@ class CropGrid:
         # Create the cropped FVCOM_grid object
         kwargs = {}
         kwargs['x'], kwargs['y'], kwargs['tri'] = x, y, tri
-        if self.h is not None: kwargs['h'] = self.h[nodes]
-        if self.siglev is not None: kwargs['siglev'] = self.siglev[nodes, :]
-        if self.siglay is not None: kwargs['siglay'] = self.siglay[nodes, :]
+        if self.h is not None and not np.all(self.h == None):
+            kwargs['h'] = self.h
+        if self.siglev is not None and not np.all(self.siglev == None):
+            kwargs['siglev'] = self.siglev[nodes, :]
+        if self.siglay is not None and not np.all(self.siglay == None):
+            kwargs['siglay'] = self.siglay[nodes, :]
         if self.cropped_nodes.any(): 
             kwargs['cropped_nodes'] = self.cropped_nodes[nodes]
             kwargs['cropped_cells'] = self.cropped_cells[cells]
@@ -1334,7 +1337,7 @@ class ExportGrid:
         '''- Generates an ascii FVCOM 4.x format grid file'''
         if filename is None: 
             filename = f'input/{self.casename}_grd.dat'
-        x_grid, y_grid = self.get_xy(latlon)
+        x_grid, y_grid = self.get_xy(latlon)  
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
             f.write(f'Cell Number = {self.cell_number}\n')
