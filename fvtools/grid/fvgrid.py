@@ -1,5 +1,5 @@
 import numpy as np
-from matplotlib.tri.triangulation import Triangulation
+from matplotlib.tri import Triangulation
 from matplotlib.tri import CubicTriInterpolator
 
 def read_sms_mesh(mesh, nodestrings=False):
