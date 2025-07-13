@@ -27,6 +27,7 @@ from functools import cached_property
 
 def main(dmfile = None,
          depth_file = None,
+         draft_file = None,
          casename  = os.getcwd().split('/')[-1],
          dm_projection = 'epsg:32633', 
          depth_projection = 'epsg:32633', 
@@ -37,7 +38,9 @@ def main(dmfile = None,
          min_depth = 5.0,
          sponge_radius = 0,
          sponge_factor = 0,
-         latlon = False):
+         latlon = False,
+         write_dep = True,
+         iceshelf = False):
     '''
     Quality controls the mesh, interpolates the bathymetry to the mesh and smooths it to a desired rx0 value
 
@@ -60,13 +63,14 @@ def main(dmfile = None,
     sponge_factor: (0)      max diffusion in sponge zone (will not use sponge nodes if set equal to zero)
     SmoothFactor:  (0.2)    factor to weigh neighboring nodes during laplacian smoothing
     latlon:        (False)  write output as latlon
+    write_dep:     (True)   write depth file
     '''
     if sigma_file is None: sigma_file = f'./input/{casename}_sigma.dat'
-    bc = BuildCase(dmfile=dmfile, depth_file=depth_file, casename=casename,
+    bc = BuildCase(dmfile=dmfile, depth_file=depth_file, draft_file = draft_file, casename=casename,
                    dm_projection=dm_projection, depth_projection=depth_projection, target_projection=target_projection, 
                    sigma_file=sigma_file,
                    rx0max=rx0max, SmoothFactor=SmoothFactor, min_depth=min_depth, 
-                   sponge_radius=sponge_radius, sponge_factor=sponge_factor, latlon=latlon)
+                   sponge_radius=sponge_radius, sponge_factor=sponge_factor, latlon=latlon, write_dep=write_dep,iceshelf = iceshelf)
     return bc
 
 class DepthHandler:
@@ -150,6 +154,52 @@ class DepthHandler:
         print(f'- Storing the full bathymetry as: {numpy_bath_name}')
         np.save(numpy_bath_name, depth_data)
         return depth_data
+    
+    @property
+    def zisf_raw(self):
+        '''Ice shelf draft directly interpolated from the source'''
+        return self._zisf_raw
+
+    @zisf_raw.setter
+    def zisf_raw(self, var):
+        self._zisf_raw = var
+
+    def make_draft(self):
+        """Interpolate data from a draft file to the FVCOM mesh, adds 'zisf_raw' to the mesh"""
+        if self.draft_file.endswith('.npy'):
+            draft = self.load_numpydraft(self.draft_file)
+        else:
+            draft = self.load_textdraft(self.draft_file)
+        # Crop the data so that we only have data covering the FVCOM domain
+        draft = self.crop(draft)
+        zisf_raw = self.interpolate_to_mesh(draft)
+
+        self.zisf_raw = zisf_raw
+
+    @staticmethod
+    def load_numpydraft(draftfile):
+        """Load the ice draft from a numpy file"""
+        return np.load(draftfile, allow_pickle=True)
+
+    @staticmethod
+    def load_textdraft(draftfile):
+        """Load the draft file (.txt format, slow but flexible)"""
+        print(f'-> Load: {draftfile}')
+        try:
+            draft_data = np.loadtxt(draftfile, delimiter=',')
+        except:
+            try:
+                draft_data = np.loadtxt(draftfile)
+            except:
+                try:
+                    draft_data = np.loadtxt(draftfile, delimiter=' ')
+                except:
+                    draft_data = np.loadtxt(draftfile, skiprows=1, delimiter=',', usecols=[0, 1, 2])
+        numpy_draft_name = f'{draftfile.split(".txt")[0]}.npy'
+        print(f'- Storing the full draft as: {numpy_draft_name}')
+        np.save(numpy_draft_name, draft_data)
+        return draft_data
+
 
     def read_sigma(self):
         '''Generate a tanh sigma coordinate distribution
@@ -259,6 +309,27 @@ class DepthHandler:
                 print('  - Bathymetry smoothed.')
                 break
 
+    def smooth_draft(self):
+        """
+        Smooth the ice shelf draft where the smoothness is bad
+        """
+        print('  - Smoothing ice draft')
+        print('    - Laplacian filter')
+        self.zisf = self.laplacian_filter(self.x, self.y, self.zisf_raw, self.nbsn, self.ntsn, self.SmoothFactor)
+
+        print('  - Adjust draft slope')
+        print('    - Mellor, Ezer and Oey scheme')
+        i = 0
+        while True:
+            i += 1
+            self.zisf, rx0_max, corrected = self.mellor_ezer_oey(
+                self.zisf, self.ntsn, self.nbsn, rx0max=self.rx0max - 0.02
+            )
+            print(f'    {i}: Max rx0: {rx0_max:.2f} - Number of adjustments: {corrected}')
+            if abs(rx0_max - self.rx0max) < self.rx0max * 0.01 or rx0_max == 0:
+                print('  - Draft smoothed.')
+                break
+
     @staticmethod
     @njit
     def laplacian_filter(x, y, h, nbsn, ntsn, SmoothFactor):
@@ -351,6 +422,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
     def __init__(self,
                  dmfile = None,
                  depth_file = None,
+                 draft_file = None,
                  casename  = os.getcwd().split('/')[-1],
                  dm_projection = 'epsg:32633', 
                  depth_projection = 'epsg:32633', 
@@ -361,7 +433,9 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
                  min_depth = 5.0,
                  sponge_radius = 0,
                  sponge_factor = 0,
-                 latlon = False):
+                 latlon = False,
+                 write_dep = True,
+                 iceshelf = True):
         '''
         Input:
         ----
@@ -399,11 +473,19 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         # Some names are expected by GridLoader and Coordinates - such as filepath and reference
         self.latlon = latlon
         self.filepath, self.sigmafile, self.depth_file, self.reference = dmfile, sigma_file, depth_file, dm_projection
+        if iceshelf:
+           self.draft_file = draft_file
         self.verbose = False # since FVCOM_grid expects this one
         if latlon:
             print(f'\nBuilding case: {casename} from: {dmfile} with bathymetry from: {depth_file.split("/")[-1]} in spherical coordinates')
         else:
             print(f'\nBuilding case: {casename} from: {dmfile} with bathymetry from: {depth_file.split("/")[-1]} in carthesian coordinates')
+            
+        # if write out depth file when calling BuildCase.main
+        self.write_dep = write_dep    
+        
+        # if read ice draft, smooth and write out ice draft file when calling BuildCase.main
+        self.iceshelf = iceshelf    
 
         # read file, update input fields
         self._add_grid_parameters_2dm()
@@ -496,9 +578,19 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         self.write_grd(latlon = self.latlon)
         self.write_obc()
         self.write_sponge()
-        self.write_cor()
+        self.write_cor(latlon = self.latlon)
+        if self.write_dep:
+            self.write_bath(latlon = self.latlon)  # ← Call it conditionally
+        # --- Ice shelf handling ---
+        if self.iceshelf:
+            print('- Interpolate draft to mesh')
+            self.make_draft()
+            self.zisf = np.copy(self.zisf_raw)
+            print('- Smooth draft')
+            self.smooth_draft()
+            self.show_draft() 
+            self.write_draft_nc()          
         self.to_npy()
-
     @cached_property
     def Proj_2dm(self):
         '''Proj method for the 2dm input file'''
@@ -534,7 +626,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         self.info['created']    = datetime.now().strftime('%Y-%m-%d at %H:%M h')
         self.info['2dm file']   = self.filepath
         self.info['depth file'] = self.depth_file
-        self.info['author']     = os.getlogin()
+        #self.info['author']     = os.getlogin()
         self.info['directory']  = os.getcwd()
         self.info['scipt version'] = version_number
         self.info['casename']   = self.casename
@@ -581,6 +673,45 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         ax[2].set_yticks([])
         ax[2].set_title('raw-smoothed bathymetry')
         plt.colorbar(cdat, ax = ax[2])
+
+    def show_draft(self):
+        """
+        Plot the raw, smoothed and difference between the two of them
+
+        Out:
+        ----
+        Returns a plot of the raw ice draft
+        """
+        increment = int(max(self.zisf_raw)/100)*10
+        if increment == 0:
+            return
+
+        levels  = np.arange(0, max(self.zisf_raw), increment)
+        fig, ax = plt.subplots(nrows = 1, ncols = 3, figsize = (15,8))
+
+        cdat = ax[0].tricontourf(self.x, self.y, self.tri, self.zisf_raw, levels = levels, cmap = 'Blues_r')
+        ax[0].tricontour(self.x, self.y, self.tri, self.zisf_raw, levels = levels, colors = 'k')
+        ax[0].axis('equal')
+        ax[0].set_xticks([])
+        ax[0].set_yticks([])
+        ax[0].set_title('raw ice draft')
+        plt.colorbar(cdat, ax = ax[0])
+
+        cdat = ax[1].tricontourf(self.x, self.y, self.tri, self.zisf, levels = levels, cmap = 'Blues_r')
+        ax[1].tricontour(self.x, self.y, self.tri, self.zisf, levels = levels, colors = 'k')
+        ax[1].axis('equal')
+        ax[1].set_xticks([])
+        ax[1].set_yticks([])
+        ax[1].set_title('smoothed ice draft')
+        plt.colorbar(cdat, ax = ax[1])
+
+        cdat = ax[2].tricontourf(self.x, self.y, self.tri, self.zisf_raw-self.zisf, 100, cmap = 'coolwarm')
+        ax[2].axis('equal')
+        ax[2].set_xticks([])
+        ax[2].set_yticks([])
+        ax[2].set_title('raw-smoothed ice draft')
+        plt.colorbar(cdat, ax = ax[2])
+
 
 class RemapError(Exception):
     pass
