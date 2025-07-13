@@ -18,92 +18,14 @@ import time
 import fvtools.grid.fvcom_grd
 from fvtools.grid import tools
 
-def extract2file_subset_node(
-                        fileList="fileList.txt",
-                        output_file="subset_output.nc",
-                        start_time=None,
-                        stop_time=None,
-                        subset=None
-                        ):
-    '''
-    Extract raw FVCOM node-based fields: temperature, salinity, zeta, zisf, and meltrate,
-    on a subset of grid nodes, and save to NetCDF (no vertical interpolation).
-    '''
-
-    from netCDF4 import Dataset
-    import numpy as np
-
-    fl = tools.Filelist(fileList, start_time=start_time, stop_time=stop_time)
-
-    # Determine subset
-    subset = np.array(subset, dtype=int)
-   
-   
-    numberOfgridPoints = len(subset)
-    first_time = True
-    already_read = ""
-
-    for file_name, index, fvtime, counter in zip(fl.path, fl.index, fl.time, range(len(fl.time))):
-        if file_name != already_read:
-            d = Dataset(file_name, 'r')
-            print(file_name)
-        already_read = file_name
-
-        if first_time:
-            nz = d.variables['temp'].shape[1]
-
-            # Create output NetCDF
-            nc = Dataset(output_file, 'w', format='NETCDF4')
-            nc.createDimension('time', None)
-            nc.createDimension('space', numberOfgridPoints)
-            nc.createDimension('siglay', nz)
-
-            # Coordinate variables
-            nc.createVariable('fvcom_time', 'f4', ('time',))
-            nc.createVariable('lon', 'f4', ('space',))[:] = d.variables['lon'][subset]
-            nc.createVariable('lat', 'f4', ('space',))[:] = d.variables['lat'][subset]
-            nc.createVariable('x', 'f4', ('space',))[:] = d.variables['x'][subset]
-            nc.createVariable('y', 'f4', ('space',))[:] = d.variables['y'][subset]
-
-            # Data variables
-            T = nc.createVariable('temperature', 'f4', ('space', 'siglay', 'time'))
-            S = nc.createVariable('salinity', 'f4', ('space', 'siglay', 'time'))
-            zeta = nc.createVariable('zeta', 'f4', ('space', 'time'))
-            zisf = nc.createVariable('zisf', 'f4', ('space', 'time'))
-            meltrate = nc.createVariable('meltrate', 'f4', ('space', 'time'))
-
-            first_time = False
-
-        # Load core 3D fields
-        T[:, :, counter] = d.variables['temp'][index, :, subset].T
-        S[:, :, counter] = d.variables['salinity'][index, :, subset].T
-
-        # 2D fields
-        zeta[:, counter] = d.variables['zeta'][index, subset]
-
-        if 'zisf' in d.variables:
-            zisf[:, counter] = d.variables['zisf'][index, subset]
-        else:
-            zisf[:, counter] = np.zeros_like(subset, dtype=np.float32)
-
-        if 'meltrate' in d.variables:
-            meltrate[:, counter] = d.variables['meltrate'][index, subset]
-        else:
-            meltrate[:, counter] = np.full_like(subset, np.nan, dtype=np.float32)
-
-        nc.variables['fvcom_time'][counter] = d.variables['time'][index]
-
-    nc.close()
-    d.close()
-    
- # extract a single var
+ # extract a single variable or multi varibles
 def extract2file_subset_node_var(
     fileList="fileList.txt",
     output_file="subset_output",
     start_time=None,
     stop_time=None,
     subset=None,
-    variables=None  # e.g., ['zeta', 'zisf'] or 'zeta'
+    variables=None  # e.g., ['zeta', 'zisf','temp','salinity','meltrate']
 ):
     '''
     Extract selected FVCOM node-based variables on a subset of nodes
