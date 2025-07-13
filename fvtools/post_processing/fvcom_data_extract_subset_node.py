@@ -114,7 +114,7 @@ def extract2file_subset_node_var(
     if isinstance(variables, str):
         variables = [variables]
 
-    supported_vars = ['zeta', 'zisf', 'meltrate', 'temperature', 'salinity']
+    supported_vars = ['zeta', 'zisf', 'meltrate', 'temp', 'salinity']
     if variables is None:
         raise ValueError("Please specify one or more variables to extract.")
     for v in variables:
@@ -128,6 +128,7 @@ def extract2file_subset_node_var(
     first_time = True
     already_read = ""
     outputs = {}
+    print(f"Shape: {subset.shape}")
 
     for file_name, index, fvtime, counter in zip(fl.path, fl.index, fl.time, range(len(fl.time))):
         if file_name != already_read:
