@@ -33,24 +33,20 @@ class GridLoader:
         assert type(cropped_nodes) == np.ndarray, 'cropped nodes must be a numpy array'
         assert type(cropped_cells) == np.ndarray, 'cropped cells must be a numpy array'
         if h is not None: assert h.min() > 0, 'Minimum depth is invalid'
-
         # Add more tests when bugs appear
-        self.tri = tri
+        self.tri = tri 
         if x is None and y is None:
             self.x, self.y = np.zeros(tri.max()+1), np.zeros(tri.max()+1)
         else:
             self.x, self.y = np.squeeze(x), np.squeeze(y)
-
         if lon is None and lat is None:
             self.lon, self.lat = np.zeros(x.shape), np.zeros(y.shape)
         else:
             self.lon, self.lat = lon, lat
-
         if h is not None:   
             self.h = np.squeeze(h)
         else:
             self.h = h
-
         self.siglay, self.siglev = siglay, siglev
 
         # Identifiers
@@ -59,7 +55,7 @@ class GridLoader:
         assert self.x.shape == self.y.shape, 'x, y shapes do not match'
         assert len(self.x.shape) == 1 and len(self.y.shape) == 1, 'shape of x and y needs to be (N,)'
         assert self.lon.shape == self.lat.shape, 'lon, lat shapes do not match'
-
+        
     def _add_grid_parameters_2dm(self):
         '''
         Grid parameters from a .2dm file
@@ -90,7 +86,10 @@ class GridLoader:
                                     obc_nodes = list(grid_mfile['Mobj']['obc_nodes'][0][0][0]-1),
                                     lon = grid_mfile['Mobj']['lon'][0][0][:,0],
                                     lat = grid_mfile['Mobj']['lat'][0][0][:,0])
-
+        # Set zisf *after* initialization if it exists
+        if 'zisf' in grid_mfile['Mobj'].dtype.names:
+            self.zisf = grid_mfile['Mobj']['zisf'][0][0][:, 0]
+  
     def _add_grid_parameters_nc(self):
         """
         Load ncdata from a fvcom-formated netCDF file
@@ -109,7 +108,13 @@ class GridLoader:
             kwargs['h'] = d['h'][:]
             if 'siglay' in d.dimensions.keys():
                 kwargs['siglev'], kwargs['siglay'] = d['siglev'][:].T, d['siglay'][:].T
+                               
+            if 'zisf' in d.variables:
+                zisf_data = d['zisf'][:]
+                self.zisf = zisf_data[0, :] if zisf_data.ndim == 2 else zisf_data[:]
+                
         self._direct_initialization(**kwargs)
+
 
     def _add_grid_parameters_npy(self):
         '''
@@ -129,7 +134,9 @@ class GridLoader:
                                     tri = grid['nv'], h = grid['h'], 
                                     siglay = grid['siglay'], siglev = grid['siglev'], 
                                     obc_nodes = obc_nodes)
-
+        # Conditionally assign zisf
+        if 'zisf' in grid:
+            self.zisf = grid['zisf']
         # Add nodestrings (for convenience, computing them can be quite slow on huge grids)
         if 'read_obc_nodes' in grid.keys():
             self.nodestrings = [list(nodestring[0]) for nodestring in grid['read_obc_nodes'][0]]
@@ -221,6 +228,18 @@ class InputCoordinates:
         self._h = var
 
     @property
+    def zisf(self):
+        '''Ice draft depth relative to sea level'''
+        if not hasattr(self, '_zisf'):
+            self._zisf = np.zeros(self.x.shape)
+        return np.array(self._zisf)
+
+    @zisf.setter
+    def zisf(self, var):
+        self._zisf = var
+ 
+
+    @property
     def siglev(self):
         '''Sigma levels - top and bottom interfaces of sigma layers'''
         return np.array(self._siglev)
@@ -299,11 +318,20 @@ class Coordinates:
     def h_uv(self):
         '''bathymetric depth at cell center, will return same value as hc'''
         return np.mean(self.h[self.tri], axis = 1)
-
+    
+    @property
+    def zisfc(self):
+        '''ice draft at cell center'''
+        return np.mean(self.zisf[self.tri], axis = 1)
+    
     @property
     def d(self):
         '''total water column depth at nodes'''
-        return self.h + self.zeta
+        if hasattr(self, 'zisf') and self.zisf is not None:
+            return self.h + self.zeta - self.zisf
+        else:
+            return self.h + self.zeta
+
 
     # Properties dealing with the vertical coordinate
     @property
@@ -313,11 +341,16 @@ class Coordinates:
     
     @property
     def siglayz(self):
+        '''sigma layer surfaces depth below sea surface at nodes'''
+        if hasattr(self, "zisf"):
+            return self.d[:, None]*self.siglay - self.zisf[:, None]*self.siglay
         return self.d[:, None]*self.siglay
 
     @property
     def siglevz(self):
-        '''sigma level surfaces depth below mean sea surface at nodes'''
+        '''sigma level surfaces depth below sea surface at nodes'''
+        if hasattr(self, "zisf"):
+            return self.d[:, None]*self.siglev - self.zisf[:, None]*self.siglev
         return self.d[:, None]*self.siglev
 
     @property
@@ -727,7 +760,7 @@ class CropGrid:
         kwargs = {}
         kwargs['x'], kwargs['y'], kwargs['tri'] = x, y, tri
         if self.h is not None and not np.all(self.h == None):
-            kwargs['h'] = self.h
+            kwargs['h'] = self.h[nodes]
         if self.siglev is not None and not np.all(self.siglev == None):
             kwargs['siglev'] = self.siglev[nodes, :]
         if self.siglay is not None and not np.all(self.siglay == None):
@@ -742,11 +775,11 @@ class CropGrid:
         new_self = FVCOM_grid(reference = self.reference, **kwargs)
         new_self.casename = self.casename
 
-        coastline_bool = np.zeros(self.x.shape, dtype = bool)
-        coastline_bool[self.coastline_nodes] = True
-        new_self._update_coastline_nodes(coastline_bool[nodes])
-        new_self._update_obc()
-        new_self._project_xy()
+        #coastline_bool = np.zeros(self.x.shape, dtype = bool)
+        #coastline_bool[self.coastline_nodes] = True
+        #new_self._update_coastline_nodes(coastline_bool[nodes])
+        #new_self._update_obc()
+        #new_self._project_xy()
         return new_self
 
     def remap(self, x, y, nv, cropped_cells):
@@ -824,8 +857,8 @@ class CoastLine:
         coastline_nodes = self.full_model_boundary[obc_bool]
 
         # Add the points connecting of the nodestrings to the coastline
-        for nodestring in self.nodestrings:
-            coastline_nodes.extend(nodestring[[0,-1]].tolist())
+        #for nodestring in self.nodestrings:
+        #    coastline_nodes.extend(nodestring[[0,-1]].tolist())
         return coastline_nodes
 
     @cached_property
@@ -1364,24 +1397,74 @@ class ExportGrid:
         '''- Generates an ascii FVCOM 4.x formatted obc file'''
         if filename is None: 
             filename = f'input/{self.casename}_obc.dat'
+        
+        print(f"  - self.obc_nodes length: {len(self.obc_nodes)}")
+        print(f"  - self.obc_nodes: {self.obc_nodes}")
+
+    
         with open(filename, 'w') as f:
             f.write(f'OBC Node Number = {len(self.obc_nodes)}\n')
             i = 0
-            for nodestring in self.nodestrings:
-               for obc_node in nodestring:
-                    i += 1
-                    f.write(f'{i} {obc_node+1} 1\n')
+            for i, obc_node in enumerate(self.obc_nodes):
+                f.write(f'{i+1} {obc_node+1} 1\n')  # obc_node+1 to shift to 1-based indexing
         print(f'  - Wrote : {filename}')
 
-    def write_cor(self, filename = None):
+    def write_cor(self, filename = None, latlon = False):
         '''- Generates an ascii FVCOM 4.x formatted coriolis file'''
-        if filename is None: filename = f'input/{self.casename}_cor.dat'
+        if filename is None: 
+            filename = f'input/{self.casename}_cor.dat'
+        x_grid, y_grid = self.get_xy(latlon)  
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
             for x, y, lat in zip(self.x, self.y, self.lat):
                 line = '{0:.6f}'.format(x) + ' ' + '{0:.6f}'.format(y) + ' ' + '{0:.6f}'.format(lat)+'\n'
                 f.write(line)
         print(f'  - Wrote : {filename}')
+
+    def write_draft_nc(self, filename=None):
+        """Write the ice shelf draft to a NetCDF file in FVCOM format"""
+        import netCDF4 as nc
+        import os
+
+        if filename is None:
+            filename = f'input/{self.casename}_draft.nc'
+
+        print(f'  - Writing NetCDF draft file: {filename}')
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+        with nc.Dataset(filename, 'w', format='NETCDF4') as ds:
+            # Define dimensions
+            node_dim = ds.createDimension('node', len(self.x))
+
+            # Define variables
+            x_var = ds.createVariable('x', 'f4', ('node',))
+            y_var = ds.createVariable('y', 'f4', ('node',))
+            zisf_var = ds.createVariable('zisf', 'f4', ('node',))
+
+            # Set variable attributes
+            x_var.long_name = "nodal x-coordinate"
+            x_var.units = "meters"
+
+            y_var.long_name = "nodal y-coordinate"
+            y_var.units = "meters"
+
+            zisf_var.long_name = "Iceshelf Draft"
+            zisf_var.units = "m"
+            zisf_var.grid = "fvcom_grid"
+            zisf_var.coordinates = ""
+            zisf_var.type = "data"
+
+            # Assign data
+            x_var[:] = self.x
+            y_var[:] = self.y
+            zisf_var[:] = self.zisf
+
+            # Global attributes
+            ds.title = "FVCOM iceshelf draft File"
+            ds.CoordinateSystem = "spherical"
+
+        print(f'  - Done writing NetCDF: {filename}')
+        
 
     def write_coast(self, outfolder = None, buffer_width = 50000, verbose = False):
         '''
@@ -1439,7 +1522,7 @@ class ExportGrid:
         islands.extend(cropped_polys) # Add obc polygons to the list with islands (land is now also an island)
 
         # Re-project to latlon since this is what OpenDrift expects
-        project = Transformer.from_proj(self.Proj, Proj(init='epsg:4326')) # We always want to project to latlon, hence hardcoded
+        project = Transformer.from_proj(self.Proj, Proj(init='epsg:3031')) # We always want to project to latlon, hence hardcoded
         islands_latlon = [shp.ops.transform(project.transform, pol) for pol in islands]
 
         # Put into geopandas object, save to outfolder
@@ -1573,7 +1656,7 @@ class PlotFVCOM:
                 layers = ['Overseiling']
                 depth = False
 
-        if int(self.reference.split(':')[-1]) == 4326:
+        if int(self.reference.split(':')[-1]) == 3031:
             lonmin, lonmax = self.lon.min(), self.lon.max()
             latmin, latmax = self.lat.min(), self.lat.max()
             aspect_ratio = (float(latmax - latmin) / (float(lonmax - lonmin)))/np.cos(np.radians((latmin + latmax) / 2))
@@ -1871,6 +1954,7 @@ Functions:
             .write_sponge()   - return a sponge .dat
             .write_obc()      - return a obc .dat
             .write_cor()      - return a coriolis .dat
+            .write_draft_nc() - return a ice draft .dat
             .write_coast()    - returns a .shp file representing land masses as closed polygons
             .write_section()  - writes section points to a file
 
@@ -1888,7 +1972,7 @@ Extended features through the mesh-connectivity TGE (.T) class:
     '''
     def __init__(self,
                  pathToFile = None,
-                 reference = 'epsg:32633',
+                 reference = 'epsg:3031',
                  verbose   = False,
                  static_depth = False,
                  x = None, y = None, 
@@ -1909,7 +1993,7 @@ Extended features through the mesh-connectivity TGE (.T) class:
         - cropped_nodes, cropped_cells - linking a cropped mesh to a mother mesh
 
         reference:
-        - by default UTM33W
+        - by default polar sterographic projection
 
         verbose:
         - set True if you want to get progress reports
@@ -1923,7 +2007,6 @@ Extended features through the mesh-connectivity TGE (.T) class:
         self.reference      = reference
         self.verbose        = verbose
         self._static_depth  = static_depth
-
         if pathToFile is None:
             self._direct_initialization(x=x, y=y, lon = lon, lat = lat, tri = tri, h = h, siglay = siglay, siglev = siglev, 
                                         obc_nodes=obc_nodes, cropped_nodes=cropped_nodes, cropped_cells=cropped_cells)
@@ -2148,7 +2231,7 @@ class NEST_grid(LoadNest, NestROMS2FVCOM, Coordinates, PlotFVCOM, AnglesAndPhysi
     '''
     Object containing information about the nestingzone grid
     '''
-    def __init__(self, path_to_nest, M=None, proj='epsg:32633'):
+    def __init__(self, path_to_nest, M=None, proj='epsg:3031'):
         """
         Reads ngrd.* file
         """
