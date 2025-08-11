@@ -749,11 +749,11 @@ def write_2dm(datafile, cangle = 5, new2dm = None):
         print('New number of triangles: '+str(len(gtc[0])))
         print(' ')
 
-        if input('Good enough? y/[n] ').lower()=='y':
-            break
+        #if input('Good enough? y/[n] ').lower()=='y':
+        #    break
 
-        cangle = float(input('Enter the new critical angle:\n'))
-
+        #cangle = float(input('Enter the new critical angle:\n'))
+        break    
     # Show the angles that are less than 35 degrees
     # -------------------------------------------------------------------
     print('\nSlightly refined mesh:')
