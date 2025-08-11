@@ -29,13 +29,14 @@ def main(dmfile = None,
          depth_file = None,
          draft_file = None,
          casename  = os.getcwd().split('/')[-1],
-         dm_projection = 'epsg:32633', 
-         depth_projection = 'epsg:32633', 
-         target_projection = 'epsg:32633',
+         dm_projection = 'epsg:3031', 
+         depth_projection = 'epsg:3031', 
+         target_projection = 'epsg:3031',
          sigma_file = None,
          rx0max = 0.2,
          SmoothFactor = 0.2,
          min_depth = 5.0,
+         min_wct   = 20,
          sponge_radius = 0,
          sponge_factor = 0,
          latlon = False,
@@ -57,8 +58,9 @@ def main(dmfile = None,
 
     Other settings (default):
     ----
-    rx0max:        (0.2)    smoothing target for bathymetry
-    min_depth:     (5.0 m)  minimum depth in domain (to prevent drying)
+    rx0max:       (0.2)    smoothing target for bathymetry
+    min_depth:    (5.0 m)  minimum depth in domain (to prevent drying)
+    min_wct:      (20.0 m) minimum water column thickness for ice shelf applications
     sponge_radius: (0 m)    distance from OBC we add diffusion to damp waves
     sponge_factor: (0)      max diffusion in sponge zone (will not use sponge nodes if set equal to zero)
     SmoothFactor:  (0.2)    factor to weigh neighboring nodes during laplacian smoothing
@@ -69,7 +71,7 @@ def main(dmfile = None,
     bc = BuildCase(dmfile=dmfile, depth_file=depth_file, draft_file = draft_file, casename=casename,
                    dm_projection=dm_projection, depth_projection=depth_projection, target_projection=target_projection, 
                    sigma_file=sigma_file,
-                   rx0max=rx0max, SmoothFactor=SmoothFactor, min_depth=min_depth, 
+                   rx0max=rx0max, SmoothFactor=SmoothFactor, min_depth=min_depth, min_wct = min_wct,
                    sponge_radius=sponge_radius, sponge_factor=sponge_factor, latlon=latlon, write_dep=write_dep,iceshelf = iceshelf)
     return bc
 
@@ -167,12 +169,13 @@ class DepthHandler:
     def make_draft(self):
         """Interpolate data from a draft file to the FVCOM mesh, adds 'zisf_raw' to the mesh"""
         if self.draft_file.endswith('.npy'):
-            draft = self.load_numpydraft(self.draft_file)
+            draft_data = self.load_numpydraft(self.draft_file)
         else:
-            draft = self.load_textdraft(self.draft_file)
+            draft_data = self.load_textdraft(self.draft_file)
         # Crop the data so that we only have data covering the FVCOM domain
-        draft = self.crop(draft)
-        zisf_raw = self.interpolate_to_mesh(draft)
+        draft = self.crop_draft(draft_data)
+        zisf_raw = self.interpolate_to_mesh_draft(draft)
+        
 
         self.zisf_raw = zisf_raw
 
@@ -271,6 +274,29 @@ class DepthHandler:
         depth['y'] = depth_data[ind,1]
         depth['h'] = depth_data[ind,2]
         return depth
+    
+    def crop_draft(self, draft_data):
+        """
+        Crop the draft file to your domain
+        """
+        if max(draft_data[:,0]) < max(self.x_d) or min(draft_data[:,0]) > min(self.x_d) or max(draft_data[:,1]) < max(self.y_d) or min(draft_data[:,1]) > min(self.y_d):
+            plt.plot(draft_data[:,0], draft_data[:,1], 'r.', label = 'draft data')
+            plt.triplot(self.x_d, self.y_d, self.tri, label = 'FVCOM ', zorder = 10)
+            plt.legend()
+            plt.show(block=False)
+            raise ValueError('The ice draft file does not cover the model domain!')
+
+        print('  - Crop the draft data')
+        ind1 = np.logical_and(draft_data[:,0] >= min(self.x_d)-5000.0, draft_data[:,0] <= max(self.x_d)+5000.0)
+        ind2 = np.logical_and(draft_data[:,1] >= min(self.y_d)-5000.0, draft_data[:,1] <= max(self.y_d)+5000.0)
+        ind  = np.logical_and(ind1, ind2)
+
+        draft = {}
+        draft['x'] = draft_data[ind,0]
+        draft['y'] = draft_data[ind,1]
+        draft['zisf'] = draft_data[ind,2]
+        return draft
+
 
     def interpolate_to_mesh(self, depth):
         """
@@ -288,6 +314,19 @@ class DepthHandler:
             print(f'  - The depth at {len(i)} points was set equal to {self.min_depth} m')
         h_raw[i] = self.min_depth
         return h_raw
+    
+    def interpolate_to_mesh_draft(self, draft):
+        """
+        Interpolate draft data from the unstructured data array (data) to the unstructured mesh (M)
+        """
+        print('  - Build interpolator')
+        point = np.array([draft['x'], draft['y']]).T
+        interpolant = LinearNDInterpolator(point, draft['zisf'])
+
+        print('  - Interpolate icedraft to nodes')
+        zisf_raw = interpolant(self.x_d, self.y_d)
+        
+        return zisf_raw
 
     def smooth_topo(self):
         """
@@ -308,27 +347,121 @@ class DepthHandler:
             if abs(rx0_max - self.rx0max) < self.rx0max*0.01 or rx0_max == 0:
                 print('  - Bathymetry smoothed.')
                 break
+    
+    def smooth_topo_SO(self):
+        """
+        Tailored smoothing method for SO only, smooth the topography where the smoothness is bad, while 
+        protecting the slope region (400 - 2000 m) 
+        """
 
+        print('  - Reduce noise')
+        print('    - Laplacian filter')
+        
+        # Define protection mask: don't smooth 400-2000m region
+        protect_mask = (self.h_raw>400) & (self.h_raw < 2000)
+ 
+        n_protect = np.sum(protect_mask)
+        n_total = len(protect_mask)
+        print(f'  - Protecting {n_protect} of {n_total} nodes ({n_protect/n_total:.1%}) in slope zone (400–2000 m)')
+       
+        
+        self.h = self.laplacian_filter(
+            self.x, self.y, self.h, self.nbsn, self.ntsn, self.SmoothFactor
+        )
+
+        #print('  - Adjust slope')
+        #print('    - Mellor, Ezer and Oey scheme')
+
+        #max_iter = 100
+        #for i in range(max_iter):
+        #    self.h, rx0_max, corrected = self.mellor_ezer_oey(
+        #        self.h, self.ntsn, self.nbsn, rx0max=self.rx0max
+        #    )
+        #    print(f'    {i+1}: Max rx0 to be: {rx0_max:.2f} - Number of adjustments: {corrected}')
+
+        #    if corrected == 0 or abs(rx0_max - self.rx0max) < self.rx0max * 0.01:
+        #        print('  - Bathymetry smoothed.')
+        #        break
+        #else:
+        #    print(f'⚠️  Warning: smoothing did not converge after {max_iter} iterations (rx0_max = {rx0_max:.2f})')
+        # Restore slope region
+        # self.h[protect_mask] = self.h_raw[protect_mask]   
+            
+            
     def smooth_draft(self):
         """
-        Smooth the ice shelf draft where the smoothness is bad
+        Smooth the ice draft where the smoothness is bad
+        """
+        # Initial pass to do the initial smoothing (reduce dataset noise)
+        print('  - Reduce noise')
+        print('    - Laplacian filter')
+        self.zisf = self.laplacian_filter(self.x, self.y, self.zisf_raw, self.nbsn, self.ntsn, self.SmoothFactor+0.1)
+        
+        i = np.where((self.h[:]-self.zisf[:] ) < self.min_wct)[0]
+        if i.size:
+            print(f'  - The draft at {len(i)} points was set equal to h minus {self.min_wct} m')
+        updated_zisf = np.copy(self.zisf)
+        updated_zisf[i] = self.h[i] - self.min_wct
+        self.zisf = updated_zisf
+      
+        # Mild smoothing after lifting the ice  
+        
+        j = np.where((self.h[:]-self.zisf[:] ) < 100)[0]
+        if j.size:
+            print(f'  - The wct at {len(j)} points was shallower than 100 m ')
+    
+        intersection = np.intersect1d(i, j)
+        print("Number of common indices:", len(intersection))
+
+        self.zisf = self.laplacian_filter(self.x, self.y, self.zisf, self.nbsn, self.ntsn, self.SmoothFactor)
+
+        #print('  - Adjust slope')
+        #print('    - Mellor, Ezer and Oey scheme')
+        #max_iter = 100
+        #for i in range(max_iter):
+        #    self.zisf, rx0_max, corrected = self.mellor_ezer_oey(
+        #        self.zisf, self.ntsn, self.nbsn, rx0max=self.rx0max-0.1
+        #    )
+        #   print(f'    {i+1}: Max rx0 to be: {rx0_max:.2f} - Number of adjustments: {corrected}')
+
+        #    if corrected == 0 or abs(rx0_max - self.rx0max) < self.rx0max * 0.01:
+        #        print('  - Bathymetry smoothed.')
+        #        break
+        #else:
+        #    print(f'⚠️  Warning: smoothing did not converge after {max_iter} iterations (rx0_max = {rx0_max:.2f})')
+
+    def smooth_draft_wct(self):
+        """
+        Smooth the ice shelf draft where the water column thickness slope (rx0) is too steep.
+        Adjusts zisf to ensure wct = h - zisf satisfies rx0 < rx0max.
         """
         print('  - Smoothing ice draft')
         print('    - Laplacian filter')
-        self.zisf = self.laplacian_filter(self.x, self.y, self.zisf_raw, self.nbsn, self.ntsn, self.SmoothFactor)
+        self.zisf = self.laplacian_filter(
+            self.x, self.y, self.zisf_raw, self.nbsn, self.ntsn, self.SmoothFactor
+        )
 
         print('  - Adjust draft slope')
-        print('    - Mellor, Ezer and Oey scheme')
-        i = 0
-        while True:
-            i += 1
-            self.zisf, rx0_max, corrected = self.mellor_ezer_oey(
-                self.zisf, self.ntsn, self.nbsn, rx0max=self.rx0max - 0.02
+        print('    - rx0-limiter for wct = h - zisf')
+
+        target_rx0 = self.rx0max - 0.02
+        max_iter = 100
+
+        for i in range(max_iter):
+            self.zisf, rx0_max, corrected = self.smooth_draft_rx0(
+                self.h, self.zisf, self.ntsn, self.nbsn,
+                rx0max=target_rx0,
+                min_wct=self.min_wct
             )
-            print(f'    {i}: Max rx0: {rx0_max:.2f} - Number of adjustments: {corrected}')
-            if abs(rx0_max - self.rx0max) < self.rx0max * 0.01 or rx0_max == 0:
+            print(f'    {i+1}: Max rx0(wct): {rx0_max:.2f} - Adjusted points: {corrected}')
+
+            if rx0_max <= target_rx0 * 1.01 or corrected == 0:
                 print('  - Draft smoothed.')
                 break
+        else:
+            print('⚠️  Warning: maximum iterations reached without convergence.')
+
+
 
     @staticmethod
     @njit
@@ -379,6 +512,8 @@ class DepthHandler:
                 continue
 
             ph = bath[i] + bath[ind]
+            if ph == 0:
+                continue  # skip division if both depths are 0
 
             r  = diff[nbsn_ind]/ph
             if r > rx0max:
@@ -390,6 +525,75 @@ class DepthHandler:
                 bath[ind] += delta
 
         return bath, rmax, corrected
+    
+    @staticmethod
+    @njit
+    def smooth_draft_rx0(h, zisf, ntsn, nbsn, rx0max=0.3, min_wct=1.0):
+        """
+        Adjust the ice draft (zisf) only where it is originally positive (i.e., under ice shelves),
+        so that the rx0 number of water column thickness (wct = h - zisf) stays below a given threshold.
+
+        Parameters
+        ----------
+        h : np.ndarray
+            Bathymetry at each node (positive downward)
+        zisf : np.ndarray
+            Ice shelf draft at each node (positive downward)
+        ntsn : np.ndarray
+            Number of neighbors per node
+        nbsn : np.ndarray
+            Neighbor node indices (shape: [nnode, max_neighbors])
+        rx0max : float
+            Target maximum rx0 value
+        min_wct : float
+            Minimum allowed water column thickness (m)
+
+        Returns
+        -------
+        zisf_new : np.ndarray
+            Updated ice draft field
+        rx0_max : float
+            Maximum rx0 value encountered
+        corrected : int
+            Number of points adjusted
+        """
+        zisf_new = np.copy(zisf)
+        corrected = 0
+        rx0_max = 0.0
+
+        for i in range(len(h)):
+            if zisf[i] <= 0:
+                continue  # Only modify zisf >0
+
+            nb = nbsn[i, :ntsn[i]]
+            wct_i = h[i] - zisf_new[i]
+
+            for j in nb:
+                wct_j = h[j] - zisf_new[j]
+                denom = wct_i + wct_j
+                if denom <= 0:
+                    continue
+
+                rx0 = abs(wct_i - wct_j) / denom
+                if rx0 > rx0max:
+                    target = 0.5 * (wct_i + wct_j) * (1 - rx0max)
+
+                    if wct_i > wct_j:
+                        wct_i_new = wct_j + target
+                    else:
+                        wct_i_new = wct_j - target
+
+                    wct_i_new = max(wct_i_new, min_wct)
+                    if abs(wct_i_new - wct_i) < 1e-3:
+                        continue
+
+                    zisf_new[i] = h[i] - wct_i_new
+                    corrected += 1
+                    if rx0 > rx0_max:
+                        rx0_max = rx0
+
+        return zisf_new, rx0_max, corrected
+
 
     def setup_metrics(self):
         """Setup metrics for secondary connectivity (nodes surrounding nodes)"""
@@ -424,13 +628,14 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
                  depth_file = None,
                  draft_file = None,
                  casename  = os.getcwd().split('/')[-1],
-                 dm_projection = 'epsg:32633', 
-                 depth_projection = 'epsg:32633', 
-                 target_projection = 'epsg:32633',
+                 dm_projection = 'epsg:3031', 
+                 depth_projection = 'epsg:3031', 
+                 target_projection = 'epsg:3031',
                  sigma_file = f'./input/{os.getcwd().split("/")[-1]}_sigma.dat',
                  rx0max = 0.2,
                  SmoothFactor = 0.2,
                  min_depth = 5.0,
+                 min_wct   = 20,
                  sponge_radius = 0,
                  sponge_factor = 0,
                  latlon = False,
@@ -452,6 +657,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         ----
         rx0max:        (0.2)    smoothing target for bathymetry
         min_depth:     (5.0 m)  minimum depth in domain (to prevent drying)
+        min_wct:       (20.0 m) minimum water column thickness in domain (to prevent drying)
         sponge_radius: (8000 m) distance from OBC we add diffusion to damp waves
         sponge_factor: (0.001)  max diffusion in sponge zone
         SmoothFactor:  (0.2)    factor to weigh neighboring nodes during laplacian smoothing
@@ -494,6 +700,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         self._project_xy()
         self.dm_projection, self.target_projection, self.depth_projection = dm_projection, target_projection, depth_projection
         self.min_depth, self.rx0max, self.SmoothFactor = min_depth, rx0max, SmoothFactor
+        self.min_wct  = min_wct
         self.sponge_factor, self.sponge_radius = sponge_factor, sponge_radius
         print(self)
 
@@ -569,11 +776,11 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         self.make_depth()
         self.h = np.copy(self.h_raw)
         print('- Smooth topo')
-        self.smooth_topo()
+        self.smooth_topo_SO()
         self.show_depth()
         print('- Compute CFL criteria')
         self.get_cfl()
-        self.add_dict_info()
+        #self.add_dict_info()
         print('- Write .dat files')
         self.write_grd(latlon = self.latlon)
         self.write_obc()
@@ -585,12 +792,14 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         if self.iceshelf:
             print('- Interpolate draft to mesh')
             self.make_draft()
-            self.zisf = np.copy(self.zisf_raw)
+            #self.zisf = np.copy(self.zisf_raw)
             print('- Smooth draft')
             self.smooth_draft()
             self.show_draft() 
             self.write_draft_nc()          
         self.to_npy()
+        self.debug_summary()
+        
     @cached_property
     def Proj_2dm(self):
         '''Proj method for the 2dm input file'''
@@ -697,20 +906,41 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         ax[0].set_title('raw ice draft')
         plt.colorbar(cdat, ax = ax[0])
 
-        cdat = ax[1].tricontourf(self.x, self.y, self.tri, self.zisf, levels = levels, cmap = 'Blues_r')
+        cdat = ax[1].tricontourf(self.x, self.y, self.tri, self.zisf-self.zisf_raw, levels = levels, cmap = 'coolwarm')
         ax[1].tricontour(self.x, self.y, self.tri, self.zisf, levels = levels, colors = 'k')
         ax[1].axis('equal')
         ax[1].set_xticks([])
         ax[1].set_yticks([])
-        ax[1].set_title('smoothed ice draft')
+        ax[1].set_title('raw minus smoothed ice draft')
         plt.colorbar(cdat, ax = ax[1])
-
-        cdat = ax[2].tricontourf(self.x, self.y, self.tri, self.zisf_raw-self.zisf, 100, cmap = 'coolwarm')
+        
+        wct = self.h-self.zisf
+        mask_thin = wct < 50
+        cdat = ax[2].tricontourf(self.x, self.y, self.tri, wct, 100, cmap = 'Blues_r')
+        ax[2].scatter(self.x[mask_thin], self.y[mask_thin], color='red', s=2, label='WCT < 50 m')
         ax[2].axis('equal')
         ax[2].set_xticks([])
         ax[2].set_yticks([])
-        ax[2].set_title('raw-smoothed ice draft')
+        ax[2].set_title('water column thickness (m)')
         plt.colorbar(cdat, ax = ax[2])
+
+    def debug_summary(self):
+        print("📦 Summary of FVCOM_grid object:")
+        for attr in dir(self):
+            if attr.startswith("_"):
+                continue
+            try:
+                val = getattr(self, attr)
+                if callable(val):
+                    print(f"🔧 {attr}: method")
+                elif isinstance(val, (int, float, str, list, tuple)):
+                    print(f"🔹 {attr}: {type(val).__name__} = {val}")
+                elif hasattr(val, "shape"):
+                    print(f"📐 {attr}: array with shape {val.shape}")
+                else:
+                    print(f"🔸 {attr}: {type(val).__name__}")
+            except Exception as e:
+                print(f"⚠️ {attr}: (could not access: {e})")
 
 
 class RemapError(Exception):
