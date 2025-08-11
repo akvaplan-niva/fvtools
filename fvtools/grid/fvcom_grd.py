@@ -1066,6 +1066,9 @@ class ControlVolumePlotter:
         _ret = ax.add_collection(collection)
         ax.autoscale_view(True)
         ax.set_aspect('equal')
+        # add colorbar
+        cbar = plt.colorbar(collection, ax=ax)
+        cbar.set_label("")  # Optional: remove label if not needed
         if _ret._A is not None: 
             plt.gca()._sci(_ret)
         return _ret
@@ -1091,7 +1094,7 @@ class ControlVolumePlotter:
         self.cv = []
         for i, (xcv, ycv) in enumerate(zip(xcv_full, ycv_full)):
             bar.update(i)
-            self.cv.append(mPolygon(np.array([xcv, ycv]).transpose(), True))
+            self.cv.append(mPolygon(np.array([xcv, ycv]).T, closed=True))
         bar.finish()
         np.save('cvs.npy', self.cv) # for instant access to cvs at a later date
 
@@ -1409,14 +1412,14 @@ class ExportGrid:
                 f.write(f'{i+1} {obc_node+1} 1\n')  # obc_node+1 to shift to 1-based indexing
         print(f'  - Wrote : {filename}')
 
-    def write_cor(self, filename = None, latlon = False):
+    def write_cor(self, filename = None, latlon = True):
         '''- Generates an ascii FVCOM 4.x formatted coriolis file'''
         if filename is None: 
             filename = f'input/{self.casename}_cor.dat'
         x_grid, y_grid = self.get_xy(latlon)  
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
-            for x, y, lat in zip(self.x, self.y, self.lat):
+            for x, y, lat in zip(x_grid, y_grid, self.lat):
                 line = '{0:.6f}'.format(x) + ' ' + '{0:.6f}'.format(y) + ' ' + '{0:.6f}'.format(lat)+'\n'
                 f.write(line)
         print(f'  - Wrote : {filename}')
@@ -1556,7 +1559,7 @@ class ExportGrid:
         '''Write no M.npy file'''
         M = {}
         self.nv = self.tri
-        for var in ['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'nv', 'siglay', 'siglev', 'obc_nodes', 'nodestrings', 'info', 'ts']:
+        for var in ['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'nv', 'siglay', 'siglev', 'obc_nodes', 'nodestrings', 'info', 'ts','zisf','zisf_raw','ntsn','nbsn']:
             try:
                 M[var] = getattr(self, var)
             except:
@@ -1779,6 +1782,7 @@ class AnglesAndPhysics:
             contour = self.plot_contour(ts_min, cmap = 'jet', levels = np.linspace(min(ts_min), 3*min(ts_min), 20), extend = 'max')
             plt.colorbar(contour, label = 's')
             plt.axis('equal')
+            plt.title('Timestep (s)')
             plt.show(block = False)
         self.ts = ts_min
 
