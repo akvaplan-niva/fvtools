@@ -343,15 +343,17 @@ class Coordinates:
     def siglayz(self):
         '''sigma layer surfaces depth below sea surface at nodes'''
         if hasattr(self, "zisf"):
-            return self.d[:, None]*self.siglay - self.zisf[:, None]*self.siglay
-        return self.d[:, None]*self.siglay
+            return self.d[:, None]*self.siglay - self.zisf[:, None]
+        else:
+            return self.d[:, None]*self.siglay
 
     @property
     def siglevz(self):
         '''sigma level surfaces depth below sea surface at nodes'''
         if hasattr(self, "zisf"):
-            return self.d[:, None]*self.siglev - self.zisf[:, None]*self.siglev
-        return self.d[:, None]*self.siglev
+            return self.d[:, None]*self.siglev - self.zisf[:, None]
+        else:
+            return self.d[:, None]*self.siglev
 
     @property
     def siglayz_uv(self):
