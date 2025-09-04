@@ -37,6 +37,7 @@ def main(dmfile = None,
          SmoothFactor = 0.2,
          min_depth = 5.0,
          min_wct   = 20,
+         min_draft = 50,
          sponge_radius = 0,
          sponge_factor = 0,
          latlon = False,
@@ -60,6 +61,7 @@ def main(dmfile = None,
     ----
     rx0max:       (0.2)    smoothing target for bathymetry
     min_depth:    (5.0 m)  minimum depth in domain (to prevent drying)
+    min_draft:    (50.0 m)  minimum draft to be treated as zero in domain 
     min_wct:      (20.0 m) minimum water column thickness for ice shelf applications
     sponge_radius: (0 m)    distance from OBC we add diffusion to damp waves
     sponge_factor: (0)      max diffusion in sponge zone (will not use sponge nodes if set equal to zero)
@@ -71,7 +73,7 @@ def main(dmfile = None,
     bc = BuildCase(dmfile=dmfile, depth_file=depth_file, draft_file = draft_file, casename=casename,
                    dm_projection=dm_projection, depth_projection=depth_projection, target_projection=target_projection, 
                    sigma_file=sigma_file,
-                   rx0max=rx0max, SmoothFactor=SmoothFactor, min_depth=min_depth, min_wct = min_wct,
+                   rx0max=rx0max, SmoothFactor=SmoothFactor, min_depth=min_depth, min_wct = min_wct,min_draft = min_draft,
                    sponge_radius=sponge_radius, sponge_factor=sponge_factor, latlon=latlon, write_dep=write_dep,iceshelf = iceshelf)
     return bc
 
@@ -326,6 +328,11 @@ class DepthHandler:
         print('  - Interpolate icedraft to nodes')
         zisf_raw = interpolant(self.x_d, self.y_d)
         
+        i = np.where(zisf_raw[:] < self.min_draft)[0]
+        if i.size:
+            print(f'  - The raw draft at {len(i)} points was set equal to zero')
+        zisf_raw[i] = 0
+        
         return zisf_raw
 
     def smooth_topo(self):
@@ -414,6 +421,11 @@ class DepthHandler:
         print("Number of common indices:", len(intersection))
 
         self.zisf = self.laplacian_filter(self.x, self.y, self.zisf, self.nbsn, self.ntsn, self.SmoothFactor)
+        
+        i = np.where(self.zisf[:] < self.min_draft)[0]
+        if i.size:
+            print(f'  - The smoothed draft at {len(i)} points was set equal to zero')
+        self.zisf[i] = 0
 
         #print('  - Adjust slope')
         #print('    - Mellor, Ezer and Oey scheme')
@@ -636,6 +648,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
                  SmoothFactor = 0.2,
                  min_depth = 5.0,
                  min_wct   = 20,
+                 min_draft = 50,
                  sponge_radius = 0,
                  sponge_factor = 0,
                  latlon = False,
@@ -701,6 +714,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         self.dm_projection, self.target_projection, self.depth_projection = dm_projection, target_projection, depth_projection
         self.min_depth, self.rx0max, self.SmoothFactor = min_depth, rx0max, SmoothFactor
         self.min_wct  = min_wct
+        self.min_draft = min_draft
         self.sponge_factor, self.sponge_radius = sponge_factor, sponge_radius
         print(self)
 
