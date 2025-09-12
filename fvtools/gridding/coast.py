@@ -136,6 +136,7 @@ def separate_polygons(x, y, npol, bpath = os.getcwd()+'/boundary.txt',
     u, indices = np.unique(npol, return_inverse = True)
     bind0      = int(u[np.argmax(np.bincount(indices))])
 
+    # Plot all polygons, prepare the interactive portion of this
     fig, ax    = plt.subplots()
     plt.subplots_adjust(bottom=0.15)
     plot_coast([],[],x,y,npol)
@@ -151,27 +152,25 @@ def separate_polygons(x, y, npol, bpath = os.getcwd()+'/boundary.txt',
     def update(val):
         bind = sbind.val
         plot_coast([],[],x,y,npol)
-        l.set_data(x[npol==bind],y[npol==bind])
+        l.set_data(x[npol == bind], y[npol == bind])
         fig.canvas.draw_idle()
+
+        # Write the boundary --> Should consider moving this one to a separate function, but for now...
+        write_bound_isl(x[npol == bind], y[npol == bind], npol[npol == bind] - (bind - 1), path = bpath)
+        
+        # Write the islands
+        if npol.max()>1:
+            a = np.not_equal(npol, bind)
+            npoln = npol[a]
+            npoln[npoln > bind] = npoln[npoln > bind]-1
+            write_bound_isl(x[a], y[a], npoln, path=ipath)
+        else:
+            write_bound_isl(0,0,0,path=ipath)
         
     sbind.on_changed(update)
     plt.show(block=True)
 
-    print('Storing the boundary and the islands in separate files;')
-    print(bpath)
-    print(ipath)
 
-    # Write the boundary
-    write_bound_isl(x[npol==sbind.val], y[npol==sbind.val], npol[npol==sbind.val]-(sbind.val-1), path=bpath)
-    
-    # Write the islands
-    if npol.max()>1:
-        a = np.not_equal(npol,sbind.val)
-        npoln = npol[a]
-        npoln[npoln>sbind.val] = npoln[npoln>sbind.val]-1
-        write_bound_isl(x[a], y[a], npoln, path=ipath)
-    else:
-        write_bound_isl(0,0,0,path=ipath)
         
 def find_boundary(boundaryfile = f'{os.getcwd()}boundary.txt'):
     xb, yb, db, mb, ob = read_boundary(boundaryfile)
@@ -358,7 +357,7 @@ def prepare_gridding(boundary, islands, polygons, poly_parameters, obcind=[], wr
         outfile.island_number[index] = row.polygon_number 
         if row.polygon_number == 1:
             outfile.boundary[index] = 1
-        for n, pol in enumerate(polyg):
+        for n, pol in enumerate(polyg.geoms):
             if pol.contains(p):
                 outfile.polygon_number[index] = par.poly_number[n]
                 outfile.min_res[index] = par.min_res[n]

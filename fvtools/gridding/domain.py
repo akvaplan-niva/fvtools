@@ -1,13 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import sys
 
 import fvtools.grid.fvgrid as fvgrd
 import fvtools.gridding.coast as coast
 import scipy.interpolate as scint
 import scipy.ndimage as ndimage
 import pandas as pd
-import math
 import fvtools.gridding.coast as coast
 import warnings
 import subprocess
@@ -90,7 +88,7 @@ def distfunc(rfact    = 35.0,
         par    = pd.read_csv(polyparam, sep=';')
         maxres = par['max_res'].max()
 
-    grid = make_structgrid(strres, obcnodes, boundaryfile='output/boundary.txt', islandfile='output/islands.txt')
+    grid = make_structgrid(strres, obcnodes, boundaryfile='input/boundary.txt', islandfile='input/islands.txt')
 
     # Check if there is a resolution field in the input folder
     grid['resolution_field'] = None
@@ -99,13 +97,13 @@ def distfunc(rfact    = 35.0,
         if resfield is not None:
             grid = add_resfield_data(grid, resfield)
 
-    nodenum, dum  = get_numberofnodes(dfact/2, rfact/2, dev1/2, dev2/2, 
-                                      Ld/2, grid, maxres, strres)
+    nodenum, dum  = get_numberofnodes(dfact, rfact, dev1, dev2, 
+                                      Ld, grid, maxres, strres)
 
     fig, ax = plt.subplots()
     plt.subplots_adjust(bottom=0.40)
     rmax    = maxres
-    res, x  = gfunc(rmax, dfact/2, rfact/2, dev1/2, dev2/2, Ld/2, grid['coast_res'].min())
+    res, x  = gfunc(rmax, dfact, rfact, dev1, dev2, Ld, grid['coast_res'].min())
 
     # The custom_function for standard inputs
     l,     = plt.plot(x, res, lw=2)
@@ -122,11 +120,11 @@ def distfunc(rfact    = 35.0,
     axdev1   = plt.axes([0.17, 0.10, 0.65, 0.03], facecolor = axcolor)
     axdev2   = plt.axes([0.17, 0.05, 0.65, 0.03], facecolor = axcolor)
 
-    srfact   = Slider(axrfact, 'rfact', 0.1, rfact, valinit = rfact/2, valstep = rfact/1000.0)
-    sdfact   = Slider(axdfact, 'dfact', 0.1, dfact, valinit = dfact/2, valstep = dfact/1000.0)
-    sLd      = Slider(axLd,   'Ld', 0.1, Ld, valinit = Ld/2, valstep = Ld/1000.0)
-    sdev1    = Slider(axdev1, 'dev1', 0.1, dev1, valinit = dev1/2, valstep = dev1/1000.0)
-    sdev2    = Slider(axdev2, 'dev2', 0.1, dev2, valinit = dev2/2, valstep = dev2/1000.0)
+    srfact   = Slider(axrfact, 'rfact', 0.1, 2*rfact, valinit = rfact, valstep = rfact/1000.0)
+    sdfact   = Slider(axdfact, 'dfact', 0.1, 2*dfact, valinit = dfact, valstep = dfact/1000.0)
+    sLd      = Slider(axLd,   'Ld', 0.1, 2*Ld, valinit = Ld, valstep = Ld/1000.0)
+    sdev1    = Slider(axdev1, 'dev1', 0.1, 2*dev1, valinit = dev1, valstep = dev1/1000.0)
+    sdev2    = Slider(axdev2, 'dev2', 0.1, 2*dev2, valinit = dev2, valstep = dev2/1000.0)
 
     axnodenr = plt.axes([0.02,0.9,0.2,0.03])
     giver    = Button(axnodenr,'Nodes needed:')
@@ -327,7 +325,7 @@ def distfunc_onepoint(grid, xp, yp, rfact=3.0, dfact=12.0, Ld=4.0e5,  dev1=4.0, 
     a1    = x2  / dev1
 
     if (Ld-x2) <= 0: # Warn the user if gfunc decreases from the coast (since that violates smeshing assumptions)
-        warning.warn('Increase Ld, dfact or rfact', RuntimeWarning)
+        warnings.warn('Increase Ld, dfact or rfact', RuntimeWarning)
 
     a2     = (Ld - x2) / dev2
     xm     = 2 * a1
