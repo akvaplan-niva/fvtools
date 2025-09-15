@@ -357,6 +357,7 @@ def prepare_gridding(boundary, islands, polygons, poly_parameters, obcind=[], wr
         outfile.loc[index, "island_number"] = row.polygon_number 
         if row.polygon_number == 1:
             outfile.loc[index, "boundary"] = 1
+            
         for n, pol in enumerate(polyg.geoms):
             if pol.contains(p):
                 outfile.loc[index, "polygon_number"] = par.poly_number[n]
@@ -364,7 +365,6 @@ def prepare_gridding(boundary, islands, polygons, poly_parameters, obcind=[], wr
                 outfile.loc[index, "max_res"] = par.max_res[n]
                 outfile.loc[index, "points_across"] = par.points_across[n]
                 break
-            
     outfile.loc[outfile.obc == 1., "polygon_number"] = 0.0
     outfile.loc[outfile.obc == 1., "min_res"] = 1.0
     outfile.loc[outfile.obc == 1., "max_res"] = 100000.
@@ -530,9 +530,9 @@ def sigma_tanh(nlev, dl, du):
 def resolution(kyst, obcres, force_points_across = 0, f2f = False, topores = False, sigma = 0, rx1max = 0, min_depth = 0):
     '''Calculate coastal resolution'''
 
-    kyst.loc[kyst.obc == 1, "points_across"] = 1.
+    kyst.points_across[kyst.obc == 1] = 1.
     kyst.distres = kyst.distance / kyst.points_across
-    kyst.loc[kyst.obc == 1, "distres"] = obcres
+    kyst.distres[kyst.obc == 1] = obcres
     if f2f:
         kyst.mobility[kyst.obc == 1] = 0.0
         resobc = np.zeros(len(kyst.x))
@@ -562,7 +562,6 @@ def resolution(kyst, obcres, force_points_across = 0, f2f = False, topores = Fal
         kyst.loc[indsmaller, "resolution"] = kyst.loc[indsmaller, "min_res"]
         kyst.loc[kyst.obc == 1, "resolution"] = obcres
         kyst.rx1 = R * kyst.hgrad * kyst.resolution / (2 * kyst.h + kyst.hgrad * kyst.resolution)
-
     else:
         kyst.resolution = kyst.distres
         indlarger = kyst.resolution > kyst.max_res
@@ -585,7 +584,7 @@ def write_to_file(kyst, path=os.getcwd()):
     fid = open(os.path.join(path,'boundary.txt'), 'w')
     fid.write(str(len(boundary)) + '\n')
     for index, row in boundary.iterrows():
-        line = f"{row.x} {row.y} {row.resolution} {row.mobility}\n"
+        line = str(row.x) + ' ' + str(row.y) + ' ' + str(row.resolution) + ' ' + str(row.mobility) + '\n'
         fid.write(line)
     fid.close()
     
