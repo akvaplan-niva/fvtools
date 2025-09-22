@@ -5,8 +5,11 @@ import matplotlib.pyplot as plt
 import cmocean as cmo
 import numpy as np
 import progressbar as pb
+import geopandas as gpd
+import shapely as shp
+import networkx as nx
 
-from pyproj import Proj
+from pyproj import Proj, Transformer
 from netCDF4 import Dataset
 from matplotlib.collections import PatchCollection
 from scipy.spatial import cKDTree as KDTree
@@ -909,6 +912,12 @@ class CoastLine:
 
 class OBC:
     @property
+    def n_obc(self):
+        '''
+        Keeps track of number of open boundaries
+        '''
+        return len(self.nodestrings)
+    @property
     def obc_nodes(self):
         '''Keeps track of user defined OBC nodes. May be better to keep track of land nodes and define the leftovers to be obc-nodes (as discussed in trigrid repo)'''
         if not hasattr(self, '_obc_nodes'):
@@ -936,28 +945,28 @@ class OBC:
     @property
     def x_obc(self):
         '''x-position of nodes at the open boundary'''
-        return np.array([self.x[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.x[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     @property
     def y_obc(self):
         '''y-position of nodes at the open boundary'''
-        return np.array([self.y[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.y[nodestring] for nodestring in self.nodestrings], dtype = object)
     
     @property
     def lat_obc(self):
         '''latitude of nodes on the open boundary'''
-        return np.array([self.lat[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.lat[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     @property
     def lon_obc(self):
         '''longitude of nodes on the open boundary'''
-        return np.array([self.lon[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.lon[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     def _get_nodestrings(self, obc_nodes):
-        '''Connects nodestrings to distinguished lines based on triangulation connectivity.
+        '''
+        Connects nodestrings to distinguished lines based on triangulation connectivity.
         - *should* guarantee that the nodes are sorted correctly, but still subject to testing
         '''
-        import networkx as nx
         node_tag = np.zeros((self.cell_number,), dtype = np.int32)
         node_tag[self.full_model_boundary] = 1
         cells = np.where(np.sum(node_tag[self.tri], axis=1) > 0)[0]
@@ -1058,7 +1067,7 @@ class ControlVolumePlotter:
         self.cv = []
         for i, (xcv, ycv) in enumerate(zip(xcv_full, ycv_full)):
             bar.update(i)
-            self.cv.append(mPolygon(np.array([xcv, ycv]).transpose(), True))
+            self.cv.append(mPolygon(np.array([xcv, ycv]).transpose(), closed = True))
         bar.finish()
         np.save('cvs.npy', self.cv) # for instant access to cvs at a later date
 
@@ -1393,9 +1402,6 @@ class ExportGrid:
                      - must always be positive, buffer measured in meters
         '''
         # Move most of these functions to the CoastLine class
-        import geopandas as gpd
-        import shapely as shp
-        from pyproj import Transformer
         if outfolder is None: 
             outfolder = os.getcwd()
 
@@ -1492,12 +1498,13 @@ class PlotFVCOM:
     def transform(self, var):
         self._transform = var
 
-    def plot_grid(self, c = 'g-', linewidth = 0.2, markersize = 0.2, show = True, *args, **kwargs):
+    def plot_grid(self, ax = None, c = 'g-', linewidth = 0.2, markersize = 0.2, show = True, *args, **kwargs):
         '''
         Plot mesh grid
         - arguments and keyword arguments are passed to pyplot.triplot
         '''
-        ax = plt.gca()
+        if ax == None:
+            ax = plt.gca()
         kwargs = self._transform_to_kwargs(**kwargs)
         ax.triplot(self.x, self.y, self.tri, c, *args, markersize=markersize, linewidth=linewidth, **kwargs)
         ax.set_aspect('equal')
@@ -1540,9 +1547,9 @@ class PlotFVCOM:
                 kwargs['transform'] = self.transform
         return kwargs   
 
-    def georeference(self, url='https://openwms.statkart.no/skwms1/wms.topo4.graatone?service=wms&request=getcapabilities', 
-                           layers=['topo4graatone_WMS'], wms=None,
-                           depth=True):
+    def georeference(self, 
+                    url='https://wms.geonorge.no/skwms1/wms.topograatone?service=wms&request=getcapabilities', 
+                    layers=['topograatone'], wms=None, depth=True):
         '''
         Plot map data from WMS server as georeference. Must be done before plotting grid, contours etc.
         - requires cartopy
