@@ -24,7 +24,6 @@ dependencies = [
     "Fiona",
     "fonttools",
     "geographiclib",
-    "geopandas",
     "geopy",
     "idna",
     "ipython",
@@ -74,4 +73,8 @@ dependencies = [
     "cx",
     "numba",
     "progressbar2>=4.5.0",
+    "jupyterlab",
+    "geopandas",
+    "cartopy",
+    "ipympl"
 ]
