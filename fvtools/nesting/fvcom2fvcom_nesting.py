@@ -2,9 +2,11 @@ import os
 import datetime
 import sys
 import time
+import numpy as np
+import matplotlib.pyplot as plt
+
 from argparse import ArgumentParser
 from netCDF4 import Dataset
-import numpy as np
 from ..grid.fvcom_grd import NEST_grid, FVCOM_grid
 from ..grid.tools import Filelist
 from .vertical_interpolation import calc_interp_matrices
@@ -15,7 +17,7 @@ def main(ngrd        = 'ngrd.npy',
          start_time  = None,
          stop_time   = None,
          vertical_interpolation = False,
-         tides = False):
+         tidal_mother = False):
     '''
     Extract subset of FVCOM T and S data and export to netcdf file.
     ----
@@ -24,11 +26,16 @@ def main(ngrd        = 'ngrd.npy',
     - output_file: Name of the nesting file
     - start_time:  First timestamp in nestingfile
     - stop_time:   Last timestamp in nestingfile
-    - tides:       set True if the mother model was a tidal model (i.e. does not contain u, v, temp, salinity)
+    - tidal_mother:       set True if the mother model was a tidal model (i.e. does not contain u, v, temp, salinity)
     - vertical_interpolation: False by default, but should be True if nest-sigma != mother-sigma
     '''
+    # Load the filelist and nest grid
     fl = Filelist(fileList, start_time=start_time, stop_time=stop_time)
     ngrd = NEST_grid(ngrd)
+
+    # ==> Note: The projection of the model you're nesting into and the model you will use in this project must match.
+    #           You can re-project after interpolation to the nesting grid, but remember that vector data in one UTM
+    #           frame of reference will need to be rotated (and possibly re-scaled?) in the new UTM reference.
 
     # Check that positions match (get_fvcom_ngrd is now quite reliable, can be incorperated to this routine as well)
     check_grid(ngrd, fl)
@@ -43,28 +50,34 @@ def main(ngrd        = 'ngrd.npy',
     # Read data from FVCOM result files and write to nesting nc-file
     already_read=""
     with Dataset(output_file, 'r+') as out_nest:
-        for file_name,index,fvtime,counter in zip(fl.path,fl.index,fl.time,range(0,len(fl.time))):
+        for file_name,index,fvtime,counter in zip(fl.path, fl.index, fl.time, range(0,len(fl.time))):
             with Dataset(file_name,'r') as d:
                 if already_read != file_name:
                     print(f'- {file_name}')
                 already_read = file_name
 
+                # Report which timestep we're copying now
+                print(f'  - {fvtime}')
+
                 # Read data from current time step
-                out_nest['time'][counter] = d.variables['time'][index]
-                out_nest['Itime'][counter] = d.variables['Itime'][index]
+                out_nest['time'][counter]   = d.variables['time'][index]
+                out_nest['Itime'][counter]  = d.variables['Itime'][index]
                 out_nest['Itime2'][counter] = d.variables['Itime2'][index]
                 out_nest['zeta'][counter, :] = np.transpose(d.variables['zeta'][index, :][ngrd.nid])
                 out_nest['ua'][counter, :] = np.transpose(d.variables['ua'][index, :][ngrd.cid])
                 out_nest['va'][counter, :] = np.transpose(d.variables['va'][index, :][ngrd.cid])
 
+                # Interpolate in the vertical if needbe
                 if vertical_interpolation:
+                    print('    - vertical interpolation step')
                     ui = d.variables['u'][index, :, :][:, ngrd.cid]
                     ui = ui[ind1_c, range(0, ngrd.cid.shape[0])]*w1_c + ui[ind2_c, range(0, ngrd.cid.shape[0])]*w2_c
                     out_nest['u'][counter, :, :] = ui
                     vi = d.variables['v'][index, :, :][:, ngrd.cid]
                     vi = vi[ind1_c, range(0, ngrd.cid.shape[0])]*w1_c + vi[ind2_c, range(0, ngrd.cid.shape[0])]*w2_c
                     out_nest['v'][counter, :, :] = vi
-                    if not tides:
+
+                    if not tidal_mother:
                         tempi = d.variables['temp'][index, :, :][:, ngrd.nid]
                         tempi = tempi[ind1_n, range(0, ngrd.nid.shape[0])]*w1_n + tempi[ind2_n, range(0, ngrd.nid.shape[0])]*w2_n
                         out_nest['temp'][counter, :, :] = tempi
@@ -77,7 +90,7 @@ def main(ngrd        = 'ngrd.npy',
                     out_nest['v'][counter, :, :] = d.variables['v'][index, :, :][:, ngrd.cid]
 
 
-                    if not tides:
+                    if not tidal_mother:
                         out_nest['temp'][counter, :, :] = d.variables['temp'][index, :, :][:, ngrd.nid]
                         out_nest['salinity'][counter, :, :] = d.variables['salinity'][index, :, :][:, ngrd.nid]
 
@@ -192,7 +205,7 @@ def check_grid(ngrd, fl):
     # Allow some roundoff-error
     if max_node_diff > 1 or max_cell_diff > 1:
         M.plot_grid()
-        plt.triplot(ngrd_new.x, ngrd_new.y, ngrd_new.nv, c = 'k', label = 'nest grid')
+        plt.triplot(ngrd.x, ngrd.y, ngrd.nv, c = 'k', label = 'nest grid')
         plt.scatter(M.x[ngrd.nid], M.y[ngrd.nid], c = 'r', zorder = 20, label = 'positions where you try to extract\ndata from the mother model')
         plt.legend(loc = 'upper right')
         plt.draw()
