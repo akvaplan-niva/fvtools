@@ -1,0 +1,11 @@
+num_grid_points: 
+num_iterations: 
+initial_grid_damping: 1.0
+apply_g_outside: false
+distance_function:
+    rfact:
+    dfact:
+    ld:
+    dev1:
+    dev2:
+    rmax:
