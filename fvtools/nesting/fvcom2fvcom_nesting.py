@@ -50,14 +50,14 @@ def main(ngrd        = 'ngrd.npy',
     # Read data from FVCOM result files and write to nesting nc-file
     already_read=""
     with Dataset(output_file, 'r+') as out_nest:
-        for file_name,index,fvtime,counter in zip(fl.path, fl.index, fl.time, range(0,len(fl.time))):
+        for file_name, index, datet, counter in zip(fl.path, fl.index, fl.datetime, range(0,len(fl.time))):
             with Dataset(file_name,'r') as d:
                 if already_read != file_name:
                     print(f'- {file_name}')
                 already_read = file_name
 
                 # Report which timestep we're copying now
-                print(f'  - {fvtime}')
+                print(f'  - {datet}')
 
                 # Read data from current time step
                 out_nest['time'][counter]   = d.variables['time'][index]
