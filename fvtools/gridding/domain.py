@@ -92,10 +92,8 @@ def distfunc(rfact    = 35.0,
 
     # Check if there is a resolution field in the input folder
     grid['resolution_field'] = None
-    if resfield is None:
-        resfield = look_for_resfield()
-        if resfield is not None:
-            grid = add_resfield_data(grid, resfield)
+    if resfield:
+        grid = add_resfield_data(grid, resfield)
 
     nodenum, dum  = get_numberofnodes(dfact, rfact, dev1, dev2, 
                                       Ld, grid, maxres, strres)
@@ -645,43 +643,47 @@ def crop_resfield(xg, yg, res, maxres, drelmax, resg, ncount, topocrop):
     # return the cropped resolution field
     return xg_c, yg_c, ress_c
 
-def look_for_resfield():
+def look_for_resfield(islandsfile):
     '''
     Look for files in input, return potential  
     '''
-    input_files  = os.listdir('./output/')
-    normal_files = ['boundary.txt','islands.txt','.gitkeep']
-    revised_if   = [file for file in input_files if file not in normal_files]
-    if any(revised_if):
-        print('-----------------------------------------------------------------------------------')
-        if len(revised_if) > 1:
-            print('There are '+str(len(revised_if)) +' files that potentially contain resolution fields.')
-            print('Should either of these be used in the number-of-nodes estimate, and if so: which?')
-            print('Yes: path to file. No: Any other keypress')
-            for file in revised_if:
-                print('- input/'+file)
-            resfield = subprocess.check_output('read -e -p "Which file: " var ; echo $var', shell=True).rstrip()
-                
-            if resfield.split('/')[-1] not in revised_if:
-                print(' ')
-                print('Ok, a resolution field will not be used in the estimate.')
-                resfield = None
+    try:
+        input_files  = os.listdir(islandsfile.split('/')[0])
+        normal_files = ['boundary.txt','islands.txt','.gitkeep']
+        revised_if   = [file for file in input_files if file not in normal_files]
+        if any(revised_if):
+            print('-----------------------------------------------------------------------------------')
+            if len(revised_if) > 1:
+                print('There are '+str(len(revised_if)) +' files that potentially contain resolution fields.')
+                print('Should either of these be used in the number-of-nodes estimate, and if so: which?')
+                print('Yes: path to file. No: Any other keypress')
+                for file in revised_if:
+                    print('- input/'+file)
+                resfield = subprocess.check_output('read -e -p "Which file: " var ; echo $var', shell=True).rstrip()
+                    
+                if resfield.split('/')[-1] not in revised_if:
+                    print(' ')
+                    print('Ok, a resolution field will not be used in the estimate.')
+                    resfield = None
+                else:
+                    print(' ')
+                    print(resfield+' will be used when estimating the target resolution.')
+
             else:
-                print(' ')
-                print(resfield+' will be used when estimating the target resolution.')
+                print(revised_if[0]+' is potentially holding a resolution field.\n '+\
+                    'Should it be included in the number-of-nodes estimate?')
+                print('input/'+revised_if[0])
+                answer = input('Yes: y/ No [n]')
+                if answer == 'y':
+                    resfield = 'input/' + revised_if[0]
+                else:
+                    resfield = None
+            print('-----------------------------------------------------------------------------------')
 
         else:
-            print(revised_if[0]+' is potentially holding a resolution field.\n '+\
-                  'Should it be included in the number-of-nodes estimate?')
-            print('input/'+revised_if[0])
-            answer = input('Yes: y/ No [n]')
-            if answer == 'y':
-                resfield = 'input/' + revised_if[0]
-            else:
-                resfield = None
-        print('-----------------------------------------------------------------------------------')
-
-    else:
+            resfield = None
+    
+    except:
         resfield = None
 
     return resfield

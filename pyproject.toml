@@ -76,5 +76,6 @@ dependencies = [
     "jupyterlab",
     "geopandas",
     "cartopy",
-    "ipympl"
+    "ipympl",
+    "pykdtree"
 ]

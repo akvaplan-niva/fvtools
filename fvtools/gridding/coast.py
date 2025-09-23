@@ -530,7 +530,7 @@ def sigma_tanh(nlev, dl, du):
 def resolution(kyst, obcres, force_points_across = 0, f2f = False, topores = False, sigma = 0, rx1max = 0, min_depth = 0):
     '''Calculate coastal resolution'''
 
-    kyst.points_across[kyst.obc == 1] = 1.
+    kyst.loc[kyst.obc == 1, "points_across"] = 1.
     kyst.distres = kyst.distance / kyst.points_across
     kyst.loc[kyst.obc == 1, "distres"] = obcres
     if f2f:
