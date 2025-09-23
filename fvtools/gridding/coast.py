@@ -532,7 +532,7 @@ def resolution(kyst, obcres, force_points_across = 0, f2f = False, topores = Fal
 
     kyst.points_across[kyst.obc == 1] = 1.
     kyst.distres = kyst.distance / kyst.points_across
-    kyst.distres[kyst.obc == 1] = obcres
+    kyst.loc[kyst.obc == 1, "distres"] = obcres
     if f2f:
         kyst.mobility[kyst.obc == 1] = 0.0
         resobc = np.zeros(len(kyst.x))

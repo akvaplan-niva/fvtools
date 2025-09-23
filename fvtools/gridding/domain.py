@@ -88,7 +88,7 @@ def distfunc(rfact    = 35.0,
         par    = pd.read_csv(polyparam, sep=';')
         maxres = par['max_res'].max()
 
-    grid = make_structgrid(strres, obcnodes, boundaryfile='input/boundary.txt', islandfile='input/islands.txt')
+    grid = make_structgrid(strres, obcnodes, boundaryfile = boundaryfile, islandfile = islandfile)
 
     # Check if there is a resolution field in the input folder
     grid['resolution_field'] = None
@@ -329,7 +329,7 @@ def distfunc_onepoint(grid, xp, yp, rfact=3.0, dfact=12.0, Ld=4.0e5,  dev1=4.0, 
 
     a2     = (Ld - x2) / dev2
     xm     = 2 * a1
-    xm2    = xm +2 * a2
+    xm2    = xm + 2 * a2
     gfunc  = r2 * (2 - (1 - np.tanh((x - xm) / a1))) / 2 + (rmax - r2) * (2 - (1 - np.tanh((x - xm2) / a2))) / 2
     gfunc0 = r2 * (2 - (1 - np.tanh((0.0 - xm) / a1))) / 2 + (rmax - r2) * (2 - (1 - np.tanh((0.0 - xm2) / a2))) / 2
     gfunc  = gfunc - gfunc0
@@ -674,9 +674,9 @@ def look_for_resfield():
             print(revised_if[0]+' is potentially holding a resolution field.\n '+\
                   'Should it be included in the number-of-nodes estimate?')
             print('input/'+revised_if[0])
-            answer = raw_input('Yes: y/ No [n]')
+            answer = input('Yes: y/ No [n]')
             if answer == 'y':
-                resfield = 'input/'+revised_if[0]
+                resfield = 'input/' + revised_if[0]
             else:
                 resfield = None
         print('-----------------------------------------------------------------------------------')
