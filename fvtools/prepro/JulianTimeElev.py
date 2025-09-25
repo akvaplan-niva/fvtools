@@ -199,7 +199,7 @@ def get_time(NumDays, min_int, start_year, start_month, start_day):
     # Convert to datetime object
     minutes     = np.arange(0, num_minutes+min_int, min_int, dtype = np.float64)
     start_date  = datetime(start_year, start_month, start_day, tzinfo = pytz.utc)
-    datetimes   =  np.array([start_date + timedelta(days = day) for day in minutes])
+    datetimes   =  np.array([start_date + timedelta(minutes = day) for day in minutes])
 
     # Convert to the fvcom timeformat and the pyTMD time format and return
     fvcom_time  = date2num(datetimes) # defaults to FVCOMs epoch
