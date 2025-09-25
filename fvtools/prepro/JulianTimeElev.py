@@ -149,7 +149,7 @@ def get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose, source):
     amp, ph, _, c = pyTMD.io.OTIS.extract_constants(
         np.atleast_1d(lon), np.atleast_1d(lat), model.grid_file, 
         model.model_file, model.projection,
-        type = model.type, method = 'bilinear', extrapolate = True, grid = model.format
+        type = model.type, method = 'spline', extrapolate = True, grid = model.format
         )
 
     # - Report back which constituents we use
