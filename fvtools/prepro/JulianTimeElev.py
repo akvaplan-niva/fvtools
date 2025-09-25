@@ -23,7 +23,8 @@ def main(M,
          model_dir   = '/data/Tides_hes/TPXO9_atlas/',
          source      = 'TPXO9-atlas-v4',
          verbose     = True,
-         netcdf_name = None):
+         netcdf_name = None
+         ):
     '''
     Reads a mesh object and start/stop dates, returns tidal forcing
 
@@ -53,9 +54,14 @@ def main(M,
     fvcom_time, tide_time, datetimes = get_time(NumDays, min_int, start_year, start_month, start_day)
     print(f'  - Starting: {datetimes[0]}, stopping {datetimes[-1]}')
 
+    # List relevant files
+
     # Initialize the TMD reader
-    print('- Preparing pyTMD to read results from OTIS formatted tidal model')
-    model = pyTMD.io.model(directory = model_dir, format = 'OTIS')
+    print(F'- Preparing pyTMD to read results from {source}')
+    model = pyTMD.io.model(
+        directory = model_dir,
+        constituents = ['K2', 'N2', 'O1', 'K1', 'M2', 'S2'], 
+    )
     model.elevation(m = source)
 
     # Read model and dump data to FVCOM forcing file
