@@ -8,11 +8,14 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import progressbar as pb
+import pytz
+
 from netCDF4 import Dataset
 from time import gmtime, strftime
+from datetime import datetime, timedelta
 from fvtools.plot.geoplot import geoplot
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.tools import num2date
+from fvtools.grid.tools import num2date, date2num
 
 def main(M, 
          start_year, start_month, start_day, NumDays,
@@ -54,8 +57,8 @@ def main(M,
         
     # Get time
     print('- Create time arrays')
-    fvcom_time, tide_time = get_tide_time(NumDays, min_int, start_year, start_month, start_day)
-    datetimes = num2date(fvcom_time)
+    fvcom_time, tide_time, datetimes = get_time(NumDays, min_int, start_year, start_month, start_day)
+
     print(f'  - Starting: {datetimes[0]}, stopping {datetimes[-1]}')
 
     # Initialize the TMD reader
@@ -117,7 +120,7 @@ def create_nc_forcing_file(name, M):
 
     # Dump a reference to the OBC nodes (in fortran notation) before continuing
     # ----
-    nc.variables['obc_nodes'][:] = M.obc_nodes + 1
+    nc.variables['obc_nodes'][:] = np.array(M.obc_nodes) + 1
     nc.close()
 
 def handle_obc(M):
@@ -151,9 +154,11 @@ def get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose):
     # - Read and interpolate tide model (everything from here to the Dataset command is copied from this pyTMD example page:
     #   https://github.com/tsutterley/pyTMD/blob/main/notebooks/Plot%20Tide%20Forecasts.ipynb
     print('- Read harmonic constants')
-    amp, ph, D, c = pyTMD.io.OTIS.extract_constants(np.atleast_1d(lon), np.atleast_1d(lat), 
-                                                    model.grid_file, model.model_file, model.projection,
-                                                    TYPE = model.type, METHOD = 'spline', EXTRAPOLATE = True, GRID = model.format)
+    amp, ph, _, c = pyTMD.io.OTIS.extract_constants(
+        np.atleast_1d(lon), np.atleast_1d(lat), 
+        model.grid_file, model.model_file, model.projection,
+        type = model.type, methos = 'spline', extrapolate = True, grid = model.format
+        )
 
     # - Report back which constituents we use
     print(f'- Using {len(c)} constituents: {c}')
@@ -164,21 +169,19 @@ def get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose):
 
     # Dump time to netCDF tile
     Itime, Itime2  = get_Itime(fvcom_time)
-
     d = Dataset(netcdf_name, mode = 'r+')
     d['time'][:]   = fvcom_time
     d['Itime'][:]  = Itime
     d['Itime2'][:] = Itime2
 
-    # Compute tidal range
-    # ----
+    # Compute tides at the boundary
     widget = ['  - Computing tidally driven elevation at each obc node: ', pb.Percentage(), ' ', pb.Bar(), pb.ETA()]
     bar = pb.ProgressBar(widgets=widget, maxval=hc.shape[0])
     bar.start()
     for node in range(hc.shape[0]):
         bar.update(node)
-        major = pyTMD.predict.time_series(tide_time, hc[node,:][None, :], c, corrections=model.format)
-        minor = pyTMD.predict.infer_minor(tide_time, hc[node,:][None, :], c, corrections=model.format)
+        major = pyTMD.predict.time_series(tide_time, hc[node,:][None, :], c, corrections = model.format)
+        minor = pyTMD.predict.infer_minor(tide_time, hc[node,:][None, :], c, corrections = model.format)
         d['elevation'][:, node] = major + minor
     bar.finish()
     
@@ -195,8 +198,8 @@ def get_tide_time(NumDays, min_int, start_year, start_month, start_day):
     # Deal with time relative to 1.1.1992
     # ----
     num_minutes = NumDays*24*60
-    minutes   = np.arange(0, num_minutes+min_int, min_int)
-    tide_time = pyTMD.time.convert_calendar_dates(start_year, start_month, start_day, minute = minutes)
+    minutes     = np.arange(0, num_minutes+min_int, min_int)
+    tide_time   = pyTMD.time.convert_calendar_dates(start_year, start_month, start_day, minute = minutes)
 
     # Convert tide time to FVCOM time
     # ----
@@ -204,6 +207,18 @@ def get_tide_time(NumDays, min_int, start_year, start_month, start_day):
     fvcom_time = tide_time + conversion
 
     return fvcom_time, tide_time
+
+def get_time(NumDays, min_int, start_year, start_month, start_day):
+    '''
+    Get the timesteps you want data for
+    '''
+    num_minutes = NumDays*24*60
+    minutes     = np.arange(0, num_minutes+min_int, min_int, dtype = np.float64)
+    start_date  = datetime(start_year, start_month, start_day, tzinfo = pytz.utc)
+    datetimes   =  np.array([start_date + timedelta(minutes = minute) for minute in minutes])
+    fvcom_time  = date2num(datetimes) # defaults to FVCOMs epoch
+    tide_time   = date2num(datetimes, reference_time = datetime(1992, 1, 1, tzinfo = pytz.utc))
+    return fvcom_time, tide_time, datetimes
 
 def get_Itime(fvcom_time):
     '''

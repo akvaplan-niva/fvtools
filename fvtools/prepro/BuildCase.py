@@ -446,7 +446,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         if not updated_grid:
             self.main()
         else:
-            print('- The grid was changed, you may want to inspect it before running BuildCase.main()')
+            print('- The grid was changed, you may want to inspect it before running BuildCase.main(). Writing changed grid to auto_cleaned_grid.2dm')
 
     def __str__(self):
         return f'''

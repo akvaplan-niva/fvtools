@@ -824,11 +824,11 @@ class CoastLine:
         inds_db_in_obc = np.intersect1d(fb_in_obc, self.full_model_boundary, return_indices=True)
         obc_bool = np.ones(self.full_model_boundary.shape, dtype = bool)
         obc_bool[inds_db_in_obc[2]] = False
-        coastline_nodes = self.full_model_boundary[obc_bool]
+        coastline_nodes = self.full_model_boundary[obc_bool] # Be aware: Here we loose the points connecting to the nodestring / obc
 
-        # Add the points connecting of the nodestrings to the coastline
+        # therefore: Add the points connecting of the nodestrings to the coastline
         for nodestring in self.nodestrings:
-            coastline_nodes.extend(nodestring[[0,-1]].tolist())
+            coastline_nodes = np.append(coastline_nodes, nodestring[[0,-1]])
         return coastline_nodes
 
     @cached_property
@@ -1334,6 +1334,7 @@ class ExportGrid:
         '''- Generates an ascii FVCOM 4.x format bathymetry file'''
         if filename is None: 
             filename = f'input/{self.casename}_dep.dat'
+
         x_grid, y_grid = self.get_xy(latlon)
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
@@ -1346,6 +1347,7 @@ class ExportGrid:
         '''- Generates an ascii FVCOM 4.x format grid file'''
         if filename is None: 
             filename = f'input/{self.casename}_grd.dat'
+
         x_grid, y_grid = self.get_xy(latlon)  
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
@@ -1361,6 +1363,7 @@ class ExportGrid:
         '''- Generates an ascii FVCOM 4.x formatted sponge file'''
         if filename is None: 
             filename = f'input/{self.casename}_spg.dat'
+
         with open(filename, 'w') as f:
             f.write(f'Sponge Node Number = {len(self.sponge_nodes)}\n')
             if any(self.sponge_nodes):
@@ -1373,6 +1376,7 @@ class ExportGrid:
         '''- Generates an ascii FVCOM 4.x formatted obc file'''
         if filename is None: 
             filename = f'input/{self.casename}_obc.dat'
+
         with open(filename, 'w') as f:
             f.write(f'OBC Node Number = {len(self.obc_nodes)}\n')
             i = 0
@@ -1384,7 +1388,9 @@ class ExportGrid:
 
     def write_cor(self, filename = None):
         '''- Generates an ascii FVCOM 4.x formatted coriolis file'''
-        if filename is None: filename = f'input/{self.casename}_cor.dat'
+        if filename is None: 
+            filename = f'input/{self.casename}_cor.dat'
+
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
             for x, y, lat in zip(self.x, self.y, self.lat):
