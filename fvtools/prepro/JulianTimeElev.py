@@ -15,13 +15,14 @@ from time import gmtime, strftime
 from datetime import datetime, timedelta
 from fvtools.plot.geoplot import geoplot
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.tools import num2date, date2num
+from fvtools.grid.tools import date2num
 
 def main(M, 
          start_year, start_month, start_day, NumDays,
          min_int     = 20,
          model_dir   = '/data/Tides_hes/TPXO9_atlas/',
-         verbose     = False,
+         source      = 'TPXO9-atlas-v4',
+         verbose     = True,
          netcdf_name = None):
     '''
     Reads a mesh object and start/stop dates, returns tidal forcing
@@ -43,22 +44,13 @@ def main(M,
 
     hes@akvaplan.niva.no
     '''
-    # See if we support the requested file
-    # ----
-    print(f'Julian time elevation forcing for {M.casename}:\n----')
-    if model_dir == '/data/Tides_hes/TPXO9_atlas/':
-        source = 'TPXO9-atlas-v4'
-    else:
-        source = os.listdir(model_dir)[0].replace('_', '-')
-
-    print(f'- Reading data from TPXO9-atlas-v5 located at: {model_dir}')
+    print(f'- Reading data from {source} located at: {model_dir}')
     if netcdf_name is None:
         netcdf_name = f'{M.casename}_jul_el_obc.nc'
         
     # Get time
     print('- Create time arrays')
     fvcom_time, tide_time, datetimes = get_time(NumDays, min_int, start_year, start_month, start_day)
-
     print(f'  - Starting: {datetimes[0]}, stopping {datetimes[-1]}')
 
     # Initialize the TMD reader
@@ -68,12 +60,12 @@ def main(M,
 
     # Read model and dump data to FVCOM forcing file
     print('\nCompute tidally driven sea surface elevation at obc')
-    amp, c = get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose)
+    amp, c = get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose, source)
 
     # Visualize amplitudes
     visualize_amplitudes(M, amp, c, verbose = verbose)
 
-def create_nc_forcing_file(name, M):
+def create_nc_forcing_file(name, M, source):
     '''
     Creates empty nc file formatted to fit FVCOM open boundary ocean forcing
     '''
@@ -82,7 +74,7 @@ def create_nc_forcing_file(name, M):
     # Write global attributes
     # ----
     nc.type        = 'FVCOM TIME SERIES ELEVATION FORCING FILE'
-    nc.title       = 'FVCOM forcing using data from TPXO9-atlas-v5'
+    nc.title       = f'FVCOM forcing using data from {source}'
     nc.history     = 'File created using JulianTimeElev.py'
     nc.author      = getpass.getuser()
     nc.sourcedir   = os.getcwd()
@@ -137,34 +129,34 @@ def handle_obc(M):
 
     return lat, lon
 
-def get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose):
+def get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose, source):
     '''
     Calculate tidally driven elevation on each OBC node for any time during the integration period
     '''
     # Interpolate data from tide model to FVCOM
     # ----
     #  - Get position of FVCOM obc nodes
-    print('- Reading obc')
+    if verbose: print('- Reading obc')
     lat, lon = handle_obc(M)
 
     # - Write netcdf file
-    print(f'- Writing {netcdf_name} forcing file')
-    create_nc_forcing_file(netcdf_name, M)
+    if verbose: print(f'- Writing {netcdf_name} forcing file')
+    create_nc_forcing_file(netcdf_name, M, source)
 
     # - Read and interpolate tide model (everything from here to the Dataset command is copied from this pyTMD example page:
     #   https://github.com/tsutterley/pyTMD/blob/main/notebooks/Plot%20Tide%20Forecasts.ipynb
-    print('- Read harmonic constants')
+    if verbose: print('- Read harmonic constants')
     amp, ph, _, c = pyTMD.io.OTIS.extract_constants(
-        np.atleast_1d(lon), np.atleast_1d(lat), 
-        model.grid_file, model.model_file, model.projection,
-        type = model.type, methos = 'spline', extrapolate = True, grid = model.format
+        np.atleast_1d(lon), np.atleast_1d(lat), model.grid_file, 
+        model.model_file, model.projection,
+        type = model.type, method = 'bilinear', extrapolate = True, grid = model.format
         )
 
     # - Report back which constituents we use
-    print(f'- Using {len(c)} constituents: {c}')
+    if verbose: print(f'- Using {len(c)} constituents: {c}')
 
     # Phase and amplitudes as complex numbers at reference time
-    cph = -1j*ph*np.pi/180.0 
+    cph = -1j * ph * np.pi/180.0 
     hc  = amp*np.exp(cph)
 
     # Dump time to netCDF tile
@@ -191,31 +183,19 @@ def get_tide(model, M, fvcom_time, tide_time, netcdf_name, verbose):
     d.close()
     return amp, c
 
-def get_tide_time(NumDays, min_int, start_year, start_month, start_day):
-    '''
-    Handles time in fvcom-units and in TPXO units
-    '''
-    # Deal with time relative to 1.1.1992
-    # ----
-    num_minutes = NumDays*24*60
-    minutes     = np.arange(0, num_minutes+min_int, min_int)
-    tide_time   = pyTMD.time.convert_calendar_dates(start_year, start_month, start_day, minute = minutes)
-
-    # Convert tide time to FVCOM time
-    # ----
-    conversion = pyTMD.time.convert_calendar_dates(1992, 1, 1, epoch = (1858, 11, 17)) # from MJD to python time
-    fvcom_time = tide_time + conversion
-
-    return fvcom_time, tide_time
-
 def get_time(NumDays, min_int, start_year, start_month, start_day):
     '''
     Get the timesteps you want data for
     '''
+    # Total number of minutes requested
     num_minutes = NumDays*24*60
+
+    # Convert to datetime object
     minutes     = np.arange(0, num_minutes+min_int, min_int, dtype = np.float64)
     start_date  = datetime(start_year, start_month, start_day, tzinfo = pytz.utc)
-    datetimes   =  np.array([start_date + timedelta(minutes = minute) for minute in minutes])
+    datetimes   =  np.array([start_date + timedelta(days = day) for day in minutes])
+
+    # Convert to the fvcom timeformat and the pyTMD time format and return
     fvcom_time  = date2num(datetimes) # defaults to FVCOMs epoch
     tide_time   = date2num(datetimes, reference_time = datetime(1992, 1, 1, tzinfo = pytz.utc))
     return fvcom_time, tide_time, datetimes
@@ -240,9 +220,6 @@ def visualize_amplitudes(M, amp, c, wewant = ['m2','s2', 'n2', 'k1'], verbose = 
 
     # Define positions
     x, y = M.x[M.obc_nodes], M.y[M.obc_nodes]
-
-    # Number of nodes
-    non  = len(M.obc_nodes)
 
     # Bigger scope to fit the georeference
     xlim = [xlim[0]-0.15*dx, xlim[1]+0.15*dx] 
