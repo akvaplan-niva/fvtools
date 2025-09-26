@@ -5,8 +5,11 @@ import matplotlib.pyplot as plt
 import cmocean as cmo
 import numpy as np
 import progressbar as pb
+import geopandas as gpd
+import shapely as shp
+import networkx as nx
 
-from pyproj import Proj
+from pyproj import Proj, Transformer
 from netCDF4 import Dataset
 from matplotlib.collections import PatchCollection
 from scipy.spatial import cKDTree as KDTree
@@ -821,11 +824,11 @@ class CoastLine:
         inds_db_in_obc = np.intersect1d(fb_in_obc, self.full_model_boundary, return_indices=True)
         obc_bool = np.ones(self.full_model_boundary.shape, dtype = bool)
         obc_bool[inds_db_in_obc[2]] = False
-        coastline_nodes = self.full_model_boundary[obc_bool]
+        coastline_nodes = self.full_model_boundary[obc_bool] # Be aware: Here we loose the points connecting to the nodestring / obc
 
-        # Add the points connecting of the nodestrings to the coastline
+        # therefore: Add the points connecting of the nodestrings to the coastline
         for nodestring in self.nodestrings:
-            coastline_nodes.extend(nodestring[[0,-1]].tolist())
+            coastline_nodes = np.append(coastline_nodes, nodestring[[0,-1]])
         return coastline_nodes
 
     @cached_property
@@ -909,6 +912,12 @@ class CoastLine:
 
 class OBC:
     @property
+    def n_obc(self):
+        '''
+        Keeps track of number of open boundaries
+        '''
+        return len(self.nodestrings)
+    @property
     def obc_nodes(self):
         '''Keeps track of user defined OBC nodes. May be better to keep track of land nodes and define the leftovers to be obc-nodes (as discussed in trigrid repo)'''
         if not hasattr(self, '_obc_nodes'):
@@ -936,28 +945,28 @@ class OBC:
     @property
     def x_obc(self):
         '''x-position of nodes at the open boundary'''
-        return np.array([self.x[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.x[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     @property
     def y_obc(self):
         '''y-position of nodes at the open boundary'''
-        return np.array([self.y[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.y[nodestring] for nodestring in self.nodestrings], dtype = object)
     
     @property
     def lat_obc(self):
         '''latitude of nodes on the open boundary'''
-        return np.array([self.lat[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.lat[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     @property
     def lon_obc(self):
         '''longitude of nodes on the open boundary'''
-        return np.array([self.lon[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.lon[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     def _get_nodestrings(self, obc_nodes):
-        '''Connects nodestrings to distinguished lines based on triangulation connectivity.
+        '''
+        Connects nodestrings to distinguished lines based on triangulation connectivity.
         - *should* guarantee that the nodes are sorted correctly, but still subject to testing
         '''
-        import networkx as nx
         node_tag = np.zeros((self.cell_number,), dtype = np.int32)
         node_tag[self.full_model_boundary] = 1
         cells = np.where(np.sum(node_tag[self.tri], axis=1) > 0)[0]
@@ -1058,7 +1067,7 @@ class ControlVolumePlotter:
         self.cv = []
         for i, (xcv, ycv) in enumerate(zip(xcv_full, ycv_full)):
             bar.update(i)
-            self.cv.append(mPolygon(np.array([xcv, ycv]).transpose(), True))
+            self.cv.append(mPolygon(np.array([xcv, ycv]).transpose(), closed = True))
         bar.finish()
         np.save('cvs.npy', self.cv) # for instant access to cvs at a later date
 
@@ -1325,6 +1334,7 @@ class ExportGrid:
         '''- Generates an ascii FVCOM 4.x format bathymetry file'''
         if filename is None: 
             filename = f'input/{self.casename}_dep.dat'
+
         x_grid, y_grid = self.get_xy(latlon)
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
@@ -1337,6 +1347,7 @@ class ExportGrid:
         '''- Generates an ascii FVCOM 4.x format grid file'''
         if filename is None: 
             filename = f'input/{self.casename}_grd.dat'
+
         x_grid, y_grid = self.get_xy(latlon)  
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
@@ -1352,6 +1363,7 @@ class ExportGrid:
         '''- Generates an ascii FVCOM 4.x formatted sponge file'''
         if filename is None: 
             filename = f'input/{self.casename}_spg.dat'
+
         with open(filename, 'w') as f:
             f.write(f'Sponge Node Number = {len(self.sponge_nodes)}\n')
             if any(self.sponge_nodes):
@@ -1364,6 +1376,7 @@ class ExportGrid:
         '''- Generates an ascii FVCOM 4.x formatted obc file'''
         if filename is None: 
             filename = f'input/{self.casename}_obc.dat'
+
         with open(filename, 'w') as f:
             f.write(f'OBC Node Number = {len(self.obc_nodes)}\n')
             i = 0
@@ -1375,7 +1388,9 @@ class ExportGrid:
 
     def write_cor(self, filename = None):
         '''- Generates an ascii FVCOM 4.x formatted coriolis file'''
-        if filename is None: filename = f'input/{self.casename}_cor.dat'
+        if filename is None: 
+            filename = f'input/{self.casename}_cor.dat'
+
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
             for x, y, lat in zip(self.x, self.y, self.lat):
@@ -1393,9 +1408,6 @@ class ExportGrid:
                      - must always be positive, buffer measured in meters
         '''
         # Move most of these functions to the CoastLine class
-        import geopandas as gpd
-        import shapely as shp
-        from pyproj import Transformer
         if outfolder is None: 
             outfolder = os.getcwd()
 
@@ -1492,12 +1504,13 @@ class PlotFVCOM:
     def transform(self, var):
         self._transform = var
 
-    def plot_grid(self, c = 'g-', linewidth = 0.2, markersize = 0.2, show = True, *args, **kwargs):
+    def plot_grid(self, ax = None, c = 'g-', linewidth = 0.2, markersize = 0.2, show = True, *args, **kwargs):
         '''
         Plot mesh grid
         - arguments and keyword arguments are passed to pyplot.triplot
         '''
-        ax = plt.gca()
+        if ax == None:
+            ax = plt.gca()
         kwargs = self._transform_to_kwargs(**kwargs)
         ax.triplot(self.x, self.y, self.tri, c, *args, markersize=markersize, linewidth=linewidth, **kwargs)
         ax.set_aspect('equal')
@@ -1540,9 +1553,9 @@ class PlotFVCOM:
                 kwargs['transform'] = self.transform
         return kwargs   
 
-    def georeference(self, url='https://openwms.statkart.no/skwms1/wms.topo4.graatone?service=wms&request=getcapabilities', 
-                           layers=['topo4graatone_WMS'], wms=None,
-                           depth=True):
+    def georeference(self, 
+                    url='https://wms.geonorge.no/skwms1/wms.topograatone?service=wms&request=getcapabilities', 
+                    layers=['topograatone'], wms=None, depth=True):
         '''
         Plot map data from WMS server as georeference. Must be done before plotting grid, contours etc.
         - requires cartopy

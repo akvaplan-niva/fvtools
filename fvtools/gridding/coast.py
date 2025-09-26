@@ -136,6 +136,7 @@ def separate_polygons(x, y, npol, bpath = os.getcwd()+'/boundary.txt',
     u, indices = np.unique(npol, return_inverse = True)
     bind0      = int(u[np.argmax(np.bincount(indices))])
 
+    # Plot all polygons, prepare the interactive portion of this
     fig, ax    = plt.subplots()
     plt.subplots_adjust(bottom=0.15)
     plot_coast([],[],x,y,npol)
@@ -151,27 +152,25 @@ def separate_polygons(x, y, npol, bpath = os.getcwd()+'/boundary.txt',
     def update(val):
         bind = sbind.val
         plot_coast([],[],x,y,npol)
-        l.set_data(x[npol==bind],y[npol==bind])
+        l.set_data(x[npol == bind], y[npol == bind])
         fig.canvas.draw_idle()
+
+        # Write the boundary --> Should consider moving this one to a separate function, but for now...
+        write_bound_isl(x[npol == bind], y[npol == bind], npol[npol == bind] - (bind - 1), path = bpath)
+        
+        # Write the islands
+        if npol.max()>1:
+            a = np.not_equal(npol, bind)
+            npoln = npol[a]
+            npoln[npoln > bind] = npoln[npoln > bind]-1
+            write_bound_isl(x[a], y[a], npoln, path=ipath)
+        else:
+            write_bound_isl(0,0,0,path=ipath)
         
     sbind.on_changed(update)
     plt.show(block=True)
 
-    print('Storing the boundary and the islands in separate files;')
-    print(bpath)
-    print(ipath)
 
-    # Write the boundary
-    write_bound_isl(x[npol==sbind.val], y[npol==sbind.val], npol[npol==sbind.val]-(sbind.val-1), path=bpath)
-    
-    # Write the islands
-    if npol.max()>1:
-        a = np.not_equal(npol,sbind.val)
-        npoln = npol[a]
-        npoln[npoln>sbind.val] = npoln[npoln>sbind.val]-1
-        write_bound_isl(x[a], y[a], npoln, path=ipath)
-    else:
-        write_bound_isl(0,0,0,path=ipath)
         
 def find_boundary(boundaryfile = f'{os.getcwd()}boundary.txt'):
     xb, yb, db, mb, ob = read_boundary(boundaryfile)
@@ -355,20 +354,21 @@ def prepare_gridding(boundary, islands, polygons, poly_parameters, obcind=[], wr
             print(str(index) + ' of ' + str(len(coastline)))
 
         p = Point((row.x, row.y))
-        outfile.island_number[index] = row.polygon_number 
+        outfile.loc[index, "island_number"] = row.polygon_number 
         if row.polygon_number == 1:
-            outfile.boundary[index] = 1
-        for n, pol in enumerate(polyg):
+            outfile.loc[index, "boundary"] = 1
+            
+        for n, pol in enumerate(polyg.geoms):
             if pol.contains(p):
-                outfile.polygon_number[index] = par.poly_number[n]
-                outfile.min_res[index] = par.min_res[n]
-                outfile.max_res[index] = par.max_res[n]
-                outfile.points_across[index] = par.points_across[n]
+                outfile.loc[index, "polygon_number"] = par.poly_number[n]
+                outfile.loc[index, "min_res"] = par.min_res[n]
+                outfile.loc[index, "max_res"] = par.max_res[n]
+                outfile.loc[index, "points_across"] = par.points_across[n]
                 break
-    outfile.polygon_number[outfile.obc == 1.] = 0.0
-    outfile.min_res[outfile.obc == 1.] = 1.0
-    outfile.max_res[outfile.obc == 1.] = 100000.
-    outfile.points_across[outfile.obc == 1.] = 1.0
+    outfile.loc[outfile.obc == 1., "polygon_number"] = 0.0
+    outfile.loc[outfile.obc == 1., "min_res"] = 1.0
+    outfile.loc[outfile.obc == 1., "max_res"] = 100000.
+    outfile.loc[outfile.obc == 1., "points_across"] = 1.0
 
     if write is not False:
         outfile.to_csv(write, sep=';', index=False)
@@ -530,9 +530,9 @@ def sigma_tanh(nlev, dl, du):
 def resolution(kyst, obcres, force_points_across = 0, f2f = False, topores = False, sigma = 0, rx1max = 0, min_depth = 0):
     '''Calculate coastal resolution'''
 
-    kyst.points_across[kyst.obc == 1] = 1.
+    kyst.loc[kyst.obc == 1, "points_across"] = 1.
     kyst.distres = kyst.distance / kyst.points_across
-    kyst.distres[kyst.obc == 1] = obcres
+    kyst.loc[kyst.obc == 1, "distres"] = obcres
     if f2f:
         kyst.mobility[kyst.obc == 1] = 0.0
         resobc = np.zeros(len(kyst.x))
@@ -549,30 +549,30 @@ def resolution(kyst, obcres, force_points_across = 0, f2f = False, topores = Fal
         sps = sigma[1:len(sigma)] + sigma[0:len(sigma)-1]
         sms = sigma[1:len(sigma)] - sigma[0:len(sigma)-1]
         R = max(np.abs(sps/sms))
-        kyst.hgrad[kyst.hgrad < 1.0e-20] = 1.0e-20
+        kyst.loc[kyst.hgrad < 1.0e-20, "hgrad"] = 1.0e-20
         kyst.topores = 2 * kyst.h * rx1max / ((R - rx1max) * kyst.hgrad)
-        kyst.topores[kyst.obc == 1] = obcres
+        kyst.loc[kyst.obc == 1, "topores"] = obcres
     
         ind = kyst.distres > kyst.topores
         kyst.resolution = kyst.distres
-        kyst.resolution[ind] = kyst.topores[ind]
+        kyst.loc[ind, "resolution"] = kyst.loc[ind, "topores"]
         indlarger = kyst.resolution > kyst.max_res
-        kyst.resolution[indlarger] = kyst.max_res[indlarger]
+        kyst.loc[indlarger, "resolution"] = kyst.loc[indlarger, "max_res"]
         indsmaller = kyst.resolution < kyst.min_res
-        kyst.resolution[indsmaller] = kyst.min_res[indsmaller]
-        kyst.resolution[kyst.obc == 1] = obcres
+        kyst.loc[indsmaller, "resolution"] = kyst.loc[indsmaller, "min_res"]
+        kyst.loc[kyst.obc == 1, "resolution"] = obcres
         kyst.rx1 = R * kyst.hgrad * kyst.resolution / (2 * kyst.h + kyst.hgrad * kyst.resolution)
     else:
         kyst.resolution = kyst.distres
         indlarger = kyst.resolution > kyst.max_res
-        kyst.resolution[indlarger] = kyst.max_res[indlarger]
+        kyst.loc[indlarger, "resolution"] = kyst.loc[indlarger, "max_res"]
         indsmaller = kyst.resolution < kyst.min_res
-        kyst.resolution[indsmaller] = kyst.min_res[indsmaller]
-        kyst.resolution[kyst.obc == 1] = obcres
+        kyst.loc[indsmaller, "resolution"] = kyst.loc[indsmaller, "min_res"]
+        kyst.loc[kyst.obc == 1, "resolution"] = obcres
     if f2f:
-        kyst.resolution[kyst.mobility == 0.0] = resobc[kyst.mobility == 0.0]
+        kyst.loc[kyst.mobility == 0.0, "resolution"] = resobc[kyst.mobility == 0.0]
     if force_points_across > 0:
-        kyst.resolutions[kyst.distance / kyst.resolution > force_points_across] = kyst.distance / force_points_across
+        kyst.loc[kyst.distance / kyst.resolution > force_points_across, "resolutions"] = kyst.distance / force_points_across
 
     return kyst
     

@@ -61,7 +61,9 @@ def main(dmfile = None,
     SmoothFactor:  (0.2)    factor to weigh neighboring nodes during laplacian smoothing
     latlon:        (False)  write output as latlon
     '''
-    if sigma_file is None: sigma_file = f'./input/{casename}_sigma.dat'
+    if sigma_file is None: 
+        sigma_file = f'./input/{casename}_sigma.dat'
+        
     bc = BuildCase(dmfile=dmfile, depth_file=depth_file, casename=casename,
                    dm_projection=dm_projection, depth_projection=depth_projection, target_projection=target_projection, 
                    sigma_file=sigma_file,
@@ -355,7 +357,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
                  dm_projection = 'epsg:32633', 
                  depth_projection = 'epsg:32633', 
                  target_projection = 'epsg:32633',
-                 sigma_file = f'./input/{os.getcwd().split("/")[-1]}_sigma.dat',
+                 sigma_file = None,
                  rx0max = 0.2,
                  SmoothFactor = 0.2,
                  min_depth = 5.0,
@@ -405,6 +407,9 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         else:
             print(f'\nBuilding case: {casename} from: {dmfile} with bathymetry from: {depth_file.split("/")[-1]} in carthesian coordinates')
 
+        # Overwrite
+        if sigma_file is None: sigma_file = f'./input/{casename}_sigma.dat'
+
         # read file, update input fields
         self._add_grid_parameters_2dm()
         self.casename = casename
@@ -446,7 +451,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         if not updated_grid:
             self.main()
         else:
-            print('- The grid was changed, you may want to inspect it before running BuildCase.main()')
+            print('- The grid was changed, you may want to inspect it before running BuildCase.main(). Writing changed grid to auto_cleaned_grid.2dm')
 
     def __str__(self):
         return f'''
