@@ -197,13 +197,14 @@ def get_time(NumDays, min_int, start_year, start_month, start_day):
     num_minutes = NumDays*24*60
 
     # Convert to datetime object
-    minutes     = np.arange(0, num_minutes+min_int, min_int, dtype = np.float64)
-    start_date  = datetime(start_year, start_month, start_day, tzinfo = pytz.utc)
-    datetimes   =  np.array([start_date + timedelta(minutes = day) for day in minutes])
+    minutes     = np.arange(0, num_minutes + min_int, min_int, dtype = np.float64)   # minutes since simulation start
+    start_date  = datetime(start_year, start_month, start_day, tzinfo = pytz.utc)    # start date
+    datetimes   = np.array([start_date + timedelta(minutes = dt) for dt in minutes]) # datetime for each input
 
     # Convert to the fvcom timeformat and the pyTMD time format and return
     fvcom_time  = date2num(datetimes) # defaults to FVCOMs epoch
     tide_time   = date2num(datetimes, reference_time = datetime(1992, 1, 1, tzinfo = pytz.utc))
+    
     return fvcom_time, tide_time, datetimes
 
 def get_Itime(fvcom_time):
