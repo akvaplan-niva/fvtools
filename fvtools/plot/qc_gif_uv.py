@@ -30,7 +30,8 @@ def main(filelist = None,
          mname  = None,
          verbose = False,
          fps    = 12,
-         dpi    = 100):
+         dpi    = 100,
+         reference = 'epsg:32633'):
     '''
     Interpolate velocity data to depths of interest, create
     a movie showing velocity maxima/minima and streamlines
@@ -60,7 +61,7 @@ def main(filelist = None,
     fl  = parse_input(folder, filelist, start, stop)
 
     # Establish a grid object
-    M   = FVCOM_grid(fl.path[0], verbose = verbose)
+    M   = FVCOM_grid(fl.path[0], verbose = verbose, reference = reference)
 
     # Check if we can use a cropped version of the grid
     if xlim is not None and ylim is not None:
@@ -161,9 +162,9 @@ class UVmov:
         if verbose:
             print('- Initialize georeference')
         if self.xlim is not None and self.ylim is not None:
-            self.gp  = geoplot(self.xlim, self.ylim)
+            self.gp  = geoplot(self.xlim, self.ylim, projection = M.reference)
         else:
-            self.gp  = geoplot(self.M.xc, self.M.yc)
+            self.gp  = geoplot(self.M.xc, self.M.yc, projection = M.reference)
         
         # Initialize the figure
         self.fig = self.make_figure(dpi = dpi)
