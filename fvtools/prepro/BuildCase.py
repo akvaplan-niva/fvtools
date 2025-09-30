@@ -539,8 +539,15 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         self.info['created']    = datetime.now().strftime('%Y-%m-%d at %H:%M h')
         self.info['2dm file']   = self.filepath
         self.info['depth file'] = self.depth_file
-        self.info['author']     = os.getlogin()
-        self.info['directory']  = os.getcwd()
+        try:
+            self.info['author']    = os.getlogin()
+        except:
+            self.info['author']    = 'compute node'
+        try:
+            self.info['directory'] = os.getcwd()
+        except:
+            self.info['directory'] = 'compute node'
+            
         self.info['scipt version'] = version_number
         self.info['casename']   = self.casename
         self.info['reference']  = self.target_projection
