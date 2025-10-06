@@ -28,13 +28,13 @@ def main(child_fn      = None,
          child_grid    = None,
          result_folder = None,
          name          = None,
-         motherfn      = None,
          filelist      = None,
          speed         = False):
     '''
     Two options for child specification:
     child_fn:      - path to an existing FVCOM restart file
     startdate      - date ("yyyy-mm-dd-hh")
+                     - require that you specify child_grid (anything that can be passed to FVCOM_grid)
     
     
     Two methods to specify the restart file:
@@ -43,8 +43,9 @@ def main(child_fn      = None,
         --> name   - Then you must also provide the name of the numerical experiment (ie. 'PO12')
 
     Optional:
-    speed          - sometimes works, many times not - hence False by default
+    speed          - Initialize the model with velocities as well. Sometimes works, many times not - hence False by default.
     '''
+    # Load (or create) child restart file
     child_fn = get_child_file(child_fn, startdate, child_grid)
     nodefield, cellfield, alias = interpolation_fields(speed)
 
@@ -69,7 +70,7 @@ def main(child_fn      = None,
             data, dpt = nearest_neighbor(mother, M, M_ch, ind, nodefield, cellfield, alias)
 
         # Update depth with zeta for mother and child prior to vertical interpolation
-        M.zeta    = M.load_netCDF(M.filepath, 'zeta', ind)
+        M.zeta    = M.load_netCDF(mother_fn, 'zeta', ind)
         M_ch.zeta = data['zeta']
 
         print('\n- Vertical interpolation') 
@@ -115,6 +116,8 @@ def interpolation_fields(speed):
     else:
         nodefield = ['zeta', 'salinity', 'temp','et', 'tmean1', 'smean1', 'rho1', 'rmean1', 'zice']
         cellfield = None
+
+    # Define aliases
     alias     = {'tmean1': 'temp',
                  'smean1': 'salinity',
                  'et': 'zeta'}
@@ -136,8 +139,7 @@ def check_time(tm,tch):
 
 def find_file(name, data_directories, time):
     ''' 
-    Make lists that link a point in time to fvcom result file 
-    and index (in corresponding file). Three lists a returned:
+    Make lists that link a point in time to fvcom result file and index (in corresponding file). Three lists a returned:
     1: list with point in time (fvcom time: days since 1858-11-17 00:00:00)
     2: list with path to files
     3: list with indices
@@ -277,6 +279,9 @@ def vertical_interpolation(data, child, dpt):
     return vertical_data
 
 def dump_data(data, child):
+    '''
+    Write interpolated data from mother model to the child model restart file
+    '''
     print('\nDump data to restart/initial file')
     var = [*data]
     for field in var:
@@ -369,22 +374,23 @@ def make_initial_file(M, initial_time, obc_type = 0):
         'zice': (('siglay', 'node'), 'single')
         }
 
-    grid_fields = {'x': (('node',), 'single'),
-                   'y': (('node',), 'single'),
-                   'xc': (('nele',), 'single'),
-                   'yc': (('nele',), 'single'),
-                   'lat': (('node',), 'single'),
-                   'lon': (('node', ), 'single'),
-                   'latc': (('nele',), 'single'),
-                   'lonc': (('nele',), 'single'),
-                   'h': (('node',), 'single'),
-                   'h_center': (('nele',), 'single'),
-                   'nv': (('three', 'nele'), 'int32'),
-                   'siglay': (('siglay', 'node'), 'single'),
-                   'siglev': (('siglev', 'node'), 'single'),
-                   'siglay_center': (('siglay', 'nele'), 'single'),
-                   'siglev_center': (('siglev', 'nele'), 'single')
-                   }
+    grid_fields = {
+        'x': (('node',), 'single'),
+        'y': (('node',), 'single'),
+        'xc': (('nele',), 'single'),
+        'yc': (('nele',), 'single'),
+        'lat': (('node',), 'single'),
+        'lon': (('node', ), 'single'),
+        'latc': (('nele',), 'single'),
+        'lonc': (('nele',), 'single'),
+        'h': (('node',), 'single'),
+        'h_center': (('nele',), 'single'),
+        'nv': (('three', 'nele'), 'int32'),
+        'siglay': (('siglay', 'node'), 'single'),
+        'siglev': (('siglev', 'node'), 'single'),
+        'siglay_center': (('siglay', 'nele'), 'single'),
+        'siglev_center': (('siglev', 'nele'), 'single')
+        }
 
     aliases = {'nv': 'tri',
                'h_center': 'hc'}
