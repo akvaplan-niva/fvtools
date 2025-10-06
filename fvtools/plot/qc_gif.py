@@ -384,7 +384,7 @@ class AnimationColorbars:
         elif var == 'temp':
             self.cmap = cmo.cm.thermal
             self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
-            self.label = '$^\circ$C'
+            self.label = r'$^\circ$C'
 
         elif var == 'zeta':
             self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
