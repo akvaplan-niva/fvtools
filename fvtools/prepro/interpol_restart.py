@@ -225,10 +225,10 @@ def nearest_neighbor(mother, M, M_ch, ind, nodefield, cellfield, alias):
     # Store info needed for vertical interpolation
     class grid_info: pass
     grid_info.z_node_siglay_mother = M.h[nearest_mother_node, None] * M.siglay[nearest_mother_node, :] # mother siglay depth-levels at child nodes
-    grid_info.z_cell_siglay_mother = np.mean(grid_info.z_node_siglay_mother[M_ch.tri], axis=1)                # mother siglay depth-levels at child cells
+    grid_info.z_cell_siglay_mother = np.mean(grid_info.z_node_siglay_mother[M_ch.tri], axis=1)         # mother siglay depth-levels at child cells
 
     grid_info.z_node_siglev_mother = M.h[nearest_mother_node, None] * M.siglev[nearest_mother_node, :] # mother siglay depth-levels at child nodes
-    grid_info.z_cell_siglev_mother = np.mean(grid_info.z_node_siglev_mother[M_ch.tri], axis=1)                # mother siglay depth-levels at child cells
+    grid_info.z_cell_siglev_mother = np.mean(grid_info.z_node_siglev_mother[M_ch.tri], axis=1)         # mother siglay depth-levels at child cells
 
     return horizontal, grid_info
 
@@ -242,12 +242,12 @@ def vertical_interpolation(data, child, dpt):
 
     # Get depths to interpolate to and from
     # Sigma
-    node_dpt_siglay_child  = child['h'][:][:, None] * child['siglay'][:].T
-    cell_dpt_siglay_child  = child['h_center'][:][:, None] * child['siglay_center'][:].T
+    node_dpt_siglay_child  = np.array(child['h'][:][:, None] * child['siglay'][:].T)
+    cell_dpt_siglay_child  = np.array(child['h_center'][:][:, None] * child['siglay_center'][:].T)
 
     # Siglev
-    node_dpt_siglev_child  = child['h'][:][:, None] * child['siglev'][:].T
-    cell_dpt_siglev_child  = child['h_center'][:][:, None] * child['siglev_center'][:].T
+    node_dpt_siglev_child  = np.array(child['h'][:][:, None] * child['siglev'][:].T)
+    cell_dpt_siglev_child  = np.array(child['h_center'][:][:, None] * child['siglev_center'][:].T)
     
     # Get interpolation coefficients and data indices
     print('  - Calculate vertical weights')
