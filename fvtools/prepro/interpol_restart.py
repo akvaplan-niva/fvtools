@@ -436,7 +436,7 @@ def make_initial_file(M, initial_time, obc_type = 0):
 
             else:
                 if key =='nv':
-                    initial[key][:] = getattr(M, aliases[key]).T+1
+                    initial[key][:] = getattr(M, aliases[key]).T + 1 # Offset for Fortran indexing
                 else:
                     initial[key][:] = getattr(M, aliases[key])
 
@@ -446,7 +446,7 @@ def make_initial_file(M, initial_time, obc_type = 0):
                 initial[key][:] = 1
 
             elif key == 'obc_nodes':
-                initial[key][:] = M.obc_nodes
+                initial[key][:] = M.obc_nodes + 1 # Offset for Fortran indexing
 
             else:
                 initial[key][:] = obc_type
