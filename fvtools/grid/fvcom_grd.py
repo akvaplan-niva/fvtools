@@ -1516,14 +1516,15 @@ class PlotFVCOM:
         ax.set_aspect('equal')
         if show: plt.show(block = False)
 
-    def plot_obc(self, **kwargs):
+    def plot_obc(self, ax = None, **kwargs):
         '''plot the obc nodes, show different nodestrings'''
-        ax = plt.gca()
+        if ax == None:
+            ax = plt.gca()
         kwargs = self._transform_to_kwargs(**kwargs)
         for i in range(len(self.x_obc)):
             ax.scatter(self.x_obc[i], self.y_obc[i], zorder = 10, label=f'boundary nr. {i+1}', **kwargs)
             ax.scatter(self.x_obc[i][[0,-1]], self.y_obc[i][[0,-1]], zorder = 11, c = 'r', **kwargs) # start and end points 
-        plt.draw()
+        #plt.draw()
 
     def plot_contour(self, field, show = True, *args, **kwargs):
         '''Plot contour of node- or cell data, basically just a shortcut for pyplot.tricontourf()'''
@@ -1619,7 +1620,7 @@ class PlotFVCOM:
         gl.top_labels = None
 
     @staticmethod
-    def _plot_contour(x, y, tri, field, show, *args, **kwargs):
+    def _plot_contour(x, y, tri, field, show = False, *args, **kwargs):
         ax = plt.gca()
         cont = ax.tricontourf(x, y, tri, field, *args, **kwargs)
         ax.set_aspect('equal')
