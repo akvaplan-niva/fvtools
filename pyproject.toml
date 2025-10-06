@@ -5,6 +5,7 @@ description = "Collection of scripts that can be usefull when dealing with fvcom
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "ffmpeg-python",
     "affine",
     "asttokens",
     "attrs",
