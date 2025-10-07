@@ -730,7 +730,7 @@ class CropGrid:
         kwargs = {}
         kwargs['x'], kwargs['y'], kwargs['tri'] = x, y, tri
         if self.h is not None and not np.all(self.h == None):
-            kwargs['h'] = self.h
+            kwargs['h'] = self.h[nodes]
         if self.siglev is not None and not np.all(self.siglev == None):
             kwargs['siglev'] = self.siglev[nodes, :]
         if self.siglay is not None and not np.all(self.siglay == None):
