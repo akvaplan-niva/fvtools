@@ -1021,6 +1021,9 @@ class FVCOM_rivers:
         d.close()
 
     def fix_nordic(self, this_name):
+        '''
+        FVCOM does not accept norwegian letters
+        '''
         this_name.replace('å','a')
         this_name.replace('Å','A')
         this_name.replace('ø','o')
@@ -1034,18 +1037,17 @@ class FVCOM_rivers:
         Write a namelist to accompany the netCDF file
         """
         VQDIST = -np.diff(self.M.siglev[0,:])
-        f = open(namelist, 'w+')
-        for i, river in enumerate(self.river_names):
-            river = self.fix_nordic(river)
-            f.write(' &NML_RIVER\n')
-            f.write(f" RIVER_NAME = '{river}'\n")
-            f.write(f" RIVER_FILE = '{riverfile}'\n")
-            f.write(f' RIVER_GRID_LOCATION = {self.mesh_location[i]+1}\n')
-            vertical_dist = np.array2string(np.round(VQDIST,6), separator = ' ', edgeitems = 6,
-                                            precision = 5, floatmode = 'fixed').replace('\n',' ')[1:-1]
-            f.write(f' RIVER_VERTICAL_DISTRIBUTION = {vertical_dist}\n')
-            f.write('/\n')
-        f.close()
+        with open(namelist, 'w+') as f:
+            for i, river in enumerate(self.river_names):
+                river = self.fix_nordic(river)
+                f.write(' &NML_RIVER\n')
+                f.write(f" RIVER_NAME = '{river}'\n")
+                f.write(f" RIVER_FILE = '{riverfile}'\n")
+                f.write(f' RIVER_GRID_LOCATION = {self.mesh_location[i]+1}\n')
+                vertical_dist = np.array2string(np.round(VQDIST,6), separator = ' ', edgeitems = 6,
+                                                precision = 5, floatmode = 'fixed').replace('\n',' ')[1:-1]
+                f.write(f' RIVER_VERTICAL_DISTRIBUTION = {vertical_dist}\n')
+                f.write('/\n')
 
 
 # Crop the fields in an object to only cover indices
