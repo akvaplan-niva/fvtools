@@ -280,6 +280,7 @@ def vertical_interpolation(data, child, dpt):
         if data[field].shape == siglay.T.shape:
             vertical_data[field] = data[field][nlay_ind1, range(0, data[field].shape[1])] * nlay_weigths1 + \
                                    data[field][nlay_ind2, range(0, data[field].shape[1])] * nlay_weigths2 
+            
         elif data[field].shape == siglay_center.T.shape:
             vertical_data[field] = data[field][clay_ind1, range(0, data[field].shape[1])] * clay_weigths1 + \
                                    data[field][clay_ind2, range(0, data[field].shape[1])] * clay_weigths2 
