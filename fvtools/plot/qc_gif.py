@@ -2,9 +2,7 @@ import os
 import numpy as np
 import cmocean as cmo
 import progressbar as pb
-import matplotlib.tri as tri
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolor
 import matplotlib.animation as manimation
 import warnings
 warnings.filterwarnings("ignore")
@@ -15,8 +13,6 @@ from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.grid.tools import Filelist, num2date, date2num
 from fvtools.plot.geoplot import geoplot
 from datetime import datetime, timezone
-from scipy.spatial import cKDTree
-from functools import cached_property
     
 # ----------------------------------------------------------------------------------------
 #                     Create an animation from a number of files
@@ -39,6 +35,9 @@ def main(folder = None,
          dpi    = 100,
          reference = 'epsg:32633'):
     '''
+    One-liner to make animations of FVCOM output fields.
+    ---
+
     Reads files, creates animation.
     - from single files
     - from multiple files in a folder
@@ -90,43 +89,64 @@ def main(folder = None,
 
     print('--> Done.')
 
-# Define writer
-# --------
-def get_animator():
+def get_input(
+        folder = None,
+        fname  = None,
+        filelist = None,
+        var    = ['salinity', 'temp', 'zeta'],
+        sigma  = None,
+        z      = None,
+        xlim   = None,
+        ylim   = None,
+        start  = None,
+        stop   = None,
+        section = None,
+        section_res  = None,
+        fps    = 12,
+        cticks = None,
+        mname  = None,
+        dpi    = 100,
+        reference = 'epsg:32633'
+        ):
     '''
-    Check which animator is available, get going
+    Returns a dict with all keyword arguments needed to run surface_movie, zlevel_movie and section_movie (including filelist).
+
+    Example usage:
+    ---
+    kwargs = get_input(folder = 'output/', start = '2019-02-01-00', stop = '2019-02-20-00', sigma = 0, var = ['salinity', 'temp'])
+
+    # Make surface movie of sigma = 0
+    surface_movie(**kwargs)
+
+    # Make section movie
+    kwargs['section'] = 'section.txt'
+    kwargs['section_res'] = 50
+    section_movie(**kwargs)
+
+    # Make z-level movie
+    kwargs['z'] = 100
+    zlevel_movie(**kwargs)
+
+    kwargs
+
     '''
-    avail = manimation.writers.list()
-    if 'ffmpeg' in avail:
-        FuncAnimation = manimation.writers['ffmpeg']
-        codec = 'mp4'
-    elif 'imagemagick' in avail:
-        FuncAnimation = manimation.writers['imagemagick']
-        codec = 'gif'
-    elif 'pillow' in avail:
-        FuncAnimation = manimation.writers['pillow']
-        codec = 'gif'         
-    elif 'html' in avail:
-        FuncAnimation = manimation.writers['html']
-        codec = 'html'
-    else:
-        raise ValueError('None of the standard animators are available, can not make the movie')
-    return FuncAnimation, codec
-
-def write_movie(mmaker, anim, mname, field, codec, writer):
-    if mname is None:
-        mname = mmaker.M.casename
-
-    anim.save(f'{mname}_{field}.{codec}', writer = writer)
-    plt.close('all')
-    mmaker.bar.finish()
+    vars = dir()
+    kwargs = {}
+    for var in vars:
+        kwargs[var] = eval(var)
+    kwargs['time'], kwargs['dates'], kwargs['List'], kwargs['index'], kwargs['cb'] = parse_input(folder, fname, filelist, start, stop, sigma, var)
+    return kwargs
     
 # ----------------------------------------------------------------------------------------------------------------------
-#                            For plotting movies of a sigma layer surface
+#                                            Movie plotters
 # ----------------------------------------------------------------------------------------------------------------------
-def surface_movie(time, dates, List, index, var, sigma, cb, xlim, ylim, fps, cticks, mname, dpi, reference):
+def surface_movie(
+        time = None, dates = None, List = None, index = None, var = None, 
+        sigma = None, cb = None, xlim = None, ylim = None, fps = None, cticks = None, 
+        mname = None, dpi = None, reference = None, **kwargs
+        ):
     '''
-    Surface movie maker
+    Makes movies of tracer fields along constant sigma-levels
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
@@ -154,11 +174,15 @@ def surface_movie(time, dates, List, index, var, sigma, cb, xlim, ylim, fps, cti
         writer = MovieWriter(fps = fps)
 
         # Set framerate, write the movie
-        write_movie(mmaker, anim, mname, field, codec, writer)
+        write_movie(mmaker, anim, f'{mname}_sigma_{sigma}', field, codec, writer)
 
-def zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, mname, dpi, reference):
+def zlevel_movie(
+        time = None, dates = None, List = None, index = None, var = None, 
+        z = None, cb = None, xlim = None, ylim = None, fps = None, cticks = None, mname = None, 
+        dpi = None, reference = None, **kwargs
+        ):
     '''
-    Surface movie maker
+    Makes movies of tracer fields along constant z-levels
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
@@ -182,9 +206,13 @@ def zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, 
                                                   blit             = False,
                                                   cache_frame_data = False)
         writer = MovieWriter(fps = fps)
-        write_movie(mmaker, anim, mname, field, codec, writer)
+        write_movie(mmaker, anim, f'{mname}_{z}m_depth', field, codec, writer)
 
-def section_movie(time, dates, List, index, var, cb, section, section_res, fps, cticks, mname, dpi, reference):
+def section_movie(
+        time = None, dates = None, List = None, index = None, var = None, cb = None, 
+        section = None, section_res = None, fps = None, cticks = None, mname = None, 
+        dpi = None, reference = None, **kwargs
+        ):
     '''
     Plot movies from cross-sections
     - Some work to be done reducing the data we're iterating over when making the crossection (only download data in a buffer around the transect)
@@ -232,8 +260,39 @@ def section_movie(time, dates, List, index, var, cb, section, section_res, fps, 
                                          blit             = False,
                                          cache_frame_data = False)
         writer = MovieWriter(fps = fps)
-        write_movie(mmaker, anim, mname, field, codec, writer)
-        
+        write_movie(mmaker, anim, f'{mname}_section', field, codec, writer)
+
+#                                  Helper functions
+# --------------------------------------------------------------------------------------------------
+def get_animator():
+    '''
+    Check which animator is available, get going
+    '''
+    avail = manimation.writers.list()
+    if 'ffmpeg' in avail:
+        FuncAnimation = manimation.writers['ffmpeg']
+        codec = 'mp4'
+    elif 'imagemagick' in avail:
+        FuncAnimation = manimation.writers['imagemagick']
+        codec = 'gif'
+    elif 'pillow' in avail:
+        FuncAnimation = manimation.writers['pillow']
+        codec = 'gif'         
+    elif 'html' in avail:
+        FuncAnimation = manimation.writers['html']
+        codec = 'html'
+    else:
+        raise ValueError('None of the standard animators are available, can not make the movie')
+    return FuncAnimation, codec
+
+def write_movie(mmaker, anim, mname, field, codec, writer):
+    if mname is None:
+        mname = mmaker.M.casename
+
+    anim.save(f'{mname}_{field}.{codec}', writer = writer)
+    plt.close('all')
+    mmaker.bar.finish()
+
 def allFiles(folder):
     '''
     Return list of netCDF output files in a folder
@@ -244,7 +303,6 @@ def allFiles(folder):
     ncfiles = [folder + file for file in ncfiles]
     return ncfiles
 
-# Still some cleaning upping to do here
 def qc_fileList(files, var, start, stop, sigma = None):
     '''
     Take a timestep, couple it to a file
@@ -334,6 +392,54 @@ def parse_time_input(file_in, start, stop):
 
     return start, stop
 
+def parse_input(folder, fname, filelist, start, stop, sigma, var):
+    '''
+    Return the fields the routine expects
+    '''
+    if filelist is None:
+        if folder is not None:
+            files = allFiles(folder)
+        elif fname is not None:
+            files = [fname]
+        else:
+            raise InputError('You must provide the routine one of: folder, fname or filelist')
+
+        # Prepare time (string to fvcom time)
+        start, stop = parse_time_input(files[0], start, stop)
+
+        # Couple file to timestep
+        time, dates, List, index, cb = qc_fileList(files, var, start, stop, sigma = sigma)
+
+    else:
+        # Prepare the filelist
+        # ----
+        fl = Filelist(filelist, start, stop)
+        time, dates, List, index = fl.time, fl.datetime, fl.path, fl.index        
+        
+        # Prepare the colorbar (quick version)
+        cb = {}
+        d_min = Dataset(List[0])
+        d_max = Dataset(List[-1])
+        for field in var:
+            if field in ['vorticity','pv']:
+                continue
+            cb[field] = {}
+            cb[field]['max'] = max(d_min[field][:].max(), d_max[field][:].max())
+            cb[field]['min'] = min(d_min[field][:].min(), d_max[field][:].min())
+            if field == 'salinity':
+                cb['salinity']['min'] = 29
+            with Dataset(fl.path[0]) as d:
+                cb[field]['units'] = d[field].units
+
+    print(f"Start: {dates[0].strftime('%d/%B-%Y, %H:%M:%S')}")
+    print(f"End:   {dates[-1].strftime('%d/%B-%Y, %H:%M:%S')}")
+    return time, dates, List, index, cb
+
+def elements(array):
+    return array.ndim and array.size
+
+#                                                      Helper classes
+# --------------------------------------------------------------------------------------------------------------------------
 class AnimationFields:
     '''
     Some fields can be read directly from the netCDF file, some must be inferred.
@@ -562,58 +668,12 @@ class VerticalMaker(AnimationFields, AnimationColorbars):
         # Settings
         if self.ylimit is not None:
             plt.ylim(self.ylimit)
-        plt.colorbar(label = self.label)
+        plt.colorbar(cont, label = self.label)
         plt.xlabel('km from start of transect')
         plt.ylabel('meter depth')
         plt.title(self.datetime[i].strftime('%m/%d, %H:%M:%S'))
         ax = plt.gca()
         ax.set_facecolor('tab:grey')
-
-def parse_input(folder, fname, filelist, start, stop, sigma, var):
-    '''
-    Return the fields the routine expects
-    '''
-    if filelist is None:
-        if folder is not None:
-            files = allFiles(folder)
-        elif fname is not None:
-            files = [fname]
-        else:
-            raise InputError('You must provide the routine one of: folder, fname or filelist')
-
-        # Prepare time (string to fvcom time)
-        start, stop = parse_time_input(files[0], start, stop)
-
-        # Couple file to timestep
-        time, dates, List, index, cb = qc_fileList(files, var, start, stop, sigma = sigma)
-
-    else:
-        # Prepare the filelist
-        # ----
-        fl = Filelist(filelist, start, stop)
-        time, dates, List, index = fl.time, fl.datetime, fl.path, fl.index        
-        
-        # Prepare the colorbar (quick version)
-        cb = {}
-        d_min = Dataset(List[0])
-        d_max = Dataset(List[-1])
-        for field in var:
-            if field in ['vorticity','pv']:
-                continue
-            cb[field] = {}
-            cb[field]['max'] = max(d_min[field][:].max(), d_max[field][:].max())
-            cb[field]['min'] = min(d_min[field][:].min(), d_max[field][:].min())
-            if field == 'salinity':
-                cb['salinity']['min'] = 29
-            with Dataset(fl.path[0]) as d:
-                cb[field]['units'] = d[field].units
-
-    print(f"Start: {dates[0].strftime('%d/%B-%Y, %H:%M:%S')}")
-    print(f"End:   {dates[-1].strftime('%d/%B-%Y, %H:%M:%S')}")
-    return time, dates, List, index, cb
-
-def elements(array):
-    return array.ndim and array.size
 
 class PiecewiseNorm(Normalize):
     ''' piecewise normalization of colormap'''
