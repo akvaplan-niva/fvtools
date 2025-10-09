@@ -33,7 +33,8 @@ def main(folder = None,
          cticks = None,
          mname  = None,
          dpi    = 100,
-         reference = 'epsg:32633'):
+         reference = 'epsg:32633',
+         **kwargs):
     '''
     One-liner to make animations of FVCOM output fields.
     ---
@@ -69,23 +70,30 @@ def main(folder = None,
 
     Report issues/bugs to hes@akvaplan.niva.no
     '''    
+    # Copy the input
+    vars = dir()
+    kwargs = {}
+    for variable in vars:
+        kwargs[variable] = eval(variable)
+
     # Stop if insufficient input
     if section is None and sigma is None and z is None:
         raise ValueError('The routine needs at least one of "section", "sigma" or "z"')
 
     # Get the relevant files
-    time, dates, List, index, cb = parse_input(folder, fname, filelist, start, stop, sigma, var)
+    kwargs['time'], kwargs['dates'], kwargs['List'], kwargs['index'], kwargs['cb'] = parse_input(**kwargs)
 
     # Plot surface fields
-    if sigma is not None:
-        surface_movie(time, dates, List, index, var, sigma, cb, xlim, ylim, fps, cticks, mname, dpi, reference)
+    if kwargs['sigma']:
+        surface_movie(**kwargs)
 
-    if z is not None:
-        zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, mname, dpi, reference)
+    # Plot fields interpolated to constant z-levels
+    if kwargs['z']:
+        zlevel_movie(**kwargs)
 
     # Plot section fields
-    if section is not None:
-        section_movie(time, dates, List, index, var, cb, section, section_res, fps, cticks, mname, dpi, reference)
+    if kwargs['section']:
+        section_movie(**kwargs)
 
     print('--> Done.')
 
@@ -106,7 +114,8 @@ def get_input(
         cticks = None,
         mname  = None,
         dpi    = 100,
-        reference = 'epsg:32633'
+        reference = 'epsg:32633',
+        **kwargs
         ):
     '''
     Returns a dict with all keyword arguments needed to run surface_movie, zlevel_movie and section_movie (including filelist).
@@ -130,11 +139,17 @@ def get_input(
     kwargs
 
     '''
+    # Copy the input
     vars = dir()
     kwargs = {}
-    for var in vars:
-        kwargs[var] = eval(var)
-    kwargs['time'], kwargs['dates'], kwargs['List'], kwargs['index'], kwargs['cb'] = parse_input(folder, fname, filelist, start, stop, sigma, var)
+    for variable in vars:
+        kwargs[variable] = eval(variable)
+
+    # Stop if insufficient input
+    if section is None and sigma is None and z is None:
+        raise ValueError('The routine needs at least one of "section", "sigma" or "z"')
+
+    kwargs['time'], kwargs['dates'], kwargs['List'], kwargs['index'], kwargs['cb'] = parse_input(**kwargs)
     return kwargs
     
 # ----------------------------------------------------------------------------------------------------------------------
@@ -152,6 +167,9 @@ def surface_movie(
     print('\nFeeding data to the movie maker')
     mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma)
     MovieWriter, codec = get_animator()
+
+    if not mname:
+        mname = mmaker.M.casename
 
     for field in var:
         mmaker.var    = field
@@ -187,8 +205,12 @@ def zlevel_movie(
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
     mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, z=z)
+
+    if not mname:
+        mname = mmaker.M.casename
+
     MovieWriter, codec = get_animator()
-    
+
     for field in var:
         if field in ['zeta', 'vorticity', 'pv']:
             break
@@ -215,7 +237,6 @@ def section_movie(
         ):
     '''
     Plot movies from cross-sections
-    - Some work to be done reducing the data we're iterating over when making the crossection (only download data in a buffer around the transect)
     '''
     print('\nCreate the section movie')
     MovieWriter, codec = get_animator()
@@ -225,6 +246,10 @@ def section_movie(
     M = FVCOM_grid(List[0], verbose = False, reference = reference, static_depth = True)
     if section is True:
         section = None
+
+    if not mname:
+        mname = M.casename
+
     M.prepare_section(section_file = section, res = section_res, store_transect_img = True)
 
     # Crop grid to a sausage covering the transect (so we don't need to load excessive amounts of data to memory)
@@ -392,25 +417,11 @@ def parse_time_input(file_in, start, stop):
 
     return start, stop
 
-def parse_input(folder, fname, filelist, start, stop, sigma, var):
+def parse_input(folder = None, fname = None, filelist = None, start = None, stop = None, sigma = None, var = None, **kwargs):
     '''
     Return the fields the routine expects
     '''
-    if filelist is None:
-        if folder is not None:
-            files = allFiles(folder)
-        elif fname is not None:
-            files = [fname]
-        else:
-            raise InputError('You must provide the routine one of: folder, fname or filelist')
-
-        # Prepare time (string to fvcom time)
-        start, stop = parse_time_input(files[0], start, stop)
-
-        # Couple file to timestep
-        time, dates, List, index, cb = qc_fileList(files, var, start, stop, sigma = sigma)
-
-    else:
+    if filelist:
         # Prepare the filelist
         # ----
         fl = Filelist(filelist, start, stop)
@@ -430,6 +441,20 @@ def parse_input(folder, fname, filelist, start, stop, sigma, var):
                 cb['salinity']['min'] = 29
             with Dataset(fl.path[0]) as d:
                 cb[field]['units'] = d[field].units
+
+    else:
+        if folder is not None:
+            files = allFiles(folder)
+        elif fname is not None:
+            files = [fname]
+        else:
+            raise InputError('You must provide the routine one of: folder, fname or filelist')
+
+        # Prepare time (string to fvcom time)
+        start, stop = parse_time_input(files[0], start, stop)
+
+        # Couple file to timestep
+        time, dates, List, index, cb = qc_fileList(files, var, start, stop, sigma = sigma)
 
     print(f"Start: {dates[0].strftime('%d/%B-%Y, %H:%M:%S')}")
     print(f"End:   {dates[-1].strftime('%d/%B-%Y, %H:%M:%S')}")
