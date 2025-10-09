@@ -1094,3 +1094,41 @@ def show_forcing(obj, gp, M):
     plt.show(block = False)
 
 class InputError(Exception): pass
+
+
+# Development:
+# Create a river subsetting method
+# -> Load mother model rivers as "raw data" that can be processed further using the existing fvtools scripts
+from netCDF4 import Dataset
+import f90nml
+
+class MotherRivers:
+    '''
+    Class that reads rivers that have been used to force a larger model domain
+    '''
+    def __init__(self, nmlfile, river_nc, mothergrid, river_inflow_location = 'edge', reference = 'epsg:32633'):
+        '''
+        Reads
+        - nmlfile:    River namelist for the mother rivers
+        - river_nc:   River forcing file for the mother domain rivers
+        - mothergrid: Grid file for the FVCOM mother domin
+        '''
+        # We do not support nodes input at the moment
+        if river_inflow_location != 'edge':
+            raise ValueError(f"Sorry, we only support river_inflow_location = 'edge' at the moment, {river_inflow_location} is not available at the moment.")
+
+        # Process input
+        nml     = f90nml.read(nmlfile)
+        rivernc = Dataset(river_nc)
+        M       = FVCOM_grid(mothergrid, reference = reference)
+
+        # Load river locations and names
+        self.river_locations = np.array([nml['river_grid_location'] - 1 for nml in nml['nml_river']])
+        self.x = M.xc[self.river_locations]
+        self.y = M.yc[self.river_locations]
+        self.river_names = np.array([nml['river_name'] for nml in nml['nml_river']])
+
+        # Load river transport and temperature for each of the rivers
+        # --> Can we naively assume that the rivers follow the same sequence?
+        self.transport  = []
+        self.river_temp = []
