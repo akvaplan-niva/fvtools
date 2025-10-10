@@ -118,7 +118,7 @@ def get_input(
         **kwargs
         ):
     '''
-    Returns a dict with all keyword arguments needed to run surface_movie, zlevel_movie and section_movie (including filelist).
+    Returns a dict with all keyword arguments (kwargs) needed to run surface_movie, zlevel_movie and section_movie (including filelist).
 
     Example usage:
     ---
@@ -135,9 +135,6 @@ def get_input(
     # Make z-level movie
     kwargs['z'] = 100
     zlevel_movie(**kwargs)
-
-    kwargs
-
     '''
     # Copy the input
     vars = dir()
