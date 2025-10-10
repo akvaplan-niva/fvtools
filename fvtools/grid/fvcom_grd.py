@@ -1209,7 +1209,9 @@ class SectionMaker:
         return _min_sigma
 
     def prepare_section(self, section_file = None, res = None, store_transect_img = False):
-        '''Returns x, y points along a section for use in section-analysis'''
+        '''
+        Returns x, y points along a section for use in section-analysis
+        '''
         if section_file is None: 
             x_section, y_section = self._graphical_section()
         if section_file is not None: 
@@ -1628,7 +1630,10 @@ class PlotFVCOM:
         return cont
 
     def _plot_section_line(self):
-        self.plot_grid(rasterized=True)
+        '''
+        Show where the section goes relative to the grid
+        '''
+        self.plot_grid(rasterized=True, show = False)
         plt.plot(self.x_sec, self.y_sec, 'k', zorder = 10)
         plt.plot(self.x_sec[0], self.y_sec[0], 'g.', zorder = 11, label = 'start')
         plt.plot(self.x_sec[-1], self.y_sec[-1], 'r.', zorder = 11, label = 'stop')
