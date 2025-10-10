@@ -251,7 +251,7 @@ def section_movie(
 
     # Crop grid to a sausage covering the transect (so we don't need to load excessive amounts of data to memory)
     indices = []
-    for i, ii in M.cell_tree.query(np.vstack((M.x_sec, M.y_sec)).T, k = 6): # I am not sure how many nodes we neeed
+    for i, ii in zip(*M.cell_tree.query(np.vstack((M.x_sec, M.y_sec)).T, k = 6)): # I am not sure how many nodes we neeed
         indices.extend(ii[i<np.inf].tolist())
 
     # Temporarilly store x_sec and y_sec
