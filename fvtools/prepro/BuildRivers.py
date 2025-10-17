@@ -72,7 +72,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
     M = FVCOM_grid(mesh_dict)
 
     print('----------------------------------------------------------------------------')
-    print(f'                       BuildRivers: {M.info["casename"]}')
+    print(f'                       BuildRivers: {M.casename}')
     print('----------------------------------------------------------------------------')
 
     if info is None:
@@ -99,7 +99,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
 
     if info['rivertemp'] != 'compile':
         print('\nRiver temperature from '+info['rivertemp'])
-    Temp    = RiverTemperatures(info, vassdrag, M.info['casename'], start)
+    Temp    = RiverTemperatures(info, vassdrag, M.casename, start)
 
     # Remove vassdrags that are not part of our domain
     print('- Connect rivers to nedborfelt')
