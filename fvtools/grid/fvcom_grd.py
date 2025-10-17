@@ -84,15 +84,17 @@ class GridLoader:
         from scipy.io import loadmat
         grid_mfile = loadmat(self.filepath)
         self.casename = 'from_mat_file'
-        self._direct_initialization(x = grid_mfile['Mobj']['x'][0][0][:,0], 
-                                    y = grid_mfile['Mobj']['y'][0][0][:,0],
-                                    tri = grid_mfile['Mobj']['tri'][0][0][:]-1, 
-                                    h = grid_mfile['Mobj']['h'][0][0][:,0],
-                                    siglay = grid_mfile['Mobj']['siglay'][0][0], 
-                                    siglev = grid_mfile['Mobj']['siglev'][0][0], 
-                                    obc_nodes = list(grid_mfile['Mobj']['obc_nodes'][0][0][0]-1),
-                                    lon = grid_mfile['Mobj']['lon'][0][0][:,0],
-                                    lat = grid_mfile['Mobj']['lat'][0][0][:,0])
+        self._direct_initialization(
+            x = grid_mfile['Mobj']['x'][0][0][:,0], 
+            y = grid_mfile['Mobj']['y'][0][0][:,0],
+            tri = grid_mfile['Mobj']['tri'][0][0][:]-1, 
+            h = grid_mfile['Mobj']['h'][0][0][:,0],
+            siglay = grid_mfile['Mobj']['siglay'][0][0], 
+            siglev = grid_mfile['Mobj']['siglev'][0][0], 
+            obc_nodes = list(grid_mfile['Mobj']['obc_nodes'][0][0][0]-1),
+            lon = grid_mfile['Mobj']['lon'][0][0][:,0],
+            lat = grid_mfile['Mobj']['lat'][0][0][:,0]
+            )
 
     def _add_grid_parameters_nc(self):
         """
