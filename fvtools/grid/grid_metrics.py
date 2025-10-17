@@ -59,19 +59,6 @@ def get_nbe(M):
 
     boundary_elements_id[on_obc] = 2
 
-    i = []
-    for ii, elem in enumerate(boundary_elements):
-        print(ii)
-        if M.tri[elem,0] in obc_nodes:
-            i.append(ii)
-            continue
-        elif M.tri[elem,1] in obc_nodes:
-            i.append(ii)
-            continue
-        elif M.tri[elem,2] in obc_nodes:
-            i.append(ii)
-            continue
-
     nodes = {}
     nodes['boundary'] = boundary_nodes.astype(int)
     nodes['id']       = boundary_nodes_id.astype(int)
