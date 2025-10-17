@@ -2,7 +2,6 @@ import os
 import fvtools.grid.tge as tge
 import matplotlib
 import matplotlib.pyplot as plt
-import cmocean as cmo
 import numpy as np
 import progressbar as pb
 import geopandas as gpd
@@ -12,6 +11,7 @@ import networkx as nx
 from pyproj import Proj, Transformer
 from netCDF4 import Dataset
 from matplotlib.collections import PatchCollection
+from matplotlib.patches import Polygon as mPolygon
 from scipy.spatial import cKDTree as KDTree
 from numba import njit
 from functools import cached_property
@@ -1001,13 +1001,24 @@ class OBC:
         return ordered_nodestrings
 
 class ControlVolumePlotter:
-    def plot_cvs(self, field,
+    @property
+    def cv(self):
+        '''
+        A list of patch collections for the node based control volumes
+        '''
+        if not hasattr(self, '_cv'):
+            self._cv = self._get_cvs()
+        return self._cv
+
+    def plot_cvs(self, 
+                 field,
                  cmap = 'jet', 
                  cmax = None, 
                  cmin = None, 
                  Norm = None, 
                  edgecolor = 'face', 
-                 verbose = True):
+                 inds = None,
+                 **kwargs):
         '''
         Plots nodal fields on control volume patches
 
@@ -1018,12 +1029,12 @@ class ControlVolumePlotter:
         - cmax:      cap colors to cmax
         - cmin:      floor colors to cmin
         - Norm:      to create non-linear colorbars (ref matplotlib documentation)
-        - verbose:   to get progress reports
         --> for cmax and cmin, the routine exclusively plots CVs with values within in that range
+
+        keyword arguments are sent to matplotlib.collections.PatchCollection
         '''
-        if not hasattr(self, 'cv'):
-            self._load_cvs(verbose)
-        inds = np.arange(0, len(field))
+        if inds == None:
+            inds = np.arange(0, len(field), dtype = int)
 
         # mask cvs with values below/above threshold
         if cmax is not None and cmin is None:
@@ -1033,11 +1044,11 @@ class ControlVolumePlotter:
         elif cmax is not None and cmin is not None:
             inds = np.intersect1d(np.where(field<=cmax)[0], np.where(field>=cmin)[0])
 
-        if len(field) == len(self.cv): 
-            collection = PatchCollection(self.cv, cmap=cmap, edgecolor=edgecolor, norm=Norm)
+        if len(inds) == len(self.cv): 
+            collection = PatchCollection(self.cv, cmap=cmap, edgecolor=edgecolor, norm=Norm, **kwargs)
         else: 
-            collection = PatchCollection([self.cv[inds]], cmap=cmap, edgecolor=edgecolor, norm=Norm)
-        collection.set_array(field[inds.astype(int)])
+            collection = PatchCollection(self.cv[inds], cmap=cmap, edgecolor=edgecolor, norm=Norm, **kwargs)
+        collection.set_array(field[inds])
         ax   = plt.gca()
         _ret = ax.add_collection(collection)
         ax.autoscale_view(True)
@@ -1046,30 +1057,23 @@ class ControlVolumePlotter:
             plt.gca()._sci(_ret)
         return _ret
 
-    def _load_cvs(self, verbose):
-        '''Check if we already have the cv-patches'''
-        try:
-            self.cv = np.load('cvs.npy', allow_pickle = True)
-        except:
-            self._get_cvs() # create CV polygons
-
     def _get_cvs(self, nodes = None):
         '''
         - computes matplotlib-patches for each control voulme, adds to self as self.cvs
         - Returns numpy file (cvs.npy) containing all of the control volume patches
         '''
-        from matplotlib.patches import Polygon as mPolygon
         if nodes is None: 
             nodes = np.arange(0, self.node_number)
         xcv_full, ycv_full = self._get_control_volumes(self.nbsn, self.nbve, self.x, self.y, self.xc, self.yc, nodes)
         bar    = pb.ProgressBar(widgets = ['Making control volume patches: ', pb.Percentage(), ' ', pb.BouncingBar(), pb.AdaptiveETA()], maxval=len(nodes))
         bar.start()
-        self.cv = []
+        cv = []
         for i, (xcv, ycv) in enumerate(zip(xcv_full, ycv_full)):
             bar.update(i)
-            self.cv.append(mPolygon(np.array([xcv, ycv]).transpose(), closed = True))
+            cv.append(mPolygon(np.array([xcv, ycv]).transpose(), closed = True))
         bar.finish()
-        np.save('cvs.npy', self.cv) # for instant access to cvs at a later date
+        return cv
+        #np.save('cvs.npy', self.cv) # for instant access to cvs at a later date
 
     @staticmethod
     def _get_control_volumes(nbsn, nbve, x, y, xc, yc, nodes):
@@ -1279,6 +1283,7 @@ class SectionMaker:
         out['h'], out['x'], out['y'] = self.dpt_sec, self.x_sec, self.y_sec
 
         # Interpolate data to the section
+        # ----
         if len(data.shape)>1:
             out['transect'] = self._interpolate_3D(data)
             out['dst'] = np.repeat(self.dst_sec[:, None], data.shape[1], axis = 1)
@@ -1287,6 +1292,7 @@ class SectionMaker:
             out['dst'] = self.dst_sec
 
         # Remove nans and crop dict, contourf won't accept the input otherwise -- do this earlier though, not every time...
+        # ----
         if np.isnan(out['transect']).any():
             if len(out['transect'].shape) == 1:
                 not_horizontal = ~np.isnan(out['transect'])
@@ -1300,7 +1306,9 @@ class SectionMaker:
         return out
 
     def _initialize_section(self, section_file, res, store_transect_img, sigma, grid):
-        '''Prepare the section interpolators etc.'''
+        '''
+        Prepare the section interpolators etc.
+        '''
         self._transect_sigma, self._transect_grid = sigma, grid
         if not hasattr(self, 'x_sec') and not hasattr(self, 'y_sec'):
             self.prepare_section(section_file = section_file, res = res, store_transect_img = store_transect_img)
@@ -1333,7 +1341,9 @@ class ExportGrid:
             return self.x, self.y
 
     def write_bath(self, filename=None, latlon = False):
-        '''- Generates an ascii FVCOM 4.x format bathymetry file'''
+        '''
+        - Generates an ascii FVCOM 5.x format bathymetry file
+        '''
         if filename is None: 
             filename = f'input/{self.casename}_dep.dat'
 
@@ -1346,7 +1356,9 @@ class ExportGrid:
         print(f'  - Wrote : {filename}')
 
     def write_grd(self, filename = None, latlon = False):
-        '''- Generates an ascii FVCOM 4.x format grid file'''
+        '''
+        - Generates an ascii FVCOM 5.x format grid file
+        '''
         if filename is None: 
             filename = f'input/{self.casename}_grd.dat'
 
@@ -1362,7 +1374,9 @@ class ExportGrid:
         print(f'  - Wrote : {filename}')
 
     def write_sponge(self, filename = None):
-        '''- Generates an ascii FVCOM 4.x formatted sponge file'''
+        '''
+        - Generates an ascii FVCOM 5.x formatted sponge file
+        '''
         if filename is None: 
             filename = f'input/{self.casename}_spg.dat'
 
@@ -1375,7 +1389,9 @@ class ExportGrid:
         print(f'  - Wrote : {filename}')
 
     def write_obc(self, filename = None):
-        '''- Generates an ascii FVCOM 4.x formatted obc file'''
+        '''
+        - Generates an ascii FVCOM 5.x formatted obc file
+        '''
         if filename is None: 
             filename = f'input/{self.casename}_obc.dat'
 
@@ -1389,7 +1405,9 @@ class ExportGrid:
         print(f'  - Wrote : {filename}')
 
     def write_cor(self, filename = None):
-        '''- Generates an ascii FVCOM 4.x formatted coriolis file'''
+        '''
+        - Generates an ascii FVCOM 5.x formatted coriolis file
+        '''
         if filename is None: 
             filename = f'input/{self.casename}_cor.dat'
 
@@ -1478,13 +1496,17 @@ class ExportGrid:
             fvgrid.write_2dm(self.x, self.y, self.tri, name = name, casename = name)
 
     def write_section(self):
-        '''write x_sec, y_sec to a casename_section.txt file'''
+        '''
+        write x_sec, y_sec to a casename_section.txt file
+        '''
         lonlat = np.vstack((self.Proj(self.x_sec, self.y_sec, inverse=True))).T
         np.savetxt(f'{self.casename}_section.txt', lonlat, delimiter = ' ')
         print(f'- saved section positions to {self.casename}_section.txt')
 
     def to_npy(self, filename = 'M.npy'):
-        '''Write no M.npy file'''
+        '''
+        Write no M.npy file
+        '''
         M = {}
         self.nv = self.tri
         for var in ['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'nv', 'siglay', 'siglev', 'obc_nodes', 'nodestrings', 'info', 'ts']:
@@ -1519,7 +1541,9 @@ class PlotFVCOM:
         if show: plt.show(block = False)
 
     def plot_obc(self, ax = None, **kwargs):
-        '''plot the obc nodes, show different nodestrings'''
+        '''
+        plot the obc nodes, show different nodestrings
+        '''
         if ax == None:
             ax = plt.gca()
         kwargs = self._transform_to_kwargs(**kwargs)
@@ -1529,7 +1553,9 @@ class PlotFVCOM:
         #plt.draw()
 
     def plot_contour(self, field, show = True, *args, **kwargs):
-        '''Plot contour of node- or cell data, basically just a shortcut for pyplot.tricontourf()'''
+        '''
+        Plot contour of node- or cell data, basically just a shortcut for pyplot.tricontourf()
+        '''
         f = np.squeeze(field)
         if len(f) == self.node_number:
             x, y, tri = self.x, self.y, self.tri
@@ -1857,6 +1883,7 @@ Functions:
         Plotting:
             .plot_grid()        - plots the grid
             .plot_cvs(data)     - plots node based data on CV-patches
+                .cvs            - matplotlib.collection.PatchCollection objects - one pr. node based control volume
             .plot_field(data)   - plots node based data over triangles
             .plot_contour(data) - contour plots any data
             .plot_obc()         - plot all OBC nodes, and show which nodestring they belong to
