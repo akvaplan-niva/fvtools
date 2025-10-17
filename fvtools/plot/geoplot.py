@@ -25,6 +25,8 @@ class geoplot:
                 - hot (default, contextily ref: OpenStreetMap.HOT)
                 - mapnik (OpenStreetMap.Mapnik)
                 - voyager (CartoDB.Voyager)
+                - topo (OpenTopoMap)
+                - or just any other contextily.provider object
 
     '''
     def __init__(self, x, y, 
@@ -64,7 +66,13 @@ class geoplot:
         elif source == 'hot':
             src = ctx.providers.OpenStreetMap.HOT
 
-        xe,ns  = self.project_to_map(self.lon,self.lat)
+        elif source == 'topo':
+            src = ctx.providers.OpenTopoMap
+        
+        elif type(source) != str:
+            src = source
+
+        xe, ns = self.project_to_map(self.lon, self.lat)
 
         if verbose:
             print('Downloading images...')
