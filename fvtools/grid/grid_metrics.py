@@ -50,8 +50,27 @@ def get_nbe(M):
 
     boundary_elements_id = np.ones(len(boundary_elements))
     obc_nodes = boundary_nodes[np.where(boundary_nodes_id == 2)[0]]
-    on_obc = np.array([i for i, elem in enumerate(boundary_elements) if M.tri[elem,0] in obc_nodes or M.tri[elem,1] in obc_nodes or M.tri[elem,2] in obc_nodes])
+
+    # New and faster lookup of boundary elements
+    on_obc = np.zeros(boundary_elements.shape[0], dtype = bool)
+    for i in range(3):
+        out = np.intersect1d(obc_nodes, M.tri[boundary_elements, i], return_indices = True)
+        on_obc[out[1]] = True
+
     boundary_elements_id[on_obc] = 2
+
+    i = []
+    for ii, elem in enumerate(boundary_elements):
+        print(ii)
+        if M.tri[elem,0] in obc_nodes:
+            i.append(ii)
+            continue
+        elif M.tri[elem,1] in obc_nodes:
+            i.append(ii)
+            continue
+        elif M.tri[elem,2] in obc_nodes:
+            i.append(ii)
+            continue
 
     nodes = {}
     nodes['boundary'] = boundary_nodes.astype(int)
