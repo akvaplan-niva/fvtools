@@ -71,7 +71,6 @@ dependencies = [
     "xarray",
     "xyzservices",
     "chardet",
-    "cx",
     "numba",
     "progressbar2>=4.5.0",
     "jupyterlab",

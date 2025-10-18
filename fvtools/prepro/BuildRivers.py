@@ -59,7 +59,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
     Optional:
     ----
     mesh_dict: (M.npy by default)
-    info:      Dict where all paths are stored. Change the basic settings by giving it as
+    info:      Dict where all paths and river specific settings are stored. Change the basic settings by giving it as
                an input: info. Get the basic settings by calling BuildRivers.get_input(),
                which can then be edited and passed back to main if other paths etc. are
                needed in the given experiment.
@@ -98,7 +98,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
     Runoff  = RiverRunoff(info)
 
     if info['rivertemp'] != 'compile':
-        print('\nRiver temperature from '+info['rivertemp'])
+        print(f'\nRiver temperature from {info["rivertemp"]}')
     Temp    = RiverTemperatures(info, vassdrag, M.casename, start)
 
     # Remove vassdrags that are not part of our domain
@@ -114,7 +114,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
     # Remove the rivers that are too far away from land, and too close to the obc
     print('- Crop river to a distance from the obc')
     Small = Forcing.crop_river_to_obc(Small)
-    Lagre = Forcing.crop_river_to_obc(Large)
+    Large = Forcing.crop_river_to_obc(Large)
 
     # Add temperatures to the small and large rivers
     print('- Add temperatures to the rivers')
@@ -155,6 +155,7 @@ def get_input():
     iloc:        Determine if the input is given as a flux at edge or at the node
     whichrivers: 'all', 'small' , 'large'
     dRmax:       Distance from boundary without rivers
+    min_depth:        Minimum depth at rivers (since if h=0 (wetting/drying on), rivers would be infinitely wide to meet the stability criteria)
     Isplit:      Baroclinic split
     tideamp:     Tidal amplityde
     plot:        Show the results on a map
@@ -179,6 +180,7 @@ def get_input():
     info = {'iloc': 'edge',
             'whichrivers': 'all',
             'dRmax': 5000,
+            'min_depth': 3,
             'Isplit': 8,
             'tideamp': 1,
             'plot': True,
@@ -479,7 +481,7 @@ class RiverTemperatures:
 
         # Smooth transition
         v     = np.ones((450,))
-        std   = np.convolve(std, v, 'smooth')/len(v)
+        std   = np.convolve(std, v, 'same')/len(v)
         self.average_temp += std
 
         # Remove negative values for numerical stability
@@ -804,7 +806,7 @@ class FVCOM_rivers:
         """
         first = True
         while True:
-            d, land_loc = self.land_tree.query(np.array([self.xriv, self.yriv]).transpose())
+            _, land_loc = self.land_tree.query(np.array([self.xriv, self.yriv]).transpose())
             if first:
                 self.river_connection(land_loc, gp)
                 first = False
@@ -878,6 +880,9 @@ class FVCOM_rivers:
 
         elif self.info['iloc'] == 'node':
             h  = self.M.h[self.unique_mesh]-self.info['tideamp']
+
+        # Set min depth in case of wetting drying
+        h[h < self.info['min_depth']] = self.info['min_depth']
 
         # Calculate the stability number for all the river-cells
         return dt_internal * self.RiverTransport.max(axis=0) / (h*tri_area)
