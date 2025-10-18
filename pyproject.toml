@@ -77,5 +77,6 @@ dependencies = [
     "geopandas",
     "cartopy",
     "ipympl",
-    "pykdtree"
+    "pykdtree",
+    "f90nml"
 ]
