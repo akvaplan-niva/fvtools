@@ -516,7 +516,7 @@ class AnimationColorbars:
         '''
         if var in 'salinity':
             self.cmap = cmo.cm.haline
-            self.colorticks = np.linspace(29, 35+(35-29)/50, 50)
+            self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
             self.label = 'psu'
             
         elif var == 'temp':
@@ -543,6 +543,11 @@ class AnimationColorbars:
             self.cmap = cmo.cm.speed
             self.colorticks = np.linspace(0, 0.4, 30)
             self.label = 'm/s'
+    
+        elif 'tracer' in self.var:
+            self.cmap = cmo.cm.dens
+            self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
+            self.label = cb[var]['units']
 
         else:
             self.cmap = cmo.cm.turbid
@@ -598,14 +603,14 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         if 'pv' in var:
             self.M.get_coriolis()
             
-        print(' - Downloading georeference')
+        print('- Downloading georeference')
         if self.xlim is not None and self.ylim is not None:
             self.gp = self._get_georeference(self.xlim, self.ylim, reference)
         else:
             self.gp = self._get_georeference(self.M.x, self.M.y, reference)
 
         if self.gp is None:
-            print('  - Failed to download georeference, the background will not be shaded.')
+            print('  -> Failed to download georeference, the background will not be shaded.')
 
         if 'vorticity' in var or 'pv' in var:
             import grid.tge as tge
