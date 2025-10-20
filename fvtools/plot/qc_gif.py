@@ -151,84 +151,76 @@ def get_input(
 # ----------------------------------------------------------------------------------------------------------------------
 #                                            Movie plotters
 # ----------------------------------------------------------------------------------------------------------------------
-def surface_movie(
-        time = None, dates = None, List = None, index = None, var = None, 
-        sigma = None, cb = None, xlim = None, ylim = None, fps = None, cticks = None, 
-        mname = None, dpi = None, reference = None, **kwargs
-        ):
+def surface_movie(**kwargs):
     '''
     Makes movies of tracer fields along constant sigma-levels
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma)
+    mmaker = FilledAnimation(**kwargs)
     MovieWriter, codec = get_animator()
 
-    if not mname:
+    if not kwargs['mname']:
         mname = mmaker.M.casename
 
-    for field in var:
+    for field in kwargs['var']:
         mmaker.var    = field
         widget        = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
-        mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(time))
-        mmaker.get_cmap(field, cb, cticks)
+        mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(kwargs['time']))
+        mmaker.get_cmap(field, kwargs['cb'], kwargs['cticks'])
 
         # Prepare figure
-        fig = mmaker.make_figure(dpi = dpi)
+        fig = mmaker.make_figure(dpi = kwargs['dpi'])
 
         # prepare movie maker
         mmaker.bar.start()
         anim = manimation.FuncAnimation(
             fig,
             mmaker.contourf_animate,
-            frames           = len(time),
-            save_count       = len(time),
+            frames           = len(kwargs['time']),
+            save_count       = len(kwargs['time']),
             repeat           = False,
             blit             = False,
             cache_frame_data = False
             )
-        writer = MovieWriter(fps = fps)
+        writer = MovieWriter(fps = kwargs['fps'])
 
         # Set framerate, write the movie
-        write_movie(mmaker, anim, f'{mname}_sigma_{sigma}', field, codec, writer)
+        write_movie(mmaker, anim, f'{mname}_sigma_{kwargs['sigma']}', field, codec, writer)
 
-def zlevel_movie(
-        time = None, dates = None, List = None, index = None, var = None, 
-        z = None, cb = None, xlim = None, ylim = None, fps = None, cticks = None, mname = None, 
-        dpi = None, reference = None, **kwargs
-        ):
+def zlevel_movie(**kwargs):
     '''
     Makes movies of tracer fields along constant z-levels
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, z=z)
+    mmaker = FilledAnimation(**kwargs)
 
-    if not mname:
+    if not kwargs['mname']:
         mname = mmaker.M.casename
 
     MovieWriter, codec = get_animator()
 
-    for field in var:
+    for field in kwargs['var']:
         if field in ['zeta', 'vorticity', 'pv']:
             break
         mmaker.var    = field
         widget        = [f'- Make z-level {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
-        mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(time))
-        mmaker.get_cmap(field, cb, cticks)
+        mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(kwargs['time']))
+        mmaker.get_cmap(field, kwargs['cb'], kwargs['cticks'])
         mmaker.bar.start()
-        fig = mmaker.make_figure(dpi = dpi)
+        fig = mmaker.make_figure(dpi = kwargs['dpi'])
         anim = manimation.FuncAnimation(
             fig,
             mmaker.zlevel_animate,
-            frames           = len(time),
-            save_count       = len(time),
+            frames           = len(kwargs['time']),
+            save_count       = len(kwargs['time']),
             repeat           = False,
             blit             = False,
             cache_frame_data = False
             )
-        writer = MovieWriter(fps = fps)
-        write_movie(mmaker, anim, f'{mname}_{z}m_depth', field, codec, writer)
+        writer = MovieWriter(fps = kwargs['fps'])
+        write_movie(mmaker, anim, f'{mname}_{kwargs["z"]}m_depth', field, codec, writer)
 
 def section_movie(
         time = None, dates = None, List = None, index = None, var = None, cb = None, 
@@ -583,7 +575,10 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
     '''
     All the data needed by the 
     '''
-    def __init__(self, time, dates, List, index, var, cb, xlim, ylim, reference, sigma = None, z = None):
+    def __init__(
+            self, time = None, dates = None, List = None, index = None, var= None, 
+            cb = None, xlim = None, ylim = None, reference = None, sigma = None, z = None, **kwargs
+            ):
         '''
         Let the writer know which frames to make
         '''
