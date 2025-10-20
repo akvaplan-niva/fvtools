@@ -34,6 +34,7 @@ def main(folder = None,
          mname  = None,
          dpi    = 100,
          reference = 'epsg:32633',
+         verticalmax = False,
          **kwargs):
     '''
     One-liner to make animations of FVCOM output fields.
@@ -67,10 +68,11 @@ def main(folder = None,
     fps:          movie framerate ('out' by default)
     cticks:       color shading levels
     section_res:  horizontal resolution of transect (if not specified, we will use 60 points)
+    maxaxis:      for surface movies: Plot the maximum value along the vertical
 
     Report issues/bugs to hes@akvaplan.niva.no
-    '''    
-    # Copy the input
+    '''
+    # Copy the input to a dictionary
     vars = dir()
     kwargs = {}
     for variable in vars:
@@ -155,14 +157,14 @@ def get_input(
 def surface_movie(
         time = None, dates = None, List = None, index = None, var = None, 
         sigma = None, cb = None, xlim = None, ylim = None, fps = None, cticks = None, 
-        mname = None, dpi = None, reference = None, **kwargs
+        mname = None, dpi = None, reference = None, verticalmax = False, **kwargs
         ):
     '''
     Makes movies of tracer fields along constant sigma-levels
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma)
+    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma, verticalmax = verticalmax)
     MovieWriter, codec = get_animator()
 
     if not mname:
@@ -179,13 +181,15 @@ def surface_movie(
 
         # prepare movie maker
         mmaker.bar.start()
-        anim           = manimation.FuncAnimation(fig,
-                                                  mmaker.contourf_animate,
-                                                  frames           = len(time),
-                                                  save_count       = len(time),
-                                                  repeat           = False,
-                                                  blit             = False,
-                                                  cache_frame_data = False)
+        anim = manimation.FuncAnimation(
+            fig,
+            mmaker.contourf_animate,
+            frames           = len(time),
+            save_count       = len(time),
+            repeat           = False,
+            blit             = False,
+            cache_frame_data = False
+            )
         writer = MovieWriter(fps = fps)
 
         # Set framerate, write the movie
@@ -217,13 +221,15 @@ def zlevel_movie(
         mmaker.get_cmap(field, cb, cticks)
         mmaker.bar.start()
         fig = mmaker.make_figure(dpi = dpi)
-        anim           = manimation.FuncAnimation(fig,
-                                                  mmaker.zlevel_animate,
-                                                  frames           = len(time),
-                                                  save_count       = len(time),
-                                                  repeat           = False,
-                                                  blit             = False,
-                                                  cache_frame_data = False)
+        anim = manimation.FuncAnimation(
+            fig,
+            mmaker.zlevel_animate,
+            frames           = len(time),
+            save_count       = len(time),
+            repeat           = False,
+            blit             = False,
+            cache_frame_data = False
+            )
         writer = MovieWriter(fps = fps)
         write_movie(mmaker, anim, f'{mname}_{z}m_depth', field, codec, writer)
 
@@ -274,13 +280,15 @@ def section_movie(
         mmaker.get_cmap(field, cb, cticks)
         fig   = plt.figure(figsize = (19.2, 8.74), dpi = dpi)
         mmaker.bar.start()
-        anim  = manimation.FuncAnimation(fig,
-                                         mmaker.vertical_animate,
-                                         frames           = len(time),
-                                         save_count       = len(time),
-                                         repeat           = False,
-                                         blit             = False,
-                                         cache_frame_data = False)
+        anim  = manimation.FuncAnimation(
+            fig,
+            mmaker.vertical_animate,
+            frames           = len(time),
+            save_count       = len(time),
+            repeat           = False,
+            blit             = False,
+            cache_frame_data = False
+            )
         writer = MovieWriter(fps = fps)
         write_movie(mmaker, anim, f'{mname}_section', field, codec, writer)
 
@@ -476,12 +484,18 @@ class AnimationFields:
         if self.var in ['pv', 'vorticity', 'sp']:
             field = getattr(self, self.var)
         else:
-            field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i], sig = self.sigma)
+            if self.verticalmax:
+                field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i]).max(axis = 0)
+            else:
+               field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i], sig = self.sigma)
         return field
     
     @property
     def vorticity(self):
-        '''we load velocities for the entire grid, since the vorticity calculation at boundaries is fizzy, hence we can't necessarilly use the cropped grid'''
+        '''
+        We can't necessarilly use the cropped grid here since the vorticity calculation at boundaries is fizzy.
+        We therefore load velocities for the entire grid when calculating the vorticity.
+        '''
         with Dataset(self.files[i], 'r') as d:
             _vort = self.T.vorticity(d['ua'][self.index[self.i], :], d['va'][self.index[self.i],:])
         if self.M.cropped_cells.any():
@@ -567,13 +581,13 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
     '''
     All the data needed by the 
     '''
-    def __init__(self, time, dates, List, index, var, cb, xlim, ylim, reference, sigma = None, z = None):
+    def __init__(self, time, dates, List, index, var, cb, xlim, ylim, reference, sigma = None, z = None, verticalmax = False):
         '''
         Let the writer know which frames to make
         '''
         # Write input to class
         self.index, self.files, self.time, self.datetime = index, List, time, dates
-        self.sigma, self.z    = sigma, z
+        self.sigma, self.z, self.verticalmax = sigma, z, verticalmax
         self.xlim,  self.ylim = xlim, ylim
 
         # Prepare grid
@@ -669,6 +683,7 @@ class VerticalMaker(AnimationFields, AnimationColorbars):
         '''
         Let the writer know which frames to make
         '''
+        self.verticalmax = False
         self.index = index
         self.files = List
         self.time  = time
