@@ -34,7 +34,6 @@ def main(folder = None,
          mname  = None,
          dpi    = 100,
          reference = 'epsg:32633',
-         verticalmax = False,
          **kwargs):
     '''
     One-liner to make animations of FVCOM output fields.
@@ -53,7 +52,7 @@ def main(folder = None,
     
     At least one:
     ----
-    sigma:        sigma layer to animate
+    sigma:        sigma layer to animate (or 'max' if you want to plot the maximum vertical value)
     z:            z-level to animate
     section:      make a movie of a transect
                     - a .txt file with lon lat columns (at least 2 points separated by a space)
@@ -68,8 +67,6 @@ def main(folder = None,
     fps:          movie framerate ('out' by default)
     cticks:       color shading levels
     section_res:  horizontal resolution of transect (if not specified, we will use 60 points)
-    maxaxis:      for surface movies: Plot the maximum value along the vertical
-
     Report issues/bugs to hes@akvaplan.niva.no
     '''
     # Copy the input to a dictionary
@@ -157,14 +154,14 @@ def get_input(
 def surface_movie(
         time = None, dates = None, List = None, index = None, var = None, 
         sigma = None, cb = None, xlim = None, ylim = None, fps = None, cticks = None, 
-        mname = None, dpi = None, reference = None, verticalmax = False, **kwargs
+        mname = None, dpi = None, reference = None, **kwargs
         ):
     '''
     Makes movies of tracer fields along constant sigma-levels
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma, verticalmax = verticalmax)
+    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma)
     MovieWriter, codec = get_animator()
 
     if not mname:
@@ -484,7 +481,9 @@ class AnimationFields:
         if self.var in ['pv', 'vorticity', 'sp']:
             field = getattr(self, self.var)
         else:
-            if self.verticalmax:
+            if type(self.sigma) == str:
+                if self.sigma != 'max':
+                    raise ValueError(f'sigma must either be an integer number (index) or "max", {self.sigma} is not a valid option.')
                 field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i]).max(axis = 0)
             else:
                field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i], sig = self.sigma)
@@ -496,7 +495,7 @@ class AnimationFields:
         We can't necessarilly use the cropped grid here since the vorticity calculation at boundaries is fizzy.
         We therefore load velocities for the entire grid when calculating the vorticity.
         '''
-        with Dataset(self.files[i], 'r') as d:
+        with Dataset(self.files[self.i], 'r') as d:
             _vort = self.T.vorticity(d['ua'][self.index[self.i], :], d['va'][self.index[self.i],:])
         if self.M.cropped_cells.any():
             _vort = _vort[self.M.cropped_cells]
@@ -508,7 +507,10 @@ class AnimationFields:
 
     @property
     def sp(self):
-        return np.sqrt(self.M.load_netCDF(self.files[i], 'ua', self.index[self.i])**2 + self.M.load_netCDF(self.files[i], 'va', self.index[self.i])**2)
+        return np.sqrt(
+            self.M.load_netCDF(self.files[self.i], 'ua', self.index[self.i])**2 + 
+            self.M.load_netCDF(self.files[self.i], 'va', self.index[self.i])**2
+            )
 
 class AnimationColorbars:
     '''
@@ -581,13 +583,13 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
     '''
     All the data needed by the 
     '''
-    def __init__(self, time, dates, List, index, var, cb, xlim, ylim, reference, sigma = None, z = None, verticalmax = False):
+    def __init__(self, time, dates, List, index, var, cb, xlim, ylim, reference, sigma = None, z = None):
         '''
         Let the writer know which frames to make
         '''
         # Write input to class
         self.index, self.files, self.time, self.datetime = index, List, time, dates
-        self.sigma, self.z, self.verticalmax = sigma, z, verticalmax
+        self.sigma, self.z = sigma, z
         self.xlim,  self.ylim = xlim, ylim
 
         # Prepare grid
@@ -683,7 +685,6 @@ class VerticalMaker(AnimationFields, AnimationColorbars):
         '''
         Let the writer know which frames to make
         '''
-        self.verticalmax = False
         self.index = index
         self.files = List
         self.time  = time
