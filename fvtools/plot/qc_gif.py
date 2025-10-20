@@ -331,9 +331,6 @@ def qc_fileList(files, var, start, stop, sigma = None):
     - start: time to start. format: (yyyy-mm-dd-HH)
     - stop:  time to stop.  format: (yyyy-mm-dd-HH)
     '''
-    if sigma is None:
-        sigma = 0
-
     def crop_selection(t, indices, inds):
         return t[inds], indices[inds]
 
@@ -355,6 +352,8 @@ def qc_fileList(files, var, start, stop, sigma = None):
         with Dataset(this) as d:
             t = date2num(num2date(Itime = d['Itime'][:], Itime2 = d['Itime2'][:]))
             indices = np.arange(len(t))
+
+            # Do not read data that is before scope
             if start is not None:
                 if t.min()<start and t.max()<start:
                     print(f' - {this} is before the date range')
@@ -364,6 +363,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
                     if elements(inds)>0:
                         t, indices = crop_selection(t, indices, inds)
 
+            # Avoid reading data that is after of scope
             if stop is not None:
                 if t.min()>stop:
                     print(f' - {this} is after the date range')
@@ -378,22 +378,24 @@ def qc_fileList(files, var, start, stop, sigma = None):
             List = List + [this]*len(t)
             index.extend(list(indices))
 
+            # To determine colorbar limits
             for field in var:
                 if field in ['vorticity', 'pv', 'sp']:
                     continue
-
-                if len(d[field].shape)==3:
-                    if d.variables.get(field)[indices, sigma, :][:].min() < cb[field]['min']:
+                
+                if type(sigma) is not str and sigma is not None:
+                    if d.variables.get(field)[indices, sigma, :].min() < cb[field]['min']:
                         cb[field]['min'] = d.variables.get(field)[indices, sigma, :][:].min() 
                 
-                    if d.variables.get(field)[indices, sigma, :][:].max() > cb[field]['max']:
+                    if d.variables.get(field)[indices, sigma, :].max() > cb[field]['max']:
                         cb[field]['max'] = d.variables.get(field)[indices, sigma, :][:].max()
-                else:
-                    if d.variables.get(field)[indices, :][:].min() < cb[field]['min']:
-                        cb[field]['min'] = d.variables.get(field)[indices, :][:].min() 
                 
-                    if d.variables.get(field)[indices, :][:].max() > cb[field]['max']:
-                        cb[field]['max'] = d.variables.get(field)[indices, :][:].max()
+                else:
+                    if d.variables.get(field)[indices, :].min() < cb[field]['min']:
+                        cb[field]['min'] = d.variables.get(field)[indices, :].min() 
+                
+                    if d.variables.get(field)[indices, :].max() > cb[field]['max']:
+                        cb[field]['max'] = d.variables.get(field)[indices, :].max()
 
     return time, num2date(time = time), List, index, cb
 
