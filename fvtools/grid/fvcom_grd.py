@@ -1554,7 +1554,7 @@ class PlotFVCOM:
             ax.scatter(self.x_obc[i][[0,-1]], self.y_obc[i][[0,-1]], zorder = 11, c = 'r', **kwargs) # start and end points 
         #plt.draw()
 
-    def plot_contour(self, field, show = True, *args, **kwargs):
+    def plot_contour(self, field, show = True, ax = None, *args, **kwargs):
         '''
         Plot contour of node- or cell data, basically just a shortcut for pyplot.tricontourf()
         - pass a field, it will be plotted to a new axes or to one that you pass (ax = None by default)
@@ -1573,7 +1573,7 @@ class PlotFVCOM:
 
         # Add transform if the current axes is a GeoAxes (for WMS georeferenced plots)
         kwargs = self._transform_to_kwargs(**kwargs)
-        return self._plot_contour(x, y, tri, f, show, *args, **kwargs)
+        return self._plot_contour(x, y, tri, f, show, ax = ax, *args, **kwargs)
 
     def _transform_to_kwargs(self, **kwargs):
         '''
