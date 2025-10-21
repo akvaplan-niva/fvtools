@@ -1557,6 +1557,7 @@ class PlotFVCOM:
     def plot_contour(self, field, show = True, *args, **kwargs):
         '''
         Plot contour of node- or cell data, basically just a shortcut for pyplot.tricontourf()
+        - pass a field, it will be plotted to a new axes or to one that you pass (ax = None by default)
         '''
         f = np.squeeze(field)
         if len(f) == self.node_number:
@@ -1586,7 +1587,9 @@ class PlotFVCOM:
 
     def georeference(self, 
                     url='https://wms.geonorge.no/skwms1/wms.topograatone?service=wms&request=getcapabilities', 
-                    layers=['topograatone'], wms=None, depth=True):
+                    layers=['topograatone'], wms=None, 
+                    depth = True,
+                    ax = None):
         '''
         Plot map data from WMS server as georeference. Must be done before plotting grid, contours etc.
         - requires cartopy
@@ -1595,6 +1598,7 @@ class PlotFVCOM:
         layers: valid layer from the url, must be a tuple with string(s)
         wms:    overwrites other input if not None, current options: "raster" or "topo4"
         depth:  plot kartverket bathymetry
+        ax:     cartopy axes (e.g. fig, ax = plt.subplots(2, 1, subplot_kw={'projection': ccrs.PlateCarree()}))
 
         Returns:
         ---
@@ -1616,23 +1620,23 @@ class PlotFVCOM:
                 url = 'https://wms.geonorge.no/skwms1/wms.sjokartraster2?service=wms&version=1.3.0&request=getcapabilities'
                 layers = ['Overseiling']
                 depth = False
+        if not ax:
+            if int(self.reference.split(':')[-1]) == 4326:
+                lonmin, lonmax = self.lon.min(), self.lon.max()
+                latmin, latmax = self.lat.min(), self.lat.max()
+                aspect_ratio = (float(latmax - latmin) / (float(lonmax - lonmin)))/np.cos(np.radians((latmin + latmax) / 2))
 
-        if int(self.reference.split(':')[-1]) == 4326:
-            lonmin, lonmax = self.lon.min(), self.lon.max()
-            latmin, latmax = self.lat.min(), self.lat.max()
-            aspect_ratio = (float(latmax - latmin) / (float(lonmax - lonmin)))/np.cos(np.radians((latmin + latmax) / 2))
-
-            # Draw, set projection
-            crs = ccrs.Mercator()
-            fig = plt.figure(figsize=(11. / aspect_ratio, 11.))
-            ax = fig.add_subplot(111, projection=crs)
-            self.draw_geo_grid([lonmin, lonmax, latmin, latmax])
-            fig.canvas.draw()         
-            fig.set_tight_layout(True)
-            self.transform = ccrs.PlateCarree(globe=crs.globe)
-        else:
-            ax = plt.axes(projection = ccrs.epsg(int(self.reference.split(':')[-1])))
-
+                # Draw, set projection
+                crs = ccrs.Mercator()
+                fig = plt.figure(figsize=(11. / aspect_ratio, 11.))
+                ax = fig.add_subplot(111, projection=crs)
+                self.draw_geo_grid([lonmin, lonmax, latmin, latmax])
+                fig.canvas.draw()         
+                fig.set_tight_layout(True)
+                self.transform = ccrs.PlateCarree(globe=crs.globe)
+            else:
+                ax = plt.axes(projection = ccrs.epsg(int(self.reference.split(':')[-1])))
+        
         ax.add_wms(wms=url, layers=layers)
         if wms != 'raster':
             if depth:
@@ -1650,8 +1654,9 @@ class PlotFVCOM:
         gl.top_labels = None
 
     @staticmethod
-    def _plot_contour(x, y, tri, field, show = False, *args, **kwargs):
-        ax = plt.gca()
+    def _plot_contour(x, y, tri, field, show = False, ax = None, *args, **kwargs):
+        if not ax:
+            ax = plt.gca()
         cont = ax.tricontourf(x, y, tri, field, *args, **kwargs)
         ax.set_aspect('equal')
         if show: plt.show(block=False)
