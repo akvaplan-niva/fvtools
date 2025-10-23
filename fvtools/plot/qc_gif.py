@@ -545,7 +545,7 @@ class AnimationColorbars:
             self.label = 'm/s'
     
         elif 'tracer' in self.var:
-            self.cmap = cmo.cm.dens
+            self.cmap = cmo.cm.dense
             self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
             self.label = cb[var]['units']
 
