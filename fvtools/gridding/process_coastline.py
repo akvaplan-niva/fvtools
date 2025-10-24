@@ -142,14 +142,14 @@ def write_poly_data(file, mp):
     with open(file, 'w') as f:
         print("Writing polygons to: " + file)
         f.write('COAST\n')
-        f.write('%d\n' % len(mp))
-        for poly in mp:
+        f.write('%d\n' % len(mp.geoms))
+        for poly in mp.geoms:
             x, y = poly.exterior.xy
             n = len(x)
             f.write('%d 1\n' % n)
             for i in range(n):
                 f.write('%.4f %.4f\n' % (x[i],y[i]))
-        print("Polygons written: " + str(len(mp)))
+        print("Polygons written: " + str(len(mp.geoms)))
 
 
 
@@ -194,8 +194,8 @@ def process_function(mpoly, scale):
     mp = mpoly
     # Expand polygons: this will merge polygons separated on this scale
     # faster to expand individual polygons and then merge
-    if mp.type == 'MultiPolygon':
-        mp = unary_union([p.buffer(scale) for p in mp])
+    if type(mp) == MultiPolygon:
+        mp = unary_union([p.buffer(scale) for p in mp.geoms])
     else:
         mp = mp.buffer(scale)
 
@@ -239,20 +239,20 @@ def make_coast(mp_coast, mp_sub, scale_in, coastline_out):
 
     # simplify the coast line
     # ---------------------------------------------------------------------
-    print('simplify the coastline')
+    print('Simplifying the coastline')
     scale_min = np.min(scales)
     mp_coast  = mp_coast.simplify(0.1*scale_min)
 
     # Process all polygons according to scale within each subdivision
     # ---------------------------------------------------------------------
     mp_list = list()
-    for i, p_sub in enumerate(mp_sub):
+    for i, p_sub in enumerate(mp_sub.geoms):
         print("Processing subdivision: %d" % i)
         scale1, scale2 = scales[i]
         print("Scale: %d" % scale1)
         if i > -1:
             intersect = []
-            for j, c in enumerate(mp_coast):
+            for j, c in enumerate(mp_coast.geoms):
                 #if np.mod(j, 1000) == 0:
                 #    print(j)
                 intersect.append(c.intersection(p_sub.buffer(scale2)))
@@ -263,10 +263,10 @@ def make_coast(mp_coast, mp_sub, scale_in, coastline_out):
 
         # add buffer to subdivision polygons to ensure they are overlapping
         try:
-            print("Polygons before: %d" % len(mpi))
+            print("Polygons before: %d" % len(mpi.geoms))
             mpi_scale1 = process_function(mpi, scale1)
 
-            print("Polygons after: %d\n" % len(mpi_scale1))
+            print("Polygons after: %d\n" % len(mpi_scale1.geoms))
             mp_list.append(mpi_scale1)
 
         except:
@@ -282,7 +282,7 @@ def make_coast(mp_coast, mp_sub, scale_in, coastline_out):
     if mp_join.geom_type == 'Polygon':
         mp_join = MultiPolygon([mp_join])
 
-    print("Total number of polygons after processing: %d\n" % len(mp_join))
+    print("Total number of polygons after processing: %d\n" % len(mp_join.geoms))
     print("Write coast line data")
     write_poly_data(coastline_out, mp_join)
 
@@ -310,7 +310,7 @@ def make_coast_full(coastline_in, subdivision_in, scale_in, coastline_out, cropc
     # ---------------------------------------------------------------------
     if cropcoast:
         mp_coast = crop_coast(mp_sub, mp_coast)
-        print(len(mp_coast))
+        print(len(mp_coast.geoms))
 
     print("Read subdivision scales from: %s\n" % scale_in)
     scales    = np.loadtxt(scale_in,dtype=str)
@@ -349,9 +349,9 @@ def make_coast_full(coastline_in, subdivision_in, scale_in, coastline_out, cropc
 
         # add buffer to subdivision polygons to ensure they are overlapping
         try:
-            print("Polygons before: %d" % len(mpi))
+            print("Polygons before: %d" % len(mpi.geoms))
             mpi_scale1 = process_function(mpi, scale1)
-            print("Polygons after: %d\n" % len(mpi_scale1))
+            print("Polygons after: %d\n" % len(mpi_scale1.geoms))
             mp_list.append(mpi_scale1)
 
         # Espenes 31/01/2020
@@ -367,7 +367,7 @@ def make_coast_full(coastline_in, subdivision_in, scale_in, coastline_out, cropc
     print(type(mp_join))
     if mp_join.geom_type == 'Polygon':
         mp_join = MultiPolygon([mp_join])
-    print("Total number of polygons after processing: %d\n" % len(mp_join))
+    print("Total number of polygons after processing: %d\n" % len(mp_join.geoms))
     print("Write coast line data")
     write_poly_data(coastline_out, mp_join)
 
@@ -428,7 +428,7 @@ def plot_divisions(mp_coast, mp_join, mp_sub, title=' '):
         raw_coast = np.load('coast.npy', allow_pickle = True).item()
 
     except:
-        for p in mp_coast:
+        for p in mp_coast.geoms:
             xt,yt=p.exterior.xy                                
             if i == 0:
                 x = xt       
@@ -449,7 +449,7 @@ def plot_divisions(mp_coast, mp_join, mp_sub, title=' '):
     plt.plot(raw_coast['x'], raw_coast['y'],label='before smoothing')
 
     i = 0
-    for p in mp_join:
+    for p in mp_join.geoms:
         xt,yt=p.exterior.xy                                
         if i == 0:
             x2 = xt       
@@ -471,7 +471,7 @@ def plot_divisions(mp_coast, mp_join, mp_sub, title=' '):
 
     # Plot subdivisions
     # ---------------------------------------------------------------------
-    for i,p in enumerate(mp_sub):
+    for i,p in enumerate(mp_sub.geoms):
         x,y = p.exterior.xy
         plt.fill(x,y,alpha=0.3)
 

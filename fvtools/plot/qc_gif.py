@@ -2,9 +2,7 @@ import os
 import numpy as np
 import cmocean as cmo
 import progressbar as pb
-import matplotlib.tri as tri
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolor
 import matplotlib.animation as manimation
 import warnings
 warnings.filterwarnings("ignore")
@@ -15,8 +13,6 @@ from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.grid.tools import Filelist, num2date, date2num
 from fvtools.plot.geoplot import geoplot
 from datetime import datetime, timezone
-from scipy.spatial import cKDTree
-from functools import cached_property
     
 # ----------------------------------------------------------------------------------------
 #                     Create an animation from a number of files
@@ -37,8 +33,12 @@ def main(folder = None,
          cticks = None,
          mname  = None,
          dpi    = 100,
-         reference = 'epsg:32633'):
+         reference = 'epsg:32633',
+         **kwargs):
     '''
+    One-liner to make animations of FVCOM output fields.
+    ---
+
     Reads files, creates animation.
     - from single files
     - from multiple files in a folder
@@ -52,7 +52,7 @@ def main(folder = None,
     
     At least one:
     ----
-    sigma:        sigma layer to animate
+    sigma:        sigma layer to animate (or 'max' if you want to plot the maximum vertical value)
     z:            z-level to animate
     section:      make a movie of a transect
                     - a .txt file with lon lat columns (at least 2 points separated by a space)
@@ -67,31 +67,222 @@ def main(folder = None,
     fps:          movie framerate ('out' by default)
     cticks:       color shading levels
     section_res:  horizontal resolution of transect (if not specified, we will use 60 points)
-
     Report issues/bugs to hes@akvaplan.niva.no
-    '''    
+    '''
+    # Copy the input to a dictionary
+    vars = dir()
+    kwargs = {}
+    for variable in vars:
+        kwargs[variable] = eval(variable)
+
     # Stop if insufficient input
     if section is None and sigma is None and z is None:
         raise ValueError('The routine needs at least one of "section", "sigma" or "z"')
 
     # Get the relevant files
-    time, dates, List, index, cb = parse_input(folder, fname, filelist, start, stop, sigma, var)
+    kwargs['time'], kwargs['dates'], kwargs['List'], kwargs['index'], kwargs['cb'] = parse_input(**kwargs)
 
     # Plot surface fields
-    if sigma is not None:
-        surface_movie(time, dates, List, index, var, sigma, cb, xlim, ylim, fps, cticks, mname, dpi, reference)
+    if kwargs['sigma']:
+        surface_movie(**kwargs)
 
-    if z is not None:
-        zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, mname, dpi, reference)
+    # Plot fields interpolated to constant z-levels
+    if kwargs['z']:
+        zlevel_movie(**kwargs)
 
     # Plot section fields
-    if section is not None:
-        section_movie(time, dates, List, index, var, cb, section, section_res, fps, cticks, mname, dpi, reference)
+    if kwargs['section']:
+        section_movie(**kwargs)
 
     print('--> Done.')
 
-# Define writer
-# --------
+def get_input(
+        folder = None,
+        fname  = None,
+        filelist = None,
+        var    = ['salinity', 'temp', 'zeta'],
+        sigma  = None,
+        z      = None,
+        xlim   = None,
+        ylim   = None,
+        start  = None,
+        stop   = None,
+        section = None,
+        section_res  = None,
+        fps    = 12,
+        cticks = None,
+        mname  = None,
+        dpi    = 100,
+        reference = 'epsg:32633',
+        **kwargs
+        ):
+    '''
+    Returns a dict with all keyword arguments (kwargs) needed to run surface_movie, zlevel_movie and section_movie (including filelist).
+
+    Example usage:
+    ---
+    kwargs = get_input(folder = 'output/', start = '2019-02-01-00', stop = '2019-02-20-00', sigma = 0, var = ['salinity', 'temp'])
+
+    # Make surface movie of sigma = 0
+    surface_movie(**kwargs)
+
+    # Make section movie
+    kwargs['section'] = 'section.txt'
+    kwargs['section_res'] = 50
+    section_movie(**kwargs)
+
+    # Make z-level movie
+    kwargs['z'] = 100
+    zlevel_movie(**kwargs)
+    '''
+    # Copy the input
+    vars = dir()
+    kwargs = {}
+    for variable in vars:
+        kwargs[variable] = eval(variable)
+
+    # Stop if insufficient input
+    if section is None and sigma is None and z is None:
+        raise ValueError('The routine needs at least one of "section", "sigma" or "z"')
+
+    kwargs['time'], kwargs['dates'], kwargs['List'], kwargs['index'], kwargs['cb'] = parse_input(**kwargs)
+    return kwargs
+    
+# ----------------------------------------------------------------------------------------------------------------------
+#                                            Movie plotters
+# ----------------------------------------------------------------------------------------------------------------------
+def surface_movie(**kwargs):
+    '''
+    Makes movies of tracer fields along constant sigma-levels
+    '''
+    # Dump to the movie maker
+    print('\nFeeding data to the movie maker')
+    mmaker = FilledAnimation(**kwargs)
+    MovieWriter, codec = get_animator()
+
+    if not kwargs['mname']:
+        mname = mmaker.M.casename
+
+    for field in kwargs['var']:
+        mmaker.var    = field
+        widget        = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
+        mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(kwargs['time']))
+        mmaker.get_cmap(field, kwargs['cb'], kwargs['cticks'])
+
+        # Prepare figure
+        fig = mmaker.make_figure(dpi = kwargs['dpi'])
+
+        # prepare movie maker
+        mmaker.bar.start()
+        anim = manimation.FuncAnimation(
+            fig,
+            mmaker.contourf_animate,
+            frames           = len(kwargs['time']),
+            save_count       = len(kwargs['time']),
+            repeat           = False,
+            blit             = False,
+            cache_frame_data = False
+            )
+        writer = MovieWriter(fps = kwargs['fps'])
+
+        # Set framerate, write the movie
+        write_movie(mmaker, anim, f'{mname}_sigma_{kwargs['sigma']}', field, codec, writer)
+
+def zlevel_movie(**kwargs):
+    '''
+    Makes movies of tracer fields along constant z-levels
+    '''
+    # Dump to the movie maker
+    print('\nFeeding data to the movie maker')
+    mmaker = FilledAnimation(**kwargs)
+
+    if not kwargs['mname']:
+        mname = mmaker.M.casename
+
+    MovieWriter, codec = get_animator()
+
+    for field in kwargs['var']:
+        if field in ['zeta', 'vorticity', 'pv']:
+            break
+        mmaker.var    = field
+        widget        = [f'- Make z-level {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
+        mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(kwargs['time']))
+        mmaker.get_cmap(field, kwargs['cb'], kwargs['cticks'])
+        mmaker.bar.start()
+        fig = mmaker.make_figure(dpi = kwargs['dpi'])
+        anim = manimation.FuncAnimation(
+            fig,
+            mmaker.zlevel_animate,
+            frames           = len(kwargs['time']),
+            save_count       = len(kwargs['time']),
+            repeat           = False,
+            blit             = False,
+            cache_frame_data = False
+            )
+        writer = MovieWriter(fps = kwargs['fps'])
+        write_movie(mmaker, anim, f'{mname}_{kwargs["z"]}m_depth', field, codec, writer)
+
+def section_movie(
+        time = None, dates = None, List = None, index = None, var = None, cb = None, 
+        section = None, section_res = None, fps = None, cticks = None, mname = None, 
+        dpi = None, reference = None, **kwargs
+        ):
+    '''
+    Plot movies from cross-sections
+    '''
+    print('\nCreate the section movie')
+    MovieWriter, codec = get_animator()
+    
+    # Find grid info
+    print('- Get grid info, section points and triangulation')
+    M = FVCOM_grid(List[0], verbose = False, reference = reference, static_depth = True)
+    if section is True:
+        section = None
+
+    if not mname:
+        mname = M.casename
+
+    M.prepare_section(section_file = section, res = section_res, store_transect_img = True)
+
+    # Crop grid to a sausage covering the transect (so we don't need to load excessive amounts of data to memory)
+    indices = []
+    for i, ii in zip(*M.cell_tree.query(np.vstack((M.x_sec, M.y_sec)).T, k = 6)): # I am not sure how many nodes we neeed
+        indices.extend(ii[i<np.inf].tolist())
+
+    # Temporarilly store x_sec and y_sec
+    C = M.subgrid(cells=np.unique(indices))
+    C.x_sec, C.y_sec = M.x_sec, M.y_sec
+    section = C.get_section_data(C.h)
+
+    # Create the movie maker
+    print('- Prepare the movie maker')
+    mmaker   = VerticalMaker(time, dates, List, index, ylimit = [section['h'].min()-1, 2])
+    mmaker.M = C
+
+    print('\nMovie maker:')
+    for field in var:
+        if field == 'zeta':
+            continue
+        mmaker.var = field
+        widget     = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
+        mmaker.bar = pb.ProgressBar(widgets=widget, maxval=len(time))
+        mmaker.get_cmap(field, cb, cticks)
+        fig   = plt.figure(figsize = (19.2, 8.74), dpi = dpi)
+        mmaker.bar.start()
+        anim  = manimation.FuncAnimation(
+            fig,
+            mmaker.vertical_animate,
+            frames           = len(time),
+            save_count       = len(time),
+            repeat           = False,
+            blit             = False,
+            cache_frame_data = False
+            )
+        writer = MovieWriter(fps = fps)
+        write_movie(mmaker, anim, f'{mname}_section', field, codec, writer)
+
+#                                  Helper functions
+# --------------------------------------------------------------------------------------------------
 def get_animator():
     '''
     Check which animator is available, get going
@@ -120,120 +311,7 @@ def write_movie(mmaker, anim, mname, field, codec, writer):
     anim.save(f'{mname}_{field}.{codec}', writer = writer)
     plt.close('all')
     mmaker.bar.finish()
-    
-# ----------------------------------------------------------------------------------------------------------------------
-#                            For plotting movies of a sigma layer surface
-# ----------------------------------------------------------------------------------------------------------------------
-def surface_movie(time, dates, List, index, var, sigma, cb, xlim, ylim, fps, cticks, mname, dpi, reference):
-    '''
-    Surface movie maker
-    '''
-    # Dump to the movie maker
-    print('\nFeeding data to the movie maker')
-    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, sigma = sigma)
-    MovieWriter, codec = get_animator()
 
-    for field in var:
-        mmaker.var    = field
-        widget        = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
-        mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(time))
-        mmaker.get_cmap(field, cb, cticks)
-
-        # Prepare figure
-        fig = mmaker.make_figure(dpi = dpi)
-
-        # prepare movie maker
-        mmaker.bar.start()
-        anim           = manimation.FuncAnimation(fig,
-                                                  mmaker.contourf_animate,
-                                                  frames           = len(time),
-                                                  save_count       = len(time),
-                                                  repeat           = False,
-                                                  blit             = False,
-                                                  cache_frame_data = False)
-        writer = MovieWriter(fps = fps)
-
-        # Set framerate, write the movie
-        write_movie(mmaker, anim, mname, field, codec, writer)
-
-def zlevel_movie(time, dates, List, index, var, z, cb, xlim, ylim, fps, cticks, mname, dpi, reference):
-    '''
-    Surface movie maker
-    '''
-    # Dump to the movie maker
-    print('\nFeeding data to the movie maker')
-    mmaker = FilledAnimation(time, dates, List, index, var, cb, xlim, ylim, reference, z=z)
-    MovieWriter, codec = get_animator()
-    
-    for field in var:
-        if field in ['zeta', 'vorticity', 'pv']:
-            break
-        mmaker.var    = field
-        widget        = [f'- Make z-level {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
-        mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(time))
-        mmaker.get_cmap(field, cb, cticks)
-        mmaker.bar.start()
-        fig = mmaker.make_figure(dpi = dpi)
-        anim           = manimation.FuncAnimation(fig,
-                                                  mmaker.zlevel_animate,
-                                                  frames           = len(time),
-                                                  save_count       = len(time),
-                                                  repeat           = False,
-                                                  blit             = False,
-                                                  cache_frame_data = False)
-        writer = MovieWriter(fps = fps)
-        write_movie(mmaker, anim, mname, field, codec, writer)
-
-def section_movie(time, dates, List, index, var, cb, section, section_res, fps, cticks, mname, dpi, reference):
-    '''
-    Plot movies from cross-sections
-    - Some work to be done reducing the data we're iterating over when making the crossection (only download data in a buffer around the transect)
-    '''
-    print('\nCreate the section movie')
-    MovieWriter, codec = get_animator()
-    
-    # Find grid info
-    print('- Get grid info, section points and triangulation')
-    M = FVCOM_grid(List[0], verbose = False, reference = reference, static_depth = True)
-    if section is True:
-        section = None
-    M.prepare_section(section_file = section, res = section_res, store_transect_img = True)
-
-    # Crop grid to a sausage covering the transect (so we don't need to load excessive amounts of data to memory)
-    indices = []
-    for i in M.cell_tree.query_ball_point(np.vstack((M.x_sec, M.y_sec)).T, r = 5000):
-        indices.extend(i)
-
-    # Temporarilly store x_sec and y_sec
-    C = M.subgrid(cells=np.unique(indices))
-    C.x_sec, C.y_sec = M.x_sec, M.y_sec
-    section = C.get_section_data(C.h)
-
-    # Create the movie maker
-    print('- Prepare the movie maker')
-    mmaker   = VerticalMaker(time, dates, List, index, ylimit = [section['h'].min()-1, 2])
-    mmaker.M = C
-
-    print('\nMovie maker:')
-    for field in var:
-        if field == 'zeta':
-            continue
-        mmaker.var = field
-        widget     = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
-        mmaker.bar = pb.ProgressBar(widgets=widget, maxval=len(time))
-        mmaker.get_cmap(field, cb, cticks)
-        fig   = plt.figure(figsize = (19.2, 8.74), dpi = dpi)
-        mmaker.bar.start()
-        anim  = manimation.FuncAnimation(fig,
-                                         mmaker.vertical_animate,
-                                         frames           = len(time),
-                                         save_count       = len(time),
-                                         repeat           = False,
-                                         blit             = False,
-                                         cache_frame_data = False)
-        writer = MovieWriter(fps = fps)
-        write_movie(mmaker, anim, mname, field, codec, writer)
-        
 def allFiles(folder):
     '''
     Return list of netCDF output files in a folder
@@ -244,7 +322,6 @@ def allFiles(folder):
     ncfiles = [folder + file for file in ncfiles]
     return ncfiles
 
-# Still some cleaning upping to do here
 def qc_fileList(files, var, start, stop, sigma = None):
     '''
     Take a timestep, couple it to a file
@@ -254,9 +331,6 @@ def qc_fileList(files, var, start, stop, sigma = None):
     - start: time to start. format: (yyyy-mm-dd-HH)
     - stop:  time to stop.  format: (yyyy-mm-dd-HH)
     '''
-    if sigma is None:
-        sigma = 0
-
     def crop_selection(t, indices, inds):
         return t[inds], indices[inds]
 
@@ -278,6 +352,8 @@ def qc_fileList(files, var, start, stop, sigma = None):
         with Dataset(this) as d:
             t = date2num(num2date(Itime = d['Itime'][:], Itime2 = d['Itime2'][:]))
             indices = np.arange(len(t))
+
+            # Do not read data that is before scope
             if start is not None:
                 if t.min()<start and t.max()<start:
                     print(f' - {this} is before the date range')
@@ -287,6 +363,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
                     if elements(inds)>0:
                         t, indices = crop_selection(t, indices, inds)
 
+            # Avoid reading data that is after of scope
             if stop is not None:
                 if t.min()>stop:
                     print(f' - {this} is after the date range')
@@ -301,22 +378,24 @@ def qc_fileList(files, var, start, stop, sigma = None):
             List = List + [this]*len(t)
             index.extend(list(indices))
 
+            # To determine colorbar limits
             for field in var:
                 if field in ['vorticity', 'pv', 'sp']:
                     continue
-
-                if len(d[field].shape)==3:
-                    if d.variables.get(field)[indices, sigma, :][:].min() < cb[field]['min']:
+                
+                if type(sigma) is not str and sigma is not None:
+                    if d.variables.get(field)[indices, sigma, :].min() < cb[field]['min']:
                         cb[field]['min'] = d.variables.get(field)[indices, sigma, :][:].min() 
                 
-                    if d.variables.get(field)[indices, sigma, :][:].max() > cb[field]['max']:
+                    if d.variables.get(field)[indices, sigma, :].max() > cb[field]['max']:
                         cb[field]['max'] = d.variables.get(field)[indices, sigma, :][:].max()
-                else:
-                    if d.variables.get(field)[indices, :][:].min() < cb[field]['min']:
-                        cb[field]['min'] = d.variables.get(field)[indices, :][:].min() 
                 
-                    if d.variables.get(field)[indices, :][:].max() > cb[field]['max']:
-                        cb[field]['max'] = d.variables.get(field)[indices, :][:].max()
+                else:
+                    if d.variables.get(field)[indices, :].min() < cb[field]['min']:
+                        cb[field]['min'] = d.variables.get(field)[indices, :].min() 
+                
+                    if d.variables.get(field)[indices, :].max() > cb[field]['max']:
+                        cb[field]['max'] = d.variables.get(field)[indices, :].max()
 
     return time, num2date(time = time), List, index, cb
 
@@ -334,6 +413,54 @@ def parse_time_input(file_in, start, stop):
 
     return start, stop
 
+def parse_input(folder = None, fname = None, filelist = None, start = None, stop = None, sigma = None, var = None, **kwargs):
+    '''
+    Return the fields the routine expects
+    '''
+    if filelist:
+        # Prepare the filelist
+        # ----
+        fl = Filelist(filelist, start, stop)
+        time, dates, List, index = fl.time, fl.datetime, fl.path, fl.index        
+        
+        # Prepare the colorbar (quick version)
+        cb = {}
+        d_min = Dataset(List[0])
+        d_max = Dataset(List[-1])
+        for field in var:
+            if field in ['vorticity','pv']:
+                continue
+            cb[field] = {}
+            cb[field]['max'] = max(d_min[field][:].max(), d_max[field][:].max())
+            cb[field]['min'] = min(d_min[field][:].min(), d_max[field][:].min())
+            if field == 'salinity':
+                cb['salinity']['min'] = 29
+            with Dataset(fl.path[0]) as d:
+                cb[field]['units'] = d[field].units
+
+    else:
+        if folder is not None:
+            files = allFiles(folder)
+        elif fname is not None:
+            files = [fname]
+        else:
+            raise InputError('You must provide the routine one of: folder, fname or filelist')
+
+        # Prepare time (string to fvcom time)
+        start, stop = parse_time_input(files[0], start, stop)
+
+        # Couple file to timestep
+        time, dates, List, index, cb = qc_fileList(files, var, start, stop, sigma = sigma)
+
+    print(f"Start: {dates[0].strftime('%d/%B-%Y, %H:%M:%S')}")
+    print(f"End:   {dates[-1].strftime('%d/%B-%Y, %H:%M:%S')}")
+    return time, dates, List, index, cb
+
+def elements(array):
+    return array.ndim and array.size
+
+#                                                      Helper classes
+# --------------------------------------------------------------------------------------------------------------------------
 class AnimationFields:
     '''
     Some fields can be read directly from the netCDF file, some must be inferred.
@@ -348,13 +475,21 @@ class AnimationFields:
         if self.var in ['pv', 'vorticity', 'sp']:
             field = getattr(self, self.var)
         else:
-            field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i], sig = self.sigma)
+            if type(self.sigma) == str:
+                if self.sigma != 'max':
+                    raise ValueError(f'sigma must either be an integer number (index) or "max", {self.sigma} is not a valid option.')
+                field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i]).max(axis = 0)
+            else:
+               field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i], sig = self.sigma)
         return field
     
     @property
     def vorticity(self):
-        '''we load velocities for the entire grid, since the vorticity calculation at boundaries is fizzy, hence we can't necessarilly use the cropped grid'''
-        with Dataset(self.files[i], 'r') as d:
+        '''
+        We can't necessarilly use the cropped grid here since the vorticity calculation at boundaries is fizzy.
+        We therefore load velocities for the entire grid when calculating the vorticity.
+        '''
+        with Dataset(self.files[self.i], 'r') as d:
             _vort = self.T.vorticity(d['ua'][self.index[self.i], :], d['va'][self.index[self.i],:])
         if self.M.cropped_cells.any():
             _vort = _vort[self.M.cropped_cells]
@@ -366,7 +501,10 @@ class AnimationFields:
 
     @property
     def sp(self):
-        return np.sqrt(self.M.load_netCDF(self.files[i], 'ua', self.index[self.i])**2 + self.M.load_netCDF(self.files[i], 'va', self.index[self.i])**2)
+        return np.sqrt(
+            self.M.load_netCDF(self.files[self.i], 'ua', self.index[self.i])**2 + 
+            self.M.load_netCDF(self.files[self.i], 'va', self.index[self.i])**2
+            )
 
 class AnimationColorbars:
     '''
@@ -378,13 +516,13 @@ class AnimationColorbars:
         '''
         if var in 'salinity':
             self.cmap = cmo.cm.haline
-            self.colorticks = np.linspace(29, 35+(35-29)/50, 50)
+            self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
             self.label = 'psu'
             
         elif var == 'temp':
             self.cmap = cmo.cm.thermal
             self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
-            self.label = '$^\circ$C'
+            self.label = r'$^\circ$C'
 
         elif var == 'zeta':
             self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
@@ -405,6 +543,11 @@ class AnimationColorbars:
             self.cmap = cmo.cm.speed
             self.colorticks = np.linspace(0, 0.4, 30)
             self.label = 'm/s'
+    
+        elif 'tracer' in self.var:
+            self.cmap = cmo.cm.dense
+            self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
+            self.label = cb[var]['units']
 
         else:
             self.cmap = cmo.cm.turbid
@@ -439,13 +582,16 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
     '''
     All the data needed by the 
     '''
-    def __init__(self, time, dates, List, index, var, cb, xlim, ylim, reference, sigma = None, z = None):
+    def __init__(
+            self, time = None, dates = None, List = None, index = None, var= None, 
+            cb = None, xlim = None, ylim = None, reference = None, sigma = None, z = None, **kwargs
+            ):
         '''
         Let the writer know which frames to make
         '''
         # Write input to class
         self.index, self.files, self.time, self.datetime = index, List, time, dates
-        self.sigma, self.z    = sigma, z
+        self.sigma, self.z = sigma, z
         self.xlim,  self.ylim = xlim, ylim
 
         # Prepare grid
@@ -457,14 +603,14 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         if 'pv' in var:
             self.M.get_coriolis()
             
-        print(' - Downloading georeference')
+        print('- Downloading georeference')
         if self.xlim is not None and self.ylim is not None:
             self.gp = self._get_georeference(self.xlim, self.ylim, reference)
         else:
             self.gp = self._get_georeference(self.M.x, self.M.y, reference)
 
         if self.gp is None:
-            print('  - Failed to download georeference, the background will not be shaded.')
+            print('  -> Failed to download georeference, the background will not be shaded.')
 
         if 'vorticity' in var or 'pv' in var:
             import grid.tge as tge
@@ -562,58 +708,12 @@ class VerticalMaker(AnimationFields, AnimationColorbars):
         # Settings
         if self.ylimit is not None:
             plt.ylim(self.ylimit)
-        plt.colorbar(label = self.label)
+        plt.colorbar(cont, label = self.label)
         plt.xlabel('km from start of transect')
         plt.ylabel('meter depth')
         plt.title(self.datetime[i].strftime('%m/%d, %H:%M:%S'))
         ax = plt.gca()
         ax.set_facecolor('tab:grey')
-
-def parse_input(folder, fname, filelist, start, stop, sigma, var):
-    '''
-    Return the fields the routine expects
-    '''
-    if filelist is None:
-        if folder is not None:
-            files = allFiles(folder)
-        elif fname is not None:
-            files = [fname]
-        else:
-            raise InputError('You must provide the routine one of: folder, fname or filelist')
-
-        # Prepare time (string to fvcom time)
-        start, stop = parse_time_input(files[0], start, stop)
-
-        # Couple file to timestep
-        time, dates, List, index, cb = qc_fileList(files, var, start, stop, sigma = sigma)
-
-    else:
-        # Prepare the filelist
-        # ----
-        fl = Filelist(filelist, start, stop)
-        time, dates, List, index = fl.time, fl.datetime, fl.path, fl.index        
-        
-        # Prepare the colorbar (quick version)
-        cb = {}
-        d_min = Dataset(List[0])
-        d_max = Dataset(List[-1])
-        for field in var:
-            if field in ['vorticity','pv']:
-                continue
-            cb[field] = {}
-            cb[field]['max'] = max(d_min[field][:].max(), d_max[field][:].max())
-            cb[field]['min'] = min(d_min[field][:].min(), d_max[field][:].min())
-            if field == 'salinity':
-                cb['salinity']['min'] = 29
-            with Dataset(fl.path[0]) as d:
-                cb[field]['units'] = d[field].units
-
-    print(f"Start: {dates[0].strftime('%d/%B-%Y, %H:%M:%S')}")
-    print(f"End:   {dates[-1].strftime('%d/%B-%Y, %H:%M:%S')}")
-    return time, dates, List, index, cb
-
-def elements(array):
-    return array.ndim and array.size
 
 class PiecewiseNorm(Normalize):
     ''' piecewise normalization of colormap'''

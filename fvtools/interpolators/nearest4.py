@@ -6,10 +6,7 @@ from numba import njit
 
 class Nearest4Points:
     '''
-    Work in progress, not used yet...
-
-    Builder for nearest 4 points, which is needed when preparing to use the N4 bi-linear coefficient subset
-    Will generalize building of nearest 4- indices for AROME and ROMS input.
+    Builder for nearest 4 points, which is needed when preparing to use the N4 bi-linear coefficient subset.
 
     xy_source        = (n,2) x,y
     xy_source_center = (m,2) x,y
@@ -26,7 +23,7 @@ class Nearest4Points:
         |        |
         |        |
 
-    We find the m-point that is closest to the FVCOM point, and use that to find the "box" that out FVCOM point is within.
+    We find the m-point which is closest to the FVCOM point, and use that to find the "box" that out FVCOM point is within.
     '''
     @property
     def source_tree(self):
@@ -52,7 +49,7 @@ class Nearest4Points:
 
 class N4(Nearest4Points):
     '''
-    Series of staticmethods, ROMS and AROME interpolators use these to some extent
+    Used to compute the nearest 4 coefficients
     '''
     def get_interpolation_matrices(self, xy_source=None, xy_source_center=None, xy_fvcom=None, nfvcom = None, widget_title = None):
         '''
@@ -67,6 +64,7 @@ class N4(Nearest4Points):
         self.xy_fvcom = xy_fvcom
 
         print(f'  - Finding nearest 4 {widget_title} weights')
+
         # - we can't send objects to numba nopython mode, hence we must convert the np.object array to a np.ndarray
         n4indices = np.array([np.array(nearest4, dtype=np.int64) for nearest4 in self.nearest4inds], dtype=np.int64)
         return compute_interpolation_coefficients(n4indices, self.xy_source, xy_fvcom, len(xy_fvcom[:,0]))

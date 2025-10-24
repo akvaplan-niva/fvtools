@@ -21,20 +21,24 @@ versionnr = 1.4
 # versionnr 1.1: Writes full field to the restart file
 # versionnr 1.2: Crops the full mother grid to fit the smaller one (to speed it up significantly, smaller KDTrees)
 # versionnr 1.3: basically just string fixes, adding metadata to the restart file
-# versionnr 1.4: Make an empty restart file, optionally use this instead of childfn
+# versionnr 1.4: Make an empty restart file, optionally use this instead of childfn -- seems like we still have some field to fill in....
 
-def main(child_fn      = None,
-         startdate     = None,
-         child_grid    = None,
-         result_folder = None,
-         name          = None,
-         motherfn      = None,
-         filelist      = None,
-         speed         = False):
+
+def main(
+        child_fn      = None,
+        startdate     = None,
+        child_grid    = None,
+        result_folder = None,
+        name          = None,
+        filelist      = None,
+        speed         = False
+    ):
     '''
     Two options for child specification:
     child_fn:      - path to an existing FVCOM restart file
     startdate      - date ("yyyy-mm-dd-hh")
+                     - require that you specify child_grid (anything that can be passed to FVCOM_grid)
+                     - note: this feature is still not properly tested...
     
     
     Two methods to specify the restart file:
@@ -43,8 +47,9 @@ def main(child_fn      = None,
         --> name   - Then you must also provide the name of the numerical experiment (ie. 'PO12')
 
     Optional:
-    speed          - sometimes works, many times not - hence False by default
+    speed          - Initialize the model with velocities as well. Sometimes works, many times not - hence False by default.
     '''
+    # Load (or create) child restart file
     child_fn = get_child_file(child_fn, startdate, child_grid)
     nodefield, cellfield, alias = interpolation_fields(speed)
 
@@ -69,7 +74,7 @@ def main(child_fn      = None,
             data, dpt = nearest_neighbor(mother, M, M_ch, ind, nodefield, cellfield, alias)
 
         # Update depth with zeta for mother and child prior to vertical interpolation
-        M.zeta    = M.load_netCDF(M.filepath, 'zeta', ind)
+        M.zeta    = M.load_netCDF(mother_fn, 'zeta', ind)
         M_ch.zeta = data['zeta']
 
         print('\n- Vertical interpolation') 
@@ -80,7 +85,7 @@ def main(child_fn      = None,
 
         # Done!
         child.mother           = mother_fn
-        child.data_age         = f'data dumped to this restart file by interpol_restart.py at {time.ctime(time.time())}'
+        child.data_age         = f'Data dumped to this restart file by interpol_restart.py ({time.ctime(time.time())})'
         child.interpol_version = versionnr
         child.interp_folder    = os.getcwd()
 
@@ -115,6 +120,8 @@ def interpolation_fields(speed):
     else:
         nodefield = ['zeta', 'salinity', 'temp','et', 'tmean1', 'smean1', 'rho1', 'rmean1', 'zice']
         cellfield = None
+
+    # Define aliases
     alias     = {'tmean1': 'temp',
                  'smean1': 'salinity',
                  'et': 'zeta'}
@@ -136,8 +143,7 @@ def check_time(tm,tch):
 
 def find_file(name, data_directories, time):
     ''' 
-    Make lists that link a point in time to fvcom result file 
-    and index (in corresponding file). Three lists a returned:
+    Make lists that link a point in time to fvcom result file and index (in corresponding file). Three lists a returned:
     1: list with point in time (fvcom time: days since 1858-11-17 00:00:00)
     2: list with path to files
     3: list with indices
@@ -223,10 +229,10 @@ def nearest_neighbor(mother, M, M_ch, ind, nodefield, cellfield, alias):
     # Store info needed for vertical interpolation
     class grid_info: pass
     grid_info.z_node_siglay_mother = M.h[nearest_mother_node, None] * M.siglay[nearest_mother_node, :] # mother siglay depth-levels at child nodes
-    grid_info.z_cell_siglay_mother = np.mean(grid_info.z_node_siglay_mother[M_ch.tri], axis=1)                # mother siglay depth-levels at child cells
+    grid_info.z_cell_siglay_mother = np.mean(grid_info.z_node_siglay_mother[M_ch.tri], axis=1)         # mother siglay depth-levels at child cells
 
     grid_info.z_node_siglev_mother = M.h[nearest_mother_node, None] * M.siglev[nearest_mother_node, :] # mother siglay depth-levels at child nodes
-    grid_info.z_cell_siglev_mother = np.mean(grid_info.z_node_siglev_mother[M_ch.tri], axis=1)                # mother siglay depth-levels at child cells
+    grid_info.z_cell_siglev_mother = np.mean(grid_info.z_node_siglev_mother[M_ch.tri], axis=1)         # mother siglay depth-levels at child cells
 
     return horizontal, grid_info
 
@@ -238,14 +244,25 @@ def vertical_interpolation(data, child, dpt):
     var = [*data]
     vertical_data = {}
 
+    # Load depth and sigma layer information
+    h = np.array(child['h'][:])
+    tri = np.array(child['nv'][:].T) - 1
+    siglay = np.array(child['siglay'][:].T)
+    siglev = np.array(child['siglev'][:].T)
+
     # Get depths to interpolate to and from
+    # Child center depth
+    h_center = np.mean(h[tri], axis = 1)[:]
+    siglay_center = np.mean(siglay[tri], axis = 1)
+    siglev_center = np.mean(siglev[tri], axis = 1)
+
     # Sigma
-    node_dpt_siglay_child  = child['h'][:][:, None] * child['siglay'][:].T
-    cell_dpt_siglay_child  = child['h_center'][:][:, None] * child['siglay_center'][:].T
+    node_dpt_siglay_child  = h[:, None] * siglay
+    cell_dpt_siglay_child  = h_center[:, None] * siglay_center
 
     # Siglev
-    node_dpt_siglev_child  = child['h'][:][:, None] * child['siglev'][:].T
-    cell_dpt_siglev_child  = child['h_center'][:][:, None] * child['siglev_center'][:].T
+    node_dpt_siglev_child  = h[:, None] * siglev
+    cell_dpt_siglev_child  = h_center[:, None] * siglev_center
     
     # Get interpolation coefficients and data indices
     print('  - Calculate vertical weights')
@@ -260,23 +277,27 @@ def vertical_interpolation(data, child, dpt):
             vertical_data[field] = data[field]
             continue
 
-        if data[field].shape == child['siglay'].shape:
+        if data[field].shape == siglay.T.shape:
             vertical_data[field] = data[field][nlay_ind1, range(0, data[field].shape[1])] * nlay_weigths1 + \
                                    data[field][nlay_ind2, range(0, data[field].shape[1])] * nlay_weigths2 
-        elif data[field].shape == child['siglay_center'].shape:
+            
+        elif data[field].shape == siglay_center.T.shape:
             vertical_data[field] = data[field][clay_ind1, range(0, data[field].shape[1])] * clay_weigths1 + \
                                    data[field][clay_ind2, range(0, data[field].shape[1])] * clay_weigths2 
 
-        if data[field].shape == child['siglev'].shape:
+        if data[field].shape == siglev.T.shape:
             vertical_data[field] = data[field][nlev_ind1, range(0, data[field].shape[1])] * nlev_weigths1 + \
                                    data[field][nlev_ind2, range(0, data[field].shape[1])] * nlev_weigths2 
 
-        elif data[field].shape == child['siglev_center'].shape:
+        elif data[field].shape == siglev_center.T.shape:
             vertical_data[field] = data[field][clev_ind1, range(0, data[field].shape[1])] * clev_weigths1 + \
                                    data[field][clev_ind2, range(0, data[field].shape[1])] * clev_weigths2 
     return vertical_data
 
 def dump_data(data, child):
+    '''
+    Write interpolated data from mother model to the child model restart file
+    '''
     print('\nDump data to restart/initial file')
     var = [*data]
     for field in var:
@@ -369,26 +390,28 @@ def make_initial_file(M, initial_time, obc_type = 0):
         'zice': (('siglay', 'node'), 'single')
         }
 
-    grid_fields = {'x': (('node',), 'single'),
-                   'y': (('node',), 'single'),
-                   'xc': (('nele',), 'single'),
-                   'yc': (('nele',), 'single'),
-                   'lat': (('node',), 'single'),
-                   'lon': (('node', ), 'single'),
-                   'latc': (('nele',), 'single'),
-                   'lonc': (('nele',), 'single'),
-                   'h': (('node',), 'single'),
-                   'h_center': (('nele',), 'single'),
-                   'nv': (('three', 'nele'), 'int32'),
-                   'siglay': (('siglay', 'node'), 'single'),
-                   'siglev': (('siglev', 'node'), 'single'),
-                   'siglay_center': (('siglay', 'nele'), 'single'),
-                   'siglev_center': (('siglev', 'nele'), 'single')
-                   }
+    grid_fields = {
+        'x': (('node',), 'single'),
+        'y': (('node',), 'single'),
+        'xc': (('nele',), 'single'),
+        'yc': (('nele',), 'single'),
+        'lat': (('node',), 'single'),
+        'lon': (('node', ), 'single'),
+        'latc': (('nele',), 'single'),
+        'lonc': (('nele',), 'single'),
+        'h': (('node',), 'single'),
+        'h_center': (('nele',), 'single'),
+        'nv': (('three', 'nele'), 'int32'),
+        'siglay': (('siglay', 'node'), 'single'),
+        'siglev': (('siglev', 'node'), 'single'),
+        'siglay_center': (('siglay', 'nele'), 'single'),
+        'siglev_center': (('siglev', 'nele'), 'single')
+        }
 
     aliases = {'nv': 'tri',
                'h_center': 'hc'}
 
+    # Write to the initial file
     with netCDF4.Dataset(f'{M.casename}_initial.nc', 'w') as initial:
         timedim  = initial.createDimension('time', 0)
         nodedim  = initial.createDimension('node', len(M.x))
@@ -430,7 +453,7 @@ def make_initial_file(M, initial_time, obc_type = 0):
 
             else:
                 if key =='nv':
-                    initial[key][:] = getattr(M, aliases[key]).T+1
+                    initial[key][:] = getattr(M, aliases[key]).T + 1 # Offset for Fortran indexing
                 else:
                     initial[key][:] = getattr(M, aliases[key])
 
@@ -440,10 +463,10 @@ def make_initial_file(M, initial_time, obc_type = 0):
                 initial[key][:] = 1
 
             elif key == 'obc_nodes':
-                initial[key][:] = M.obc_nodes
+                initial[key][:] = np.array(M.obc_nodes) + 1 # Offset for Fortran indexing
 
             else:
-                initial[key][:] = obc_type
+                initial[key][:] = 0
 
         # Set initial time
         initial['time'][:] = fvtime[0]

@@ -722,8 +722,21 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         cells = self._return_valid_triangles(self.x, self.y, self.tri)
         if len(cells) != len(self.xc):
             print(f'  - There are {len(self.xc)-len(cells)} illegal nodes in this mesh, removing those')
-            plt.figure()
-            self.plot_grid(label='input grid')
+            fig, ax = plt.subplots(1, 1)
+            self.plot_grid(ax = ax, label='input grid', show = False)
+
+            # Find the ones we remove
+            new_points = np.array([
+                (np.mean(self.x[self.tri[cells]], axis = 1)),
+                (np.mean(self.y[self.tri[cells]], axis = 1))
+            ]).T
+            old_points = np.array([self.xc, self.yc]).T
+
+            # Find removed points
+            set_old = set(map(tuple, old_points))
+            set_new = set(map(tuple, new_points))
+            points_removed = np.array(list(set_old - set_new))
+            
 
             # subgrid (returns a FVCOM_grid instance, we update necessary fields)
             # - a BuildCase class is not a FVCOM_grid, so the subgridding is a bit of a hack - to get the nodestrings, we must delete the _full_model_boundary
@@ -736,8 +749,14 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
                     except AttributeError:
                         print(f"Attribute {attr} could not be deleted.")
 
-            self.plot_grid(c='r-', label='fixed grid')
-            self.plot_obc()
+            # Plot the corrected grid
+            self.plot_grid(ax = ax, c='r-', label='fixed grid', show = False)
+
+            # Plot removed
+            ax.scatter(points_removed[:,0], points_removed[:,1], label = 'removed cells')
+
+            # Finish
+            self.plot_obc(ax = ax)
             plt.legend()
             updated_grid = True
         else:
@@ -749,7 +768,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         if not updated_grid:
             self.main()
         else:
-            print('- The grid was changed, you may want to inspect it before running BuildCase.main()')
+            print('- The grid was changed, you may want to inspect it before running BuildCase.main(). Writing changed grid to auto_cleaned_grid.2dm')
 
     def __str__(self):
         return f'''
@@ -849,8 +868,15 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         self.info['created']    = datetime.now().strftime('%Y-%m-%d at %H:%M h')
         self.info['2dm file']   = self.filepath
         self.info['depth file'] = self.depth_file
-        #self.info['author']     = os.getlogin()
-        self.info['directory']  = os.getcwd()
+        try:
+            self.info['author']    = os.getlogin()
+        except:
+            self.info['author']    = 'compute node'
+        try:
+            self.info['directory'] = os.getcwd()
+        except:
+            self.info['directory'] = 'compute node'
+            
         self.info['scipt version'] = version_number
         self.info['casename']   = self.casename
         self.info['reference']  = self.target_projection

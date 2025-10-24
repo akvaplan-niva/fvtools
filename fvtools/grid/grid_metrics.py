@@ -45,12 +45,18 @@ def get_nbe(M):
     print('  - seperate land boundaries from the obc')
     boundary_nodes_id = np.ones(len(boundary_nodes))
     for nodestring in M.nodestrings:
-        common, int1, int2 = np.intersect1d(nodestring, boundary_nodes, return_indices=True)
+        _, _, int2 = np.intersect1d(nodestring, boundary_nodes, return_indices=True)
         boundary_nodes_id[int2] = 2
 
     boundary_elements_id = np.ones(len(boundary_elements))
     obc_nodes = boundary_nodes[np.where(boundary_nodes_id == 2)[0]]
-    on_obc = np.array([i for i, elem in enumerate(boundary_elements) if M.tri[elem,0] in obc_nodes or M.tri[elem,1] in obc_nodes or M.tri[elem,2] in obc_nodes])
+
+    # New and faster lookup of boundary elements
+    on_obc = np.zeros(boundary_elements.shape[0], dtype = bool)
+    for i in range(3):
+        out = np.intersect1d(obc_nodes, M.tri[boundary_elements, i], return_indices = True)
+        on_obc[out[1]] = True
+
     boundary_elements_id[on_obc] = 2
 
     nodes = {}

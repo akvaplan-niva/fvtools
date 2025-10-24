@@ -2,13 +2,16 @@ import os
 import fvtools.grid.tge as tge
 import matplotlib
 import matplotlib.pyplot as plt
-import cmocean as cmo
 import numpy as np
 import progressbar as pb
+import geopandas as gpd
+import shapely as shp
+import networkx as nx
 
-from pyproj import Proj
+from pyproj import Proj, Transformer
 from netCDF4 import Dataset
 from matplotlib.collections import PatchCollection
+from matplotlib.patches import Polygon as mPolygon
 from scipy.spatial import cKDTree as KDTree
 from numba import njit
 from functools import cached_property
@@ -33,20 +36,24 @@ class GridLoader:
         assert type(cropped_nodes) == np.ndarray, 'cropped nodes must be a numpy array'
         assert type(cropped_cells) == np.ndarray, 'cropped cells must be a numpy array'
         if h is not None: assert h.min() > 0, 'Minimum depth is invalid'
+
         # Add more tests when bugs appear
-        self.tri = tri 
+        self.tri = tri
         if x is None and y is None:
             self.x, self.y = np.zeros(tri.max()+1), np.zeros(tri.max()+1)
         else:
             self.x, self.y = np.squeeze(x), np.squeeze(y)
+
         if lon is None and lat is None:
             self.lon, self.lat = np.zeros(x.shape), np.zeros(y.shape)
         else:
             self.lon, self.lat = lon, lat
+
         if h is not None:   
             self.h = np.squeeze(h)
         else:
             self.h = h
+
         self.siglay, self.siglev = siglay, siglev
 
         # Identifiers
@@ -55,7 +62,7 @@ class GridLoader:
         assert self.x.shape == self.y.shape, 'x, y shapes do not match'
         assert len(self.x.shape) == 1 and len(self.y.shape) == 1, 'shape of x and y needs to be (N,)'
         assert self.lon.shape == self.lat.shape, 'lon, lat shapes do not match'
-        
+
     def _add_grid_parameters_2dm(self):
         '''
         Grid parameters from a .2dm file
@@ -971,28 +978,28 @@ class OBC:
     @property
     def x_obc(self):
         '''x-position of nodes at the open boundary'''
-        return np.array([self.x[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.x[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     @property
     def y_obc(self):
         '''y-position of nodes at the open boundary'''
-        return np.array([self.y[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.y[nodestring] for nodestring in self.nodestrings], dtype = object)
     
     @property
     def lat_obc(self):
         '''latitude of nodes on the open boundary'''
-        return np.array([self.lat[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.lat[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     @property
     def lon_obc(self):
         '''longitude of nodes on the open boundary'''
-        return np.array([self.lon[nodestring] for nodestring in self.nodestrings])
+        return np.array([self.lon[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     def _get_nodestrings(self, obc_nodes):
-        '''Connects nodestrings to distinguished lines based on triangulation connectivity.
+        '''
+        Connects nodestrings to distinguished lines based on triangulation connectivity.
         - *should* guarantee that the nodes are sorted correctly, but still subject to testing
         '''
-        import networkx as nx
         node_tag = np.zeros((self.cell_number,), dtype = np.int32)
         node_tag[self.full_model_boundary] = 1
         cells = np.where(np.sum(node_tag[self.tri], axis=1) > 0)[0]
@@ -1027,13 +1034,24 @@ class OBC:
         return ordered_nodestrings
 
 class ControlVolumePlotter:
-    def plot_cvs(self, field,
+    @property
+    def cv(self):
+        '''
+        A list of patch collections for the node based control volumes
+        '''
+        if not hasattr(self, '_cv'):
+            self._cv = self._get_cvs()
+        return self._cv
+
+    def plot_cvs(self, 
+                 field,
                  cmap = 'jet', 
                  cmax = None, 
                  cmin = None, 
                  Norm = None, 
                  edgecolor = 'face', 
-                 verbose = True):
+                 inds = None,
+                 **kwargs):
         '''
         Plots nodal fields on control volume patches
 
@@ -1044,12 +1062,12 @@ class ControlVolumePlotter:
         - cmax:      cap colors to cmax
         - cmin:      floor colors to cmin
         - Norm:      to create non-linear colorbars (ref matplotlib documentation)
-        - verbose:   to get progress reports
         --> for cmax and cmin, the routine exclusively plots CVs with values within in that range
+
+        keyword arguments are sent to matplotlib.collections.PatchCollection
         '''
-        if not hasattr(self, 'cv'):
-            self._load_cvs(verbose)
-        inds = np.arange(0, len(field))
+        if inds == None:
+            inds = np.arange(0, len(field), dtype = int)
 
         # mask cvs with values below/above threshold
         if cmax is not None and cmin is None:
@@ -1059,46 +1077,36 @@ class ControlVolumePlotter:
         elif cmax is not None and cmin is not None:
             inds = np.intersect1d(np.where(field<=cmax)[0], np.where(field>=cmin)[0])
 
-        if len(field) == len(self.cv): 
-            collection = PatchCollection(self.cv, cmap=cmap, edgecolor=edgecolor, norm=Norm)
+        if len(inds) == len(self.cv): 
+            collection = PatchCollection(self.cv, cmap=cmap, edgecolor=edgecolor, norm=Norm, **kwargs)
         else: 
-            collection = PatchCollection([self.cv[inds]], cmap=cmap, edgecolor=edgecolor, norm=Norm)
-        collection.set_array(field[inds.astype(int)])
+            collection = PatchCollection(self.cv[inds], cmap=cmap, edgecolor=edgecolor, norm=Norm, **kwargs)
+        collection.set_array(field[inds])
         ax   = plt.gca()
         _ret = ax.add_collection(collection)
         ax.autoscale_view(True)
         ax.set_aspect('equal')
-        # add colorbar
-        cbar = plt.colorbar(collection, ax=ax)
-        cbar.set_label("")  # Optional: remove label if not needed
         if _ret._A is not None: 
             plt.gca()._sci(_ret)
         return _ret
-
-    def _load_cvs(self, verbose):
-        '''Check if we already have the cv-patches'''
-        try:
-            self.cv = np.load('cvs.npy', allow_pickle = True)
-        except:
-            self._get_cvs() # create CV polygons
 
     def _get_cvs(self, nodes = None):
         '''
         - computes matplotlib-patches for each control voulme, adds to self as self.cvs
         - Returns numpy file (cvs.npy) containing all of the control volume patches
         '''
-        from matplotlib.patches import Polygon as mPolygon
         if nodes is None: 
             nodes = np.arange(0, self.node_number)
         xcv_full, ycv_full = self._get_control_volumes(self.nbsn, self.nbve, self.x, self.y, self.xc, self.yc, nodes)
         bar    = pb.ProgressBar(widgets = ['Making control volume patches: ', pb.Percentage(), ' ', pb.BouncingBar(), pb.AdaptiveETA()], maxval=len(nodes))
         bar.start()
-        self.cv = []
+        cv = []
         for i, (xcv, ycv) in enumerate(zip(xcv_full, ycv_full)):
             bar.update(i)
-            self.cv.append(mPolygon(np.array([xcv, ycv]).T, closed=True))
+            cv.append(mPolygon(np.array([xcv, ycv]).transpose(), closed = True))
         bar.finish()
-        np.save('cvs.npy', self.cv) # for instant access to cvs at a later date
+        return cv
+        #np.save('cvs.npy', self.cv) # for instant access to cvs at a later date
 
     @staticmethod
     def _get_control_volumes(nbsn, nbve, x, y, xc, yc, nodes):
@@ -1238,7 +1246,9 @@ class SectionMaker:
         return _min_sigma
 
     def prepare_section(self, section_file = None, res = None, store_transect_img = False):
-        '''Returns x, y points along a section for use in section-analysis'''
+        '''
+        Returns x, y points along a section for use in section-analysis
+        '''
         if section_file is None: 
             x_section, y_section = self._graphical_section()
         if section_file is not None: 
@@ -1306,6 +1316,7 @@ class SectionMaker:
         out['h'], out['x'], out['y'] = self.dpt_sec, self.x_sec, self.y_sec
 
         # Interpolate data to the section
+        # ----
         if len(data.shape)>1:
             out['transect'] = self._interpolate_3D(data)
             out['dst'] = np.repeat(self.dst_sec[:, None], data.shape[1], axis = 1)
@@ -1314,6 +1325,7 @@ class SectionMaker:
             out['dst'] = self.dst_sec
 
         # Remove nans and crop dict, contourf won't accept the input otherwise -- do this earlier though, not every time...
+        # ----
         if np.isnan(out['transect']).any():
             if len(out['transect'].shape) == 1:
                 not_horizontal = ~np.isnan(out['transect'])
@@ -1327,7 +1339,9 @@ class SectionMaker:
         return out
 
     def _initialize_section(self, section_file, res, store_transect_img, sigma, grid):
-        '''Prepare the section interpolators etc.'''
+        '''
+        Prepare the section interpolators etc.
+        '''
         self._transect_sigma, self._transect_grid = sigma, grid
         if not hasattr(self, 'x_sec') and not hasattr(self, 'y_sec'):
             self.prepare_section(section_file = section_file, res = res, store_transect_img = store_transect_img)
@@ -1360,9 +1374,12 @@ class ExportGrid:
             return self.x, self.y
 
     def write_bath(self, filename=None, latlon = False):
-        '''- Generates an ascii FVCOM 4.x format bathymetry file'''
+        '''
+        - Generates an ascii FVCOM 5.x format bathymetry file
+        '''
         if filename is None: 
             filename = f'input/{self.casename}_dep.dat'
+
         x_grid, y_grid = self.get_xy(latlon)
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
@@ -1372,9 +1389,12 @@ class ExportGrid:
         print(f'  - Wrote : {filename}')
 
     def write_grd(self, filename = None, latlon = False):
-        '''- Generates an ascii FVCOM 4.x format grid file'''
+        '''
+        - Generates an ascii FVCOM 5.x format grid file
+        '''
         if filename is None: 
             filename = f'input/{self.casename}_grd.dat'
+
         x_grid, y_grid = self.get_xy(latlon)  
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
@@ -1387,9 +1407,12 @@ class ExportGrid:
         print(f'  - Wrote : {filename}')
 
     def write_sponge(self, filename = None):
-        '''- Generates an ascii FVCOM 4.x formatted sponge file'''
+        '''
+        - Generates an ascii FVCOM 5.x formatted sponge file
+        '''
         if filename is None: 
             filename = f'input/{self.casename}_spg.dat'
+
         with open(filename, 'w') as f:
             f.write(f'Sponge Node Number = {len(self.sponge_nodes)}\n')
             if any(self.sponge_nodes):
@@ -1580,28 +1603,35 @@ class PlotFVCOM:
     def transform(self, var):
         self._transform = var
 
-    def plot_grid(self, c = 'g-', linewidth = 0.2, markersize = 0.2, show = True, *args, **kwargs):
+    def plot_grid(self, ax = None, c = 'g-', linewidth = 0.2, markersize = 0.2, show = True, *args, **kwargs):
         '''
         Plot mesh grid
         - arguments and keyword arguments are passed to pyplot.triplot
         '''
-        ax = plt.gca()
+        if ax == None:
+            ax = plt.gca()
         kwargs = self._transform_to_kwargs(**kwargs)
         ax.triplot(self.x, self.y, self.tri, c, *args, markersize=markersize, linewidth=linewidth, **kwargs)
         ax.set_aspect('equal')
         if show: plt.show(block = False)
 
-    def plot_obc(self, **kwargs):
-        '''plot the obc nodes, show different nodestrings'''
-        ax = plt.gca()
+    def plot_obc(self, ax = None, **kwargs):
+        '''
+        plot the obc nodes, show different nodestrings
+        '''
+        if ax == None:
+            ax = plt.gca()
         kwargs = self._transform_to_kwargs(**kwargs)
         for i in range(len(self.x_obc)):
             ax.scatter(self.x_obc[i], self.y_obc[i], zorder = 10, label=f'boundary nr. {i+1}', **kwargs)
             ax.scatter(self.x_obc[i][[0,-1]], self.y_obc[i][[0,-1]], zorder = 11, c = 'r', **kwargs) # start and end points 
-        plt.draw()
+        #plt.draw()
 
-    def plot_contour(self, field, show = True, *args, **kwargs):
-        '''Plot contour of node- or cell data, basically just a shortcut for pyplot.tricontourf()'''
+    def plot_contour(self, field, show = True, ax = None, *args, **kwargs):
+        '''
+        Plot contour of node- or cell data, basically just a shortcut for pyplot.tricontourf()
+        - pass a field, it will be plotted to a new axes or to one that you pass (ax = None by default)
+        '''
         f = np.squeeze(field)
         if len(f) == self.node_number:
             x, y, tri = self.x, self.y, self.tri
@@ -1616,7 +1646,7 @@ class PlotFVCOM:
 
         # Add transform if the current axes is a GeoAxes (for WMS georeferenced plots)
         kwargs = self._transform_to_kwargs(**kwargs)
-        return self._plot_contour(x, y, tri, f, show, *args, **kwargs)
+        return self._plot_contour(x, y, tri, f, show, ax = ax, *args, **kwargs)
 
     def _transform_to_kwargs(self, **kwargs):
         '''
@@ -1628,9 +1658,11 @@ class PlotFVCOM:
                 kwargs['transform'] = self.transform
         return kwargs   
 
-    def georeference(self, url='https://openwms.statkart.no/skwms1/wms.topo4.graatone?service=wms&request=getcapabilities', 
-                           layers=['topo4graatone_WMS'], wms=None,
-                           depth=True):
+    def georeference(self, 
+                    url='https://wms.geonorge.no/skwms1/wms.topograatone?service=wms&request=getcapabilities', 
+                    layers=['topograatone'], wms=None, 
+                    depth = True,
+                    ax = None):
         '''
         Plot map data from WMS server as georeference. Must be done before plotting grid, contours etc.
         - requires cartopy
@@ -1639,6 +1671,7 @@ class PlotFVCOM:
         layers: valid layer from the url, must be a tuple with string(s)
         wms:    overwrites other input if not None, current options: "raster" or "topo4"
         depth:  plot kartverket bathymetry
+        ax:     cartopy axes (e.g. fig, ax = plt.subplots(2, 1, subplot_kw={'projection': ccrs.PlateCarree()}))
 
         Returns:
         ---
@@ -1694,15 +1727,19 @@ class PlotFVCOM:
         gl.top_labels = None
 
     @staticmethod
-    def _plot_contour(x, y, tri, field, show, *args, **kwargs):
-        ax = plt.gca()
+    def _plot_contour(x, y, tri, field, show = False, ax = None, *args, **kwargs):
+        if not ax:
+            ax = plt.gca()
         cont = ax.tricontourf(x, y, tri, field, *args, **kwargs)
         ax.set_aspect('equal')
         if show: plt.show(block=False)
         return cont
 
     def _plot_section_line(self):
-        self.plot_grid(rasterized=True)
+        '''
+        Show where the section goes relative to the grid
+        '''
+        self.plot_grid(rasterized=True, show = False)
         plt.plot(self.x_sec, self.y_sec, 'k', zorder = 10)
         plt.plot(self.x_sec[0], self.y_sec[0], 'g.', zorder = 11, label = 'start')
         plt.plot(self.x_sec[-1], self.y_sec[-1], 'r.', zorder = 11, label = 'stop')
@@ -1784,7 +1821,6 @@ class AnglesAndPhysics:
             contour = self.plot_contour(ts_min, cmap = 'jet', levels = np.linspace(min(ts_min), 3*min(ts_min), 20), extend = 'max')
             plt.colorbar(contour, label = 's')
             plt.axis('equal')
-            plt.title('Timestep (s)')
             plt.show(block = False)
         self.ts = ts_min
 
@@ -1927,6 +1963,7 @@ Functions:
         Plotting:
             .plot_grid()        - plots the grid
             .plot_cvs(data)     - plots node based data on CV-patches
+                .cvs            - matplotlib.collection.PatchCollection objects - one pr. node based control volume
             .plot_field(data)   - plots node based data over triangles
             .plot_contour(data) - contour plots any data
             .plot_obc()         - plot all OBC nodes, and show which nodestring they belong to

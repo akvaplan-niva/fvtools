@@ -82,6 +82,7 @@ def get_nearest4(OldAROME, NewAROME, nearest4, M):
     N4A = None; newN4A = None
     if OldAROME is None and NewAROME is None:
         nearest4 = None
+
     if OldAROME is not None:
         N4A = N4AROME(M, OldAROME)
 
@@ -110,8 +111,8 @@ def metcoop_make_fileList(start_time, stop_time, OldAROME = None, NewAROME = Non
     to "remember" what files are available in case of server downtime during the later interpolation step.
     '''
     dates     = pd.date_range(start_time, stop_time)
-    
-    # non-accumulated values
+
+    # Used to keep track of what's available
     # ----
     time     = np.empty(0)
     path     = []
@@ -153,7 +154,7 @@ def metcoop_make_fileList(start_time, stop_time, OldAROME = None, NewAROME = Non
 
             # We can't use the first two indexes due to accumulated values and NaNs at the beginning of some of the files.
             # ----
-            t_arome  = netCDF4.num2date(d.variables['time'][accdelay:-2], units = d['time'].units, only_use_cftime_datetimes=False)
+            t_arome  = netCDF4.num2date(d.variables['time'][accdelay:-2], units = d['time'].units, only_use_cftime_datetimes = False)
             t_fvcom  = netCDF4.date2num(t_arome, units = 'days since 1858-11-17 00:00:00')
             time     = np.append(time, t_fvcom)
             path     = path + [file]*len(t_fvcom)
@@ -204,7 +205,7 @@ class AROMEDownloader:
 
     def dump_single(self):
         '''
-        Load and dump using a single processor
+        Load and dump using a single processor - the one we should use since they now ask users to not run parallell requests
         '''
         widget = [f'  Downloading arome timesteps: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.indices))
@@ -239,9 +240,9 @@ class AROMEDownloader:
         manager = mp.Manager() # We need a manager since all processes (minus one) will communicate with the writer
         q = manager.Queue()    # q is convey messages from the workers to the listener
         if nprocs is None:
-            pool = mp.Pool(mp.cpu_count()+2)
+            pool = mp.Pool(mp.cpu_count() + 2)
         else:
-            pool = mp.Pool(nprocs+2) # +2 to make sure that we always have room for workers after listener and the watcher are added to the list
+            pool = mp.Pool(nprocs + 2) # +2 to make sure that we always have room for workers after listener and the watcher are added to the list
 
         # Initialize the listener
         watcher = pool.apply_async(self._listener, (q,))
