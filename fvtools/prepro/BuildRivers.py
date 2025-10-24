@@ -59,7 +59,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
     Optional:
     ----
     mesh_dict: (M.npy by default)
-    info:      Dict where all paths are stored. Change the basic settings by giving it as
+    info:      Dict where all paths and river specific settings are stored. Change the basic settings by giving it as
                an input: info. Get the basic settings by calling BuildRivers.get_input(),
                which can then be edited and passed back to main if other paths etc. are
                needed in the given experiment.
@@ -72,7 +72,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
     M = FVCOM_grid(mesh_dict)
 
     print('----------------------------------------------------------------------------')
-    print(f'                       BuildRivers: {M.info["casename"]}')
+    print(f'                       BuildRivers: {M.casename}')
     print('----------------------------------------------------------------------------')
 
     if info is None:
@@ -98,8 +98,8 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
     Runoff  = RiverRunoff(info)
 
     if info['rivertemp'] != 'compile':
-        print('\nRiver temperature from '+info['rivertemp'])
-    Temp    = RiverTemperatures(info, vassdrag, M.info['casename'], start)
+        print(f'\nRiver temperature from {info["rivertemp"]}')
+    Temp    = RiverTemperatures(info, vassdrag, M.casename, start)
 
     # Remove vassdrags that are not part of our domain
     print('- Connect rivers to nedborfelt')
@@ -114,7 +114,7 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
     # Remove the rivers that are too far away from land, and too close to the obc
     print('- Crop river to a distance from the obc')
     Small = Forcing.crop_river_to_obc(Small)
-    Lagre = Forcing.crop_river_to_obc(Large)
+    Large = Forcing.crop_river_to_obc(Large)
 
     # Add temperatures to the small and large rivers
     print('- Add temperatures to the rivers')
@@ -155,6 +155,7 @@ def get_input():
     iloc:        Determine if the input is given as a flux at edge or at the node
     whichrivers: 'all', 'small' , 'large'
     dRmax:       Distance from boundary without rivers
+    min_depth:        Minimum depth at rivers (since if h=0 (wetting/drying on), rivers would be infinitely wide to meet the stability criteria)
     Isplit:      Baroclinic split
     tideamp:     Tidal amplityde
     plot:        Show the results on a map
@@ -179,6 +180,7 @@ def get_input():
     info = {'iloc': 'edge',
             'whichrivers': 'all',
             'dRmax': 5000,
+            'min_depth': 3,
             'Isplit': 8,
             'tideamp': 1,
             'plot': True,
@@ -479,7 +481,7 @@ class RiverTemperatures:
 
         # Smooth transition
         v     = np.ones((450,))
-        std   = np.convolve(std, v, 'smooth')/len(v)
+        std   = np.convolve(std, v, 'same')/len(v)
         self.average_temp += std
 
         # Remove negative values for numerical stability
@@ -804,7 +806,7 @@ class FVCOM_rivers:
         """
         first = True
         while True:
-            d, land_loc = self.land_tree.query(np.array([self.xriv, self.yriv]).transpose())
+            _, land_loc = self.land_tree.query(np.array([self.xriv, self.yriv]).transpose())
             if first:
                 self.river_connection(land_loc, gp)
                 first = False
@@ -878,6 +880,9 @@ class FVCOM_rivers:
 
         elif self.info['iloc'] == 'node':
             h  = self.M.h[self.unique_mesh]-self.info['tideamp']
+
+        # Set min depth in case of wetting drying
+        h[h < self.info['min_depth']] = self.info['min_depth']
 
         # Calculate the stability number for all the river-cells
         return dt_internal * self.RiverTransport.max(axis=0) / (h*tri_area)
@@ -1021,6 +1026,9 @@ class FVCOM_rivers:
         d.close()
 
     def fix_nordic(self, this_name):
+        '''
+        FVCOM does not accept norwegian letters
+        '''
         this_name.replace('å','a')
         this_name.replace('Å','A')
         this_name.replace('ø','o')
@@ -1034,18 +1042,17 @@ class FVCOM_rivers:
         Write a namelist to accompany the netCDF file
         """
         VQDIST = -np.diff(self.M.siglev[0,:])
-        f = open(namelist, 'w+')
-        for i, river in enumerate(self.river_names):
-            river = self.fix_nordic(river)
-            f.write(' &NML_RIVER\n')
-            f.write(f" RIVER_NAME = '{river}'\n")
-            f.write(f" RIVER_FILE = '{riverfile}'\n")
-            f.write(f' RIVER_GRID_LOCATION = {self.mesh_location[i]+1}\n')
-            vertical_dist = np.array2string(np.round(VQDIST,6), separator = ' ', edgeitems = 6,
-                                            precision = 5, floatmode = 'fixed').replace('\n',' ')[1:-1]
-            f.write(f' RIVER_VERTICAL_DISTRIBUTION = {vertical_dist}\n')
-            f.write('/\n')
-        f.close()
+        with open(namelist, 'w+') as f:
+            for i, river in enumerate(self.river_names):
+                river = self.fix_nordic(river)
+                f.write(' &NML_RIVER\n')
+                f.write(f" RIVER_NAME = '{river}'\n")
+                f.write(f" RIVER_FILE = '{riverfile}'\n")
+                f.write(f' RIVER_GRID_LOCATION = {self.mesh_location[i]+1}\n')
+                vertical_dist = np.array2string(np.round(VQDIST,6), separator = ' ', edgeitems = 6,
+                                                precision = 5, floatmode = 'fixed').replace('\n',' ')[1:-1]
+                f.write(f' RIVER_VERTICAL_DISTRIBUTION = {vertical_dist}\n')
+                f.write('/\n')
 
 
 # Crop the fields in an object to only cover indices
@@ -1092,3 +1099,41 @@ def show_forcing(obj, gp, M):
     plt.show(block = False)
 
 class InputError(Exception): pass
+
+
+# Development:
+# Create a river subsetting method
+# -> Load mother model rivers as "raw data" that can be processed further using the existing fvtools scripts
+from netCDF4 import Dataset
+import f90nml
+
+class MotherRivers:
+    '''
+    Class that reads rivers that have been used to force a larger model domain
+    '''
+    def __init__(self, nmlfile, river_nc, mothergrid, river_inflow_location = 'edge', reference = 'epsg:32633'):
+        '''
+        Reads
+        - nmlfile:    River namelist for the mother rivers
+        - river_nc:   River forcing file for the mother domain rivers
+        - mothergrid: Grid file for the FVCOM mother domin
+        '''
+        # We do not support nodes input at the moment
+        if river_inflow_location != 'edge':
+            raise ValueError(f"Sorry, we only support river_inflow_location = 'edge' at the moment, {river_inflow_location} is not available at the moment.")
+
+        # Process input
+        nml     = f90nml.read(nmlfile)
+        rivernc = Dataset(river_nc)
+        M       = FVCOM_grid(mothergrid, reference = reference)
+
+        # Load river locations and names
+        self.river_locations = np.array([nml['river_grid_location'] - 1 for nml in nml['nml_river']])
+        self.x = M.xc[self.river_locations]
+        self.y = M.yc[self.river_locations]
+        self.river_names = np.array([nml['river_name'] for nml in nml['nml_river']])
+
+        # Load river transport and temperature for each of the rivers
+        # --> Can we naively assume that the rivers follow the same sequence?
+        self.transport  = []
+        self.river_temp = []

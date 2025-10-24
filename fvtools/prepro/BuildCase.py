@@ -137,7 +137,7 @@ class DepthHandler:
         - .npy files are already in a BuildCase friendly format, and don't take too long to load
         """
         # Load raw data
-        print(f'-> Load: {dptfile}')
+        print(f'  -> Load: {dptfile}')
         try:
             depth_data = np.loadtxt(dptfile, delimiter=',')
         except:
@@ -424,8 +424,21 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         cells = self._return_valid_triangles(self.x, self.y, self.tri)
         if len(cells) != len(self.xc):
             print(f'  - There are {len(self.xc)-len(cells)} illegal nodes in this mesh, removing those')
-            plt.figure()
-            self.plot_grid(label='input grid')
+            fig, ax = plt.subplots(1, 1)
+            self.plot_grid(ax = ax, label='input grid', show = False)
+
+            # Find the ones we remove
+            new_points = np.array([
+                (np.mean(self.x[self.tri[cells]], axis = 1)),
+                (np.mean(self.y[self.tri[cells]], axis = 1))
+            ]).T
+            old_points = np.array([self.xc, self.yc]).T
+
+            # Find removed points
+            set_old = set(map(tuple, old_points))
+            set_new = set(map(tuple, new_points))
+            points_removed = np.array(list(set_old - set_new))
+            
 
             # subgrid (returns a FVCOM_grid instance, we update necessary fields)
             # - a BuildCase class is not a FVCOM_grid, so the subgridding is a bit of a hack - to get the nodestrings, we must delete the _full_model_boundary
@@ -438,8 +451,14 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
                     except AttributeError:
                         print(f"Attribute {attr} could not be deleted.")
 
-            self.plot_grid(c='r-', label='fixed grid')
-            self.plot_obc()
+            # Plot the corrected grid
+            self.plot_grid(ax = ax, c='r-', label='fixed grid', show = False)
+
+            # Plot removed
+            ax.scatter(points_removed[:,0], points_removed[:,1], label = 'removed cells')
+
+            # Finish
+            self.plot_obc(ax = ax)
             plt.legend()
             updated_grid = True
         else:

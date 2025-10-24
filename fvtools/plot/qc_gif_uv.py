@@ -39,8 +39,8 @@ def main(filelist = None,
     Mandatory input:
     ----
     - filelist or folder
-    - sigma or z: sigma layer OR z-level to plot
-                --> if not specified, we will use ua, va instead
+    - sigma or z: (u, v) at sigma layer OR z-level to plot
+                --> if not specified, we will use (ua, va) instead
 
     Optional input:
     ----

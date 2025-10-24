@@ -5,6 +5,7 @@ description = "Collection of scripts that can be usefull when dealing with fvcom
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "ffmpeg-python",
     "affine",
     "asttokens",
     "attrs",
@@ -70,12 +71,12 @@ dependencies = [
     "xarray",
     "xyzservices",
     "chardet",
-    "cx",
     "numba",
     "progressbar2>=4.5.0",
     "jupyterlab",
     "geopandas",
     "cartopy",
     "ipympl",
-    "pykdtree"
+    "pykdtree",
+    "f90nml"
 ]
