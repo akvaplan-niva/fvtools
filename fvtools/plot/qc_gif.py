@@ -117,11 +117,15 @@ def get_input(
         **kwargs
         ):
     '''
-    Returns a dict with all keyword arguments (kwargs) needed to run surface_movie, zlevel_movie and section_movie (including filelist).
+    Returns a dict with all keyword arguments (kwargs) needed to run 
+    surface_movie, zlevel_movie and section_movie (including filelist).
 
     Example usage:
     ---
-    kwargs = get_input(folder = 'output/', start = '2019-02-01-00', stop = '2019-02-20-00', sigma = 0, var = ['salinity', 'temp'])
+    kwargs = get_input(
+        folder = 'output/', start = '2019-02-01-00', stop = '2019-02-20-00', 
+        sigma = 0, var = ['salinity', 'temp']
+        )
 
     # Make surface movie of sigma = 0
     surface_movie(**kwargs)
@@ -157,7 +161,7 @@ def surface_movie(**kwargs):
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    mmaker = FilledAnimation(**kwargs)
+    mmaker = HorizontalMaker(**kwargs)
     MovieWriter, codec = get_animator()
 
     if not kwargs['mname']:
@@ -194,7 +198,7 @@ def zlevel_movie(**kwargs):
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    mmaker = FilledAnimation(**kwargs)
+    mmaker = HorizontalMaker(**kwargs)
 
     if not kwargs['mname']:
         mname = mmaker.M.casename
@@ -207,8 +211,8 @@ def zlevel_movie(**kwargs):
         mmaker.var    = field
         widget        = [f'- Make z-level {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
         mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(kwargs['time']))
-        mmaker.get_cmap(field, kwargs['cb'], kwargs['cticks'])
         mmaker.bar.start()
+
         fig = mmaker.make_figure(dpi = kwargs['dpi'])
         anim = manimation.FuncAnimation(
             fig,
@@ -256,7 +260,9 @@ def section_movie(
 
     # Create the movie maker
     print('- Prepare the movie maker')
-    mmaker   = VerticalMaker(time, dates, List, index, ylimit = [section['h'].min()-1, 2])
+    mmaker   = VerticalMaker(time, dates, List, index, cb, ylimit = [section['h'].min()-1, 2])
+
+    # The vertical movie maker only needs to be aware of the cropped grid
     mmaker.M = C
 
     print('\nMovie maker:')
@@ -266,7 +272,7 @@ def section_movie(
         mmaker.var = field
         widget     = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
         mmaker.bar = pb.ProgressBar(widgets=widget, maxval=len(time))
-        mmaker.get_cmap(field, cb, cticks)
+
         fig   = plt.figure(figsize = (19.2, 8.74), dpi = dpi)
         mmaker.bar.start()
         anim  = manimation.FuncAnimation(
@@ -338,7 +344,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
     time, List, index  = np.empty(0), [], []
 
     # For contour plots
-    cb      = {}
+    cb = {}
     for field in var:
         cb[field]        = {}
         cb[field]['max'], cb[field]['min'] = -100, 100
@@ -397,6 +403,44 @@ def qc_fileList(files, var, start, stop, sigma = None):
                     if d.variables.get(field)[indices, :].max() > cb[field]['max']:
                         cb[field]['max'] = d.variables.get(field)[indices, :].max()
 
+    # Set colormap settings
+    for var in cb:
+        # Standard settings:
+        cb[var]['cmap'] = cmo.cm.turbid
+        cb[var]['label'] = cb[var]['units']
+        cb[var]['colorticks'] = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
+
+        # Exceptions
+        if var is 'salinity':
+            cb[var]['cmap'] = cmo.cm.haline
+
+        if var is 'temp':
+            cb[var]['cmap'] = cmo.cm.thermal
+            cb[var]['label'] = r'$^\circ$C'
+
+        if var is 'zeta':
+            cb[var]['cmap'] = cmo.tools.crop(cmo.cm.balance, cb[var]['min'], cb[var]['max'], 0)
+        
+        if 'tracer' in var:
+            cb[var]['cmap'] = cmo.cm.dense
+            cb[var]['label'] = cb[var]['units']
+
+        # Colorticks
+        if var is 'vorticity':
+            cb[var]['cmap'] = cmo.cm.curl
+            cb[var]['colorticks'] = np.linspace(-0.0001, 0.0001, 30)
+            cb[var]['label'] = '1/s'
+
+        if var is 'pv':
+            cb[var]['cmap'] = cmo.cm.curl
+            cb[var]['colorticks'] = np.linspace(-0.00001, 0.00001, 30)
+            cb[var]['label'] = '1/ms'
+
+        if var is 'sp':
+            cb[var]['cmap'] = cmo.cm.speed
+            cb[var]['colorticks'] = np.linspace(0, 0.4, 30)
+            cb[var]['label'] = 'm/s'
+
     return time, num2date(time = time), List, index, cb
 
 def parse_time_input(file_in, start, stop):
@@ -405,11 +449,15 @@ def parse_time_input(file_in, start, stop):
     """
     if start is not None:
         start_num = start.split('-')
-        start = date2num([datetime(int(start_num[0]), int(start_num[1]), int(start_num[2]), int(start_num[3]), tzinfo = timezone.utc)])
+        start = date2num(
+            [datetime(int(start_num[0]), int(start_num[1]), int(start_num[2]), int(start_num[3]), tzinfo = timezone.utc)]
+            )
 
     if stop is not None:
         stop_num = stop.split('-')
-        stop = date2num([datetime(int(stop_num[0]), int(stop_num[1]), int(stop_num[2]), int(stop_num[3]), tzinfo = timezone.utc)])
+        stop = date2num(
+            [datetime(int(stop_num[0]), int(stop_num[1]), int(stop_num[2]), int(stop_num[3]), tzinfo = timezone.utc)]
+            )
 
     return start, stop
 
@@ -459,8 +507,8 @@ def parse_input(folder = None, fname = None, filelist = None, start = None, stop
 def elements(array):
     return array.ndim and array.size
 
-#                                                      Helper classes
-# --------------------------------------------------------------------------------------------------------------------------
+#                                                    Helper classes
+# ----------------------------------------------------------------------------------------------------------------------
 class AnimationFields:
     '''
     Some fields can be read directly from the netCDF file, some must be inferred.
@@ -477,7 +525,9 @@ class AnimationFields:
         else:
             if type(self.sigma) == str:
                 if self.sigma != 'max':
-                    raise ValueError(f'sigma must either be an integer number (index) or "max", {self.sigma} is not a valid option.')
+                    raise ValueError(
+                        f'sigma must either be an integer number (index) or "max", {self.sigma} is not a valid option.'
+                        )
                 field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i]).max(axis = 0)
             else:
                field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i], sig = self.sigma)
@@ -506,57 +556,6 @@ class AnimationFields:
             self.M.load_netCDF(self.files[self.i], 'va', self.index[self.i])**2
             )
 
-class AnimationColorbars:
-    '''
-    Generic metod to retrieve colormap
-    '''
-    def get_cmap(self, var, cb, cticks):
-        '''
-        based on loaded field, choose colormap and set clim
-        '''
-        if var in 'salinity':
-            self.cmap = cmo.cm.haline
-            self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
-            self.label = 'psu'
-            
-        elif var == 'temp':
-            self.cmap = cmo.cm.thermal
-            self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
-            self.label = r'$^\circ$C'
-
-        elif var == 'zeta':
-            self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
-            self.cmap = cmo.tools.crop(cmo.cm.balance, min(self.colorticks), max(self.colorticks), 0)
-            self.label = 'm'
-
-        elif var == 'vorticity':
-            self.cmap = cmo.cm.curl
-            self.colorticks = np.linspace(-0.0001, 0.0001, 30)
-            self.label = '1/s'
-
-        elif var == 'pv':
-            self.cmap = cmo.cm.curl
-            self.colorticks = np.linspace(-0.00001, 0.00001, 30)
-            self.label = '1/ms'
-
-        elif self.var == 'sp':
-            self.cmap = cmo.cm.speed
-            self.colorticks = np.linspace(0, 0.4, 30)
-            self.label = 'm/s'
-    
-        elif 'tracer' in self.var:
-            self.cmap = cmo.cm.dense
-            self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
-            self.label = cb[var]['units']
-
-        else:
-            self.cmap = cmo.cm.turbid
-            self.colorticks = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
-            self.label = cb[var]['units']
-
-        if cticks is not None:
-            self.colorticks = cticks
-
 class GeoReference:
     '''
     Temporarilly here, I want to use this one in roms_movie as well
@@ -575,10 +574,8 @@ class GeoReference:
                 pass
         
         return georef
-
-    # Can actually also just use FVCOM_grids georeference method, look into that once we can expect cartopy on all machines.
-
-class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
+    
+class HorizontalMaker(AnimationFields, GeoReference):
     '''
     All the data needed by the 
     '''
@@ -593,6 +590,9 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         self.index, self.files, self.time, self.datetime = index, List, time, dates
         self.sigma, self.z = sigma, z
         self.xlim,  self.ylim = xlim, ylim
+
+        # Copy colormap settings
+        self.cb = cb
 
         # Prepare grid
         self.M = FVCOM_grid(List[0], reference = reference)
@@ -648,7 +648,9 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         if self.gp is not None:
             plt.imshow(self.gp.img, extent = self.gp.extent)
         if self.var in ['vorticity', 'pv', 'sp']:
-            plt.tricontour(self.M.x, self.M.y, self.M.tri, self.M.h, 40, colors = 'gray', alpha = 0.5, linewidths = 0.5, zorder = 10)
+            plt.tricontour(
+                self.M.x, self.M.y, self.M.tri, self.M.h, 40, colors = 'gray', alpha = 0.5, linewidths = 0.5, zorder = 10
+                )
         cont = self.update_figure(field = self.field, title = self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S'))
         return cont
 
@@ -662,7 +664,9 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         if self.gp is not None:
             plt.imshow(self.gp.img, extent = self.gp.extent)
         outdata = self.M.interpolate_to_z(self.field, z = self.z)
-        cont = self.update_figure(field = outdata, title = self.datetime[i].strftime('%m/%d, %H:%M:%S') + f' at {self.z} m depth')
+        cont = self.update_figure(
+            field = outdata, title = self.datetime[i].strftime('%m/%d, %H:%M:%S') + f' at {self.z} m depth'
+            )
         return cont
 
     def update_figure(self, field=None, title=None):
@@ -670,7 +674,11 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         Add cosmetics to the figure
         '''
         if field is not None:
-            cont = self.M.plot_contour(field, show = False, cmap = self.cmap, levels = self.colorticks, extend = 'both', zorder = 5)
+            cont = self.M.plot_contour(
+                field, show = False, cmap = self.cb[self.var]['cmap'], 
+                levels = self.cb[self.var]['colorticks'], 
+                extend = 'both', zorder = 5
+                )
         if self.xlim is not None and self.ylim is not None:
             plt.xlim(self.xlim)
             plt.ylim(self.ylim)
@@ -679,20 +687,27 @@ class FilledAnimation(AnimationFields, AnimationColorbars, GeoReference):
         if field is not None:
             return cont
 
-class VerticalMaker(AnimationFields, AnimationColorbars):
+class VerticalMaker(AnimationFields):
     '''
     A class that creates cross-section movies
     '''
-    def __init__(self, time, dates, List, index, ylimit = None):
+    def __init__(self, time, dates, List, index, cb, ylimit = None):
         '''
         Let the writer know which frames to make
         '''
+        self.cb = cb
         self.index = index
         self.files = List
         self.time  = time
         self.datetime = dates
         self.sigma = None # a bit of a hack
         self.ylimit = ylimit
+
+    def sigma_distance(self, out):
+        return np.insert(out['dst'], out['dst'].shape[0], np.nan, axis = 0).ravel()
+    
+    def sigma_depth(self, out):
+        return np.insert(out['h'], out['h'].shape[0], np.nan, axis = 0).ravel()
 
     def vertical_animate(self, i):
         '''
@@ -703,12 +718,21 @@ class VerticalMaker(AnimationFields, AnimationColorbars):
         plt.clf()
         self.M.zeta = self.M.load_netCDF(self.files[i], 'zeta', self.index[i])
         out = self.M.get_section_data(self.field)
-        cont = plt.contourf(out['dst'], out['h'], out['transect'], cmap = self.cmap, levels = self.colorticks, extend = 'both')
+        cont = plt.contourf(
+            out['dst'], out['h'], out['transect'], 
+            cmap = self.cb[self.var]['cmap'], 
+            levels = self.cb[self.var]['colorticks'], 
+            extend = 'both'
+            )
+
+        # Plot the sigma layers on top to show the vertical resolution as well
+        plt.plot(self.sigma_distance(out), self.sigma_depth(out), c = 'grey', lw = 0.2)
 
         # Settings
         if self.ylimit is not None:
             plt.ylim(self.ylimit)
-        plt.colorbar(cont, label = self.label)
+
+        plt.colorbar(cont, label = self.cb[self.var]['label'])
         plt.xlabel('km from start of transect')
         plt.ylabel('meter depth')
         plt.title(self.datetime[i].strftime('%m/%d, %H:%M:%S'))
