@@ -226,27 +226,29 @@ def zlevel_movie(**kwargs):
         writer = MovieWriter(fps = kwargs['fps'])
         write_movie(mmaker, anim, f'{mname}_{kwargs["z"]}m_depth', field, codec, writer)
 
-def section_movie(
-        time = None, dates = None, List = None, index = None, var = None, cb = None, 
-        section = None, section_res = None, fps = None, cticks = None, mname = None, 
-        dpi = None, reference = None, **kwargs
-        ):
+def section_movie(**kwargs):
     '''
     Plot movies from cross-sections
     '''
+    vars = dir()
+    kwargs = {}
+    for variable in vars:
+        kwargs[variable] = eval(variable)
+
     print('\nCreate the section movie')
     MovieWriter, codec = get_animator()
     
     # Find grid info
     print('- Get grid info, section points and triangulation')
-    M = FVCOM_grid(List[0], verbose = False, reference = reference, static_depth = True)
-    if section is True:
+    M = FVCOM_grid(kwargs['List'][0], verbose = False, reference = kwargs['reference'], static_depth = True)
+    if kwargs['section'] is True:
         section = None
 
-    if not mname:
+    if not kwargs['mname']:
         mname = M.casename
 
-    M.prepare_section(section_file = section, res = section_res, store_transect_img = True)
+    print('- Prepare the section')
+    M.prepare_section(section_file = kwargs['section'], res = kwargs['section_res'], store_transect_img = True)
 
     # Crop grid to a sausage covering the transect (so we don't need to load excessive amounts of data to memory)
     indices = []
@@ -254,37 +256,41 @@ def section_movie(
         indices.extend(ii[i<np.inf].tolist())
 
     # Temporarilly store x_sec and y_sec
+    print('- Subgrid to deal with smaller data amounts')
     C = M.subgrid(cells=np.unique(indices))
     C.x_sec, C.y_sec = M.x_sec, M.y_sec
     section = C.get_section_data(C.h)
 
     # Create the movie maker
     print('- Prepare the movie maker')
-    mmaker   = VerticalMaker(time, dates, List, index, cb, ylimit = [section['h'].min()-1, 2])
+    mmaker   = VerticalMaker(
+        kwargs['time'], kwargs['dates'], kwargs['List'], kwargs['index'], 
+        kwargs['cb'], ylimit = [section['h'].min()-1, 2]
+        )
 
     # The vertical movie maker only needs to be aware of the cropped grid
     mmaker.M = C
 
     print('\nMovie maker:')
-    for field in var:
+    for field in kwargs['var']:
         if field == 'zeta':
             continue
         mmaker.var = field
         widget     = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
-        mmaker.bar = pb.ProgressBar(widgets=widget, maxval=len(time))
+        mmaker.bar = pb.ProgressBar(widgets=widget, maxval=len(kwargs['time']))
 
-        fig   = plt.figure(figsize = (19.2, 8.74), dpi = dpi)
+        fig   = plt.figure(figsize = (19.2, 8.74), dpi = kwargs['dpi'])
         mmaker.bar.start()
         anim  = manimation.FuncAnimation(
             fig,
             mmaker.vertical_animate,
-            frames           = len(time),
-            save_count       = len(time),
+            frames           = len(kwargs['time']),
+            save_count       = len(kwargs['time']),
             repeat           = False,
             blit             = False,
             cache_frame_data = False
             )
-        writer = MovieWriter(fps = fps)
+        writer = MovieWriter(fps = kwargs['fps'])
         write_movie(mmaker, anim, f'{mname}_section', field, codec, writer)
 
 #                                  Helper functions
