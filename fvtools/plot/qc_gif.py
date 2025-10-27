@@ -171,7 +171,7 @@ def surface_movie(**kwargs):
         mmaker.var    = field
         widget        = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
         mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(kwargs['time']))
-        
+
         # Prepare figure
         fig = mmaker.make_figure(dpi = kwargs['dpi'])
 
@@ -682,7 +682,7 @@ class HorizontalMaker(AnimationFields, GeoReference):
         if self.xlim is not None and self.ylim is not None:
             plt.xlim(self.xlim)
             plt.ylim(self.ylim)
-        plt.colorbar(cont, label = self.label, shrink = 0.5)
+        plt.colorbar(cont, label = self.cb[self.var]['label'], shrink = 0.5)
         plt.title(title)   
         if field is not None:
             return cont
