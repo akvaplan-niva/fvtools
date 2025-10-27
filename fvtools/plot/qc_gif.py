@@ -354,6 +354,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
         with Dataset(files[0]) as d:
             cb[field]['units'] = d[field].units
 
+    # Loop over all files
     for this in files:
         with Dataset(this) as d:
             t = date2num(num2date(Itime = d['Itime'][:], Itime2 = d['Itime2'][:]))
@@ -389,7 +390,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
                 if field in ['vorticity', 'pv', 'sp']:
                     continue
                 
-                if type(sigma) is not str and sigma is not None:
+                if type(sigma) is not str and sigma is not None and field is not 'zeta':
                     if d.variables.get(field)[indices, sigma, :].min() < cb[field]['min']:
                         cb[field]['min'] = d.variables.get(field)[indices, sigma, :][:].min() 
                 
