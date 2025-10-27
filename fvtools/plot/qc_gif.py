@@ -390,7 +390,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
                 if field in ['vorticity', 'pv', 'sp']:
                     continue
                 
-                if type(sigma) is not str and sigma is not None and field is not 'zeta':
+                if type(sigma) is not str and sigma is not None and field != 'zeta':
                     if d.variables.get(field)[indices, sigma, :].min() < cb[field]['min']:
                         cb[field]['min'] = d.variables.get(field)[indices, sigma, :][:].min() 
                 
