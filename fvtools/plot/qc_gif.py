@@ -411,14 +411,14 @@ def qc_fileList(files, var, start, stop, sigma = None):
         cb[var]['colorticks'] = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
 
         # Exceptions
-        if var is 'salinity':
+        if var == 'salinity':
             cb[var]['cmap'] = cmo.cm.haline
 
-        if var is 'temp':
+        if var == 'temp':
             cb[var]['cmap'] = cmo.cm.thermal
             cb[var]['label'] = r'$^\circ$C'
 
-        if var is 'zeta':
+        if var == 'zeta':
             cb[var]['cmap'] = cmo.tools.crop(cmo.cm.balance, cb[var]['min'], cb[var]['max'], 0)
         
         if 'tracer' in var:
@@ -426,17 +426,17 @@ def qc_fileList(files, var, start, stop, sigma = None):
             cb[var]['label'] = cb[var]['units']
 
         # Colorticks
-        if var is 'vorticity':
+        if var == 'vorticity':
             cb[var]['cmap'] = cmo.cm.curl
             cb[var]['colorticks'] = np.linspace(-0.0001, 0.0001, 30)
             cb[var]['label'] = '1/s'
 
-        if var is 'pv':
+        if var == 'pv':
             cb[var]['cmap'] = cmo.cm.curl
             cb[var]['colorticks'] = np.linspace(-0.00001, 0.00001, 30)
             cb[var]['label'] = '1/ms'
 
-        if var is 'sp':
+        if var == 'sp':
             cb[var]['cmap'] = cmo.cm.speed
             cb[var]['colorticks'] = np.linspace(0, 0.4, 30)
             cb[var]['label'] = 'm/s'
