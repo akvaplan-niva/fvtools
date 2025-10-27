@@ -197,7 +197,8 @@ def zlevel_movie(**kwargs):
     '''
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
-    mmaker = HorizontalMaker(**kwargs)
+    mmaker = HorizontalMaker(**kwargs)  
+    mmaker.sigma = None
 
     if not kwargs['mname']:
         mname = mmaker.M.casename
@@ -206,7 +207,7 @@ def zlevel_movie(**kwargs):
 
     for field in kwargs['var']:
         if field in ['zeta', 'vorticity', 'pv']:
-            break
+            continue
         mmaker.var    = field
         widget        = [f'- Make z-level {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
         mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(kwargs['time']))
@@ -704,10 +705,10 @@ class VerticalMaker(AnimationFields):
         self.ylimit = ylimit
 
     def sigma_distance(self, out):
-        return np.insert(out['dst'], out['dst'].shape[0], np.nan, axis = 0).ravel()
+        return np.insert(out['dst'], out['dst'].shape[1], np.nan, axis = 1).ravel()
     
     def sigma_depth(self, out):
-        return np.insert(out['h'], out['h'].shape[0], np.nan, axis = 0).ravel()
+        return np.insert(out['h'], out['h'].shape[1], np.nan, axis = 1).ravel()
 
     def vertical_animate(self, i):
         '''
