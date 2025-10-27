@@ -171,8 +171,7 @@ def surface_movie(**kwargs):
         mmaker.var    = field
         widget        = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
         mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(kwargs['time']))
-        mmaker.get_cmap(field, kwargs['cb'], kwargs['cticks'])
-
+        
         # Prepare figure
         fig = mmaker.make_figure(dpi = kwargs['dpi'])
 
@@ -346,7 +345,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
     # For contour plots
     cb = {}
     for field in var:
-        cb[field]        = {}
+        cb[field] = {}
         cb[field]['max'], cb[field]['min'] = -100, 100
         if field in ['pv', 'vorticity', 'sp']:
             continue
