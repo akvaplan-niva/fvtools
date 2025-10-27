@@ -705,10 +705,10 @@ class VerticalMaker(AnimationFields):
         self.ylimit = ylimit
 
     def sigma_distance(self, out):
-        return np.insert(out['dst'], out['dst'].shape[1], np.nan, axis = 1).ravel()
+        return np.insert(out['dst'], out['dst'].shape[1], np.nan, axis = 1)
     
     def sigma_depth(self, out):
-        return np.insert(out['h'], out['h'].shape[1], np.nan, axis = 1).ravel()
+        return np.insert(out['h'], out['h'].shape[1], np.nan, axis = 1)
 
     def vertical_animate(self, i):
         '''
