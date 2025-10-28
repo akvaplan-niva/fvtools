@@ -230,11 +230,6 @@ def section_movie(**kwargs):
     '''
     Plot movies from cross-sections
     '''
-    vars = dir()
-    kwargs = {}
-    for variable in vars:
-        kwargs[variable] = eval(variable)
-
     print('\nCreate the section movie')
     MovieWriter, codec = get_animator()
     
