@@ -21,7 +21,10 @@ def extract2file_subset_cell_var(
     start_time=None,
     stop_time=None,
     subset=None,
-    variables=None  # e.g., ['u', 'v', 'ua', 'va'] 
+    variables=None,# e.g., ['u', 'v', 'ua', 'va']
+    cell_depths=None, # sigma layer depth at subset nodes read from grd info
+    include_depth=False, # write sigma layer depths on subset cells
+    include_ids=False  # subset cell ids
 ):
     '''
     Extract selected FVCOM cell-based variables on a subset of cells
@@ -98,6 +101,18 @@ def extract2file_subset_cell_var(
                         nc.createVariable("fvcom_time", "f4", ("time",))
                         nc.createVariable("xc", "f4", ("space",))[:] = d.variables["xc"][subset]
                         nc.createVariable("yc", "f4", ("space",))[:] = d.variables["yc"][subset]
+                        if include_ids and ("cell_id" not in nc.variables):
+                            assert len(subset) == numberOfgridPoints  # use your variable name
+                            vni = nc.createVariable("cell_id", "i4", ("space",))
+                            vni.long_name = "cell index used for sebsetting"
+                            vni[:] = np.asarray(subset, dtype=np.int32)
+                        if include_depth and (cell_depths is not None) and ("depth" not in nc.variables):
+                            nz = cell_depths.shape[1]
+                            assert cell_depths.shape == (numberOfgridPoints, nz)
+                            vnd = nc.createVariable("depth", "f4", ("space", "siglay"))
+                            vnd.long_name = "depth at sigma layers for subset cells"
+                            vnd[:] = np.asarray(cell_depths, dtype=np.float32)
+
                         var_out = nc.createVariable(var, "f4", ("space", "siglay", "time"))
                         outputs[var] = (nc, var_out)
                     elif len(shape) == 2:  # 2D (space, time)
@@ -107,6 +122,11 @@ def extract2file_subset_cell_var(
                         nc.createVariable("fvcom_time", "f4", ("time",))
                         nc.createVariable("xc", "f4", ("space",))[:] = d.variables["xc"][subset]
                         nc.createVariable("yc", "f4", ("space",))[:] = d.variables["yc"][subset]
+                        if include_ids and ("cell_id" not in nc.variables):
+                            assert len(subset) == numberOfgridPoints  # use your variable name
+                            vni = nc.createVariable("cell_id", "i4", ("space",))
+                            vni.long_name = "cell index used for sebsetting"
+
                         var_out = nc.createVariable(var, "f4", ("space", "time"))
                         outputs[var] = (nc, var_out)
                     else:

@@ -22,8 +22,11 @@ def extract2file_subset_node_var(
     start_time=None,
     stop_time=None,
     subset=None,
-    variables=None  # e.g., ['zeta', 'zisf','temp','salinity','meltrate']
-):
+    variables=None,  # e.g., ['zeta', 'zisf','temp','salinity','meltrate']
+    node_depths=None, # sigma layer depth at subset nodes read from grd info
+    include_depth=False, # write sigma layer depths on subset nodes
+    include_ids=False  # subset node ids
+    ):
 
 
     
@@ -104,6 +107,17 @@ def extract2file_subset_node_var(
                         nc.createVariable("lat", "f4", ("space",))[:] = d.variables["lat"][subset]
                         nc.createVariable("x", "f4", ("space",))[:] = d.variables["x"][subset]
                         nc.createVariable("y", "f4", ("space",))[:] = d.variables["y"][subset]
+                        if include_ids and ("node_id" not in nc.variables):
+                            assert len(subset) == numberOfgridPoints  # use your variable name
+                            vni = nc.createVariable("node_id", "i4", ("space",))
+                            vni.long_name = "node index used for sebsetting"
+                            vni[:] = np.asarray(subset, dtype=np.int32)
+                        if include_depth and (node_depths is not None) and ("node_id_depth" not in nc.variables):
+                            nz = node_depths.shape[1]
+                            assert node_depths.shape == (numberOfgridPoints, nz)
+                            vnd = nc.createVariable("depth", "f4", ("space", "siglay"))
+                            vnd.long_name = "depth at sigma layers for subset nodes"
+                            vnd[:] = np.asarray(node_depths, dtype=np.float32)
                         var_out = nc.createVariable(var, "f4", ("space", "siglay", "time"))
                         outputs[var] = (nc, var_out)
                     elif len(shape) == 2:  # 2D (space, time)
@@ -115,6 +129,11 @@ def extract2file_subset_node_var(
                         nc.createVariable("lat", "f4", ("space",))[:] = d.variables["lat"][subset]
                         nc.createVariable("x", "f4", ("space",))[:] = d.variables["x"][subset]
                         nc.createVariable("y", "f4", ("space",))[:] = d.variables["y"][subset]
+                        if include_ids and ("node_id" not in nc.variables):
+                            assert len(subset) == numberOfgridPoints  # use your variable name
+                            vni = nc.createVariable("node_id", "i4", ("space",))
+                            vni.long_name = "node index used for sebsetting"
+                            vni[:] = np.asarray(subset, dtype=np.int32)
                         var_out = nc.createVariable(var, "f4", ("space", "time"))
                         outputs[var] = (nc, var_out)
                     else:
