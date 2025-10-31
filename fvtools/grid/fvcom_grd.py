@@ -111,7 +111,7 @@ class GridLoader:
             obc_nodes = []
             if 'obc_nodes' in d.variables.keys():
                 kwargs['obc_nodes'] = list(d['obc_nodes'][:]-1) # fortran to python indexing
-            kwargs['x'], kwargs['y'], kwargs['lon'], kwargs['lat'], kwargs['tri'] = d['x'][:], d['y'][:], d['lon'][:], d['lat'][:], d['nv'][:].T-1
+            kwargs['x'], kwargs['y'], kwargs['lon'], kwargs['lat'], kwargs['tri'] = d['x'][:], d['y'][:], (d['lon'][:] + 180.0) % 360.0 - 180.0, d['lat'][:], d['nv'][:].T-1
             kwargs['h'] = d['h'][:]
             if 'siglay' in d.dimensions.keys():
                 kwargs['siglev'], kwargs['siglay'] = d['siglev'][:].T, d['siglay'][:].T
