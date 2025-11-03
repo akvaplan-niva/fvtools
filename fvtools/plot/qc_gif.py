@@ -30,7 +30,6 @@ def main(folder = None,
          section = None,
          section_res  = None,
          fps    = 12,
-         cticks = None,
          mname  = None,
          dpi    = 100,
          reference = 'epsg:32633',
@@ -65,7 +64,6 @@ def main(folder = None,
     start:        'yyyy-mm-dd-hh' string - first timestep in movie
     stop:         'yyyy-mm-dd-hh' string - last timestep in movie
     fps:          movie framerate ('out' by default)
-    cticks:       color shading levels
     section_res:  horizontal resolution of transect (if not specified, we will use 60 points)
     Report issues/bugs to hes@akvaplan.niva.no
     '''
@@ -110,7 +108,6 @@ def get_input(
         section = None,
         section_res  = None,
         fps    = 12,
-        cticks = None,
         mname  = None,
         dpi    = 100,
         reference = 'epsg:32633',
@@ -415,6 +412,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
             cb[var]['label'] = ''
         cb[var]['colorticks'] = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
         cb[var]['norm'] = None
+        cb[var]['extend'] = 'both'
 
         # Exceptions
         if var == 'salinity':
@@ -666,7 +664,8 @@ class HorizontalMaker(AnimationFields, GeoReference):
         '''
         self.bar.update(i)
         self.i = i
-        plt.clf()
+        if self.cb[self.var]['norm'] is not None:
+            plt.clf()
         if self.gp is not None:
             plt.imshow(self.gp.img, extent = self.gp.extent)
         outdata = self.M.interpolate_to_z(self.field, z = self.z)
@@ -686,13 +685,17 @@ class HorizontalMaker(AnimationFields, GeoReference):
                 cmap   = self.cb[self.var]['cmap'], 
                 norm   = self.cb[self.var]['norm'],
                 levels = self.cb[self.var]['colorticks'], 
-                extend = 'both', 
+                extend = self.cb[self.var]['extend'], 
                 zorder = 5
                 )
         if self.xlim is not None and self.ylim is not None:
             plt.xlim(self.xlim)
             plt.ylim(self.ylim)
-        plt.colorbar(cont, label = self.cb[self.var]['label'], shrink = 0.5)
+        
+        # Need to find a way to make this work for all plots...
+        if self.cb[self.var]['norm'] and self.i > 0:
+            self.cb = plt.colorbar(cont, label = self.cb[self.var]['label'], shrink = 0.5)
+
         plt.title(title)   
         if field is not None:
             return cont
@@ -759,5 +762,27 @@ class PiecewiseNorm(Normalize):
     def __call__(self, value, clip = None):
         # Linearly interpolate to get the normalized value
         return np.ma.masked_array(np.interp(value, self._levels, self._normed))
+
+# Example of how to add a custom colorbar
+if False:
+    # Make a custom colormap for this project
+    from matplotlib.colors import ListedColormap, BoundaryNorm
+    import matplotlib.pyplot as plt
+    import numpy as np
+    ranges = [0.0004, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
+    n = len(ranges)-1
+    colors_per_range = 3
+
+    sequential = ['Purples', 'Greens', 'cividis', 'Reds', 'Blues', 'RdPu']
+    colors = []
+    this_range = np.array([])
+    for i in range(n):
+        colors.extend(plt.get_cmap(sequential[i])(np.linspace(0.8, 1, 3)))
+        _rng = np.linspace(ranges[i], ranges[i+1], colors_per_range, endpoint = False)
+        this_range = np.append(this_range, _rng)
+    this_range = np.append(this_range, ranges[-1])
+
+    cmap = ListedColormap(colors)
+    norm = BoundaryNorm(this_range, cmap.N)
 
 class InputError(Exception): pass
