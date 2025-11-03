@@ -694,7 +694,7 @@ class HorizontalMaker(AnimationFields, GeoReference):
         
         # Need to find a way to make this work for all plots...
         if self.cb[self.var]['norm'] and self.i > 0:
-            self.cb = plt.colorbar(cont, label = self.cb[self.var]['label'], shrink = 0.5)
+            plt.colorbar(cont, label = self.cb[self.var]['label'], shrink = 0.5)
 
         plt.title(title)   
         if field is not None:
