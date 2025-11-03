@@ -409,8 +409,12 @@ def qc_fileList(files, var, start, stop, sigma = None):
     for var in cb:
         # Standard settings:
         cb[var]['cmap'] = cmo.cm.turbid
-        cb[var]['label'] = cb[var]['units']
+        try:
+            cb[var]['label'] = cb[var]['units']
+        except:
+            cb[var]['label'] = ''
         cb[var]['colorticks'] = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
+        cb[var]['norm'] = None
 
         # Exceptions
         if var == 'salinity':
@@ -677,9 +681,13 @@ class HorizontalMaker(AnimationFields, GeoReference):
         '''
         if field is not None:
             cont = self.M.plot_contour(
-                field, show = False, cmap = self.cb[self.var]['cmap'], 
+                field, 
+                show   = False, 
+                cmap   = self.cb[self.var]['cmap'], 
+                norm   = self.cb[self.var]['norm'],
                 levels = self.cb[self.var]['colorticks'], 
-                extend = 'both', zorder = 5
+                extend = 'both', 
+                zorder = 5
                 )
         if self.xlim is not None and self.ylim is not None:
             plt.xlim(self.xlim)
