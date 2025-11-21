@@ -423,7 +423,13 @@ def qc_fileList(files, var, start, stop, sigma = None):
             cb[var]['label'] = r'$^\circ$C'
 
         if var == 'zeta':
-            cb[var]['cmap'] = cmo.tools.crop(cmo.cm.balance, cb[var]['min'], cb[var]['max'], 0)
+            vmin = cb[var]['min']
+            vmax = cb[var]['max']
+            if vmax <0 or vmin >0:
+                cb[var]['cmap'] = cmo.cm.deep 
+            else:    
+                cb[var]['cmap'] = cmo.tools.crop(cmo.cm.balance, vmin, vmax, 0)
+
         
         if 'tracer' in var:
             cb[var]['cmap'] = cmo.cm.dense
