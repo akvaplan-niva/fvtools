@@ -186,7 +186,7 @@ def surface_movie(**kwargs):
         writer = MovieWriter(fps = kwargs['fps'])
 
         # Set framerate, write the movie
-        write_movie(mmaker, anim, f'{mname}_sigma_{kwargs['sigma']}', field, codec, writer)
+        write_movie(mmaker, anim, f'{mname}_sigma_{kwargs["sigma"]}', field, codec, writer)
 
 def zlevel_movie(**kwargs):
     '''
