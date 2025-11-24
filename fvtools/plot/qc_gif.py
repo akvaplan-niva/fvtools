@@ -638,7 +638,12 @@ class HorizontalMaker(AnimationFields, GeoReference):
         plt.clf()
         if self.gp is not None:
             plt.imshow(self.gp.img, extent = self.gp.extent)
-        cont = self.M.plot_cvs(self.field, cmap = cmo.cm.dense, verbose = False)
+        cont = self.M.plot_cvs(
+            self.field, 
+            cmap = cmo.cm.dense,
+            Norm = self.cb[self.var]['norm']
+            verbose = False
+            )
         self.update_figure(title = self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S') + f' in sigma = {self.sigma}')
         return cont
 
@@ -682,8 +687,7 @@ class HorizontalMaker(AnimationFields, GeoReference):
             cont = self.M.plot_contour(
                 field, 
                 show   = False, 
-                cmap   = self.cb[self.var]['cmap'], 
-                norm   = self.cb[self.var]['norm'],
+                cmap   = self.cb[self.var]['cmap'],
                 levels = self.cb[self.var]['colorticks'], 
                 extend = self.cb[self.var]['extend'], 
                 zorder = 5
@@ -692,9 +696,7 @@ class HorizontalMaker(AnimationFields, GeoReference):
             plt.xlim(self.xlim)
             plt.ylim(self.ylim)
         
-        # Need to find a way to make this work for all plots...
-        if self.cb[self.var]['norm'] and self.i > 0:
-            plt.colorbar(cont, label = self.cb[self.var]['label'], shrink = 0.5)
+        plt.colorbar(cont, label = self.cb[self.var]['label'], shrink = 0.5)
 
         plt.title(title)   
         if field is not None:

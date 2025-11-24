@@ -7,6 +7,8 @@ import progressbar as pb
 import geopandas as gpd
 import shapely as shp
 import networkx as nx
+import cartopy.crs as ccrs
+
 
 from pyproj import Proj, Transformer
 from netCDF4 import Dataset
@@ -1315,8 +1317,11 @@ class SectionMaker:
         if not hasattr(self, 'x_sec') and not hasattr(self, 'y_sec'):
             self.prepare_section(section_file = section_file, res = res, store_transect_img = store_transect_img)
         if not hasattr(self, 'trs'):
-            self.trs =  matplotlib.tri.Triangulation(getattr(self, f'x{self._transect_grid}'), getattr(self, f'y{self._transect_grid}'), 
-                                                     triangles = getattr(self, f'{self._transect_grid}tri'))
+            self.trs =  matplotlib.tri.Triangulation(
+                getattr(self, f'x{self._transect_grid}'), 
+                getattr(self, f'y{self._transect_grid}'), 
+                triangles = getattr(self, f'{self._transect_grid}tri')
+                )
 
     def _interpolate_2D(self, field):
         out_field = np.zeros((len(self.x_sec),))
@@ -1342,7 +1347,7 @@ class ExportGrid:
         else:
             return self.x, self.y
 
-    def write_bath(self, filename=None, latlon = False):
+    def write_bath(self, filename = None, latlon = False):
         '''
         - Generates an ascii FVCOM 5.x format bathymetry file
         '''
@@ -1357,7 +1362,7 @@ class ExportGrid:
                 f.write(line)
         print(f'  - Wrote : {filename}')
 
-    def write_grd(self, filename = None, latlon = False):
+    def write_grd(self, filename = None, latlon = False, store_z = False):
         '''
         - Generates an ascii FVCOM 5.x format grid file
         '''
@@ -1365,13 +1370,19 @@ class ExportGrid:
             filename = f'input/{self.casename}_grd.dat'
 
         x_grid, y_grid = self.get_xy(latlon)  
+        if store_z:
+            h = self.h
+        else:
+            h = np.zeros(x_grid.shape)
+            
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
             f.write(f'Cell Number = {self.cell_number}\n')
             for i, (t1, t2, t3) in enumerate(self.tri):
                 f.write(f'{i+1} {t1+1} {t2+1} {t3+1} {i}\n')
-            for i, (x, y) in enumerate(zip(x_grid, y_grid)):
-                line = str(i+1) +' '+ '{0:.6f}'.format(x) + ' ' + '{0:.6f}'.format(y) + ' ' + '{0:.6f}'.format(0.0)+'\n'
+
+            for i, (x, y, z) in enumerate(zip(x_grid, y_grid, h)):
+                line = str(i+1) +' '+ '{0:.6f}'.format(x) + ' ' + '{0:.6f}'.format(y) + ' ' + '{0:.6f}'.format(z)+'\n'
                 f.write(line)
         print(f'  - Wrote : {filename}')
 
@@ -1608,7 +1619,6 @@ class PlotFVCOM:
           - ax.add_wms(wms='https://gis.fiskeridir.no/server/services/fiskeridirWMS_akva/MapServer/WMSServer?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetCapabilities', 
                        layers=['akvakultur_lokaliteter'])
         '''
-        import cartopy.crs as ccrs
         if wms is not None:
             if wms =='raster':
                 url = 'http://openwms.statkart.no/skwms1/wms.toporaster4?version=1.3.0&service=wms&request=getcapabilities'
@@ -2177,8 +2187,10 @@ class NestROMS2FVCOM:
             d_cell.append(min(np.sqrt((self._xo-self.xc[n])**2+(self._yo-self.yc[n])**2)))
         self.weight_node = np.interp(self.d_node, distance_range, weight_range)
         self.weight_cell = np.interp(d_cell, distance_range, weight_range)
-        if np.argwhere(self.weight_node<0).size != 0: self.weight_node[np.where(self.weight_node)]=min(weight_range)
-        if np.argwhere(self.weight_cell<0).size != 0: self.weight_cell[np.where(self.weight_cell)]=min(weight_range)
+        if np.argwhere(self.weight_node<0).size != 0: 
+            self.weight_node[self.weight_node < 0] = min(weight_range)
+        if np.argwhere(self.weight_cell<0).size != 0: 
+            self.weight_cell[self.weight_cell < 0] = min(weight_range)
 
     def get_obc_nodes(self, M):
         self.node_obc_in_nest = [];

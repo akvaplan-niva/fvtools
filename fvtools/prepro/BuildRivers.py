@@ -21,7 +21,6 @@ from scipy.io import loadmat
 from scipy import interpolate
 from scipy.signal import filtfilt
 from datetime import datetime, timedelta, timezone
-from pyproj import Proj, transform
 
 from fvtools.plot.geoplot import geoplot
 
