@@ -11,7 +11,10 @@ from datetime import datetime, timedelta
 from functools import cached_property
 from netCDF4 import Dataset, num2date
 from pyproj import Proj
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+def empty_numpy_array_factory():
+    return np.empty(0)
 
 def get_roms_grid(mother, projection = None, offset = 7500):
     '''
@@ -32,6 +35,14 @@ def get_roms_grid(mother, projection = None, offset = 7500):
 
     elif mother == 'MET-NK':
         ROMS = METNorKyst()
+
+    elif mother == 'METROMS':
+        #if roms_file_path is None:
+             #raise ValueError('For METRO_ROMS, the roms_file_path must be provided.')
+        #ROMS_FILE_PATH = '/cluster/projects/nn11029k/metroms_circumpolar/ocean_avg_mean.nc'
+        #ROMS = MyMetroROMS(ROMS_FILE_PATH)    
+        ROMS = MyMetROMS() 
+        #ROMS = MyMetroROMS(roms_file_path) # Instantiate your new reader class
 
     else:
         raise InputError(f'{mother=} is not a valid option. See docstring for more info.')
@@ -439,7 +450,6 @@ class HINorKyst(ROMSbase):
     def test_day(self, date):
         '''
         See if the local file exists that day, and has enough data
-        date: datetime object
         '''
         file = self.get_norkyst_local(date)
         self.test_ncfile(file)
@@ -553,7 +563,7 @@ class NorShelf(ROMSbase):
     for accessing NorShelf data
     '''
     def __str__(self):
-        if self.avg:
+        if avg:
             return 'NorShelf daily values'
 
         else:
@@ -619,6 +629,35 @@ class NorShelf(ROMSbase):
             https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_an_"
         return https+ "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
 
+
+class MyMetROMS(ROMSbase):
+    '''
+    Custom reader for the ROMS metroms_circumpolar output file, 
+    with projection set to FVCOM's target EPSG:3031.
+    '''
+    
+    def __init__(self):
+        # 1. Store the ROMS file path
+        self._roms_file_path = '/cluster/projects/nn11029k/metroms_circumpolar/ocean_avg_mean.nc'
+        
+        # Set the target Proj object for the FVCOM grid's coordinate system (EPSG:3031)
+        # This will be used by the base class to transform ROMS Lat/Lon (WGS84) 
+        # to the FVCOM Cartesian grid (EPSG:3031).
+        self.Proj = Proj('epsg:3031') 
+        #self.Proj = 'epsg:3031'
+
+    def __str__(self):
+        return 'My Custom METROMS Output (EPSG:3031)'
+    
+    def test_day(self, date):
+        '''
+        Forces the system to use the single, known ROMS file path.
+        '''
+        self.path = self._roms_file_path
+        return self._roms_file_path
+
+
+
 # Methods for downloading data from a ROMS output file and preparing them to be interpolated to FVCOM
 # ----
 class RomsDownloader:
@@ -671,10 +710,10 @@ class RomsDownloader:
                 timestep.zeta = nc['zeta'][index_here, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
 
             if 'u' in variables:
-                timestep.u    = nc['u'][index_here, :, self.N4.m_ui:(self.N4.x_ui+1), self.N4.m_uj:(self.N4.x_uj+1)]
+                timestep.u    = nc['u'][index_here, :, self.N4.m_ui:(self.N4.x_ui+1), self.N4.m_uj:(self.N4.x_uj+1)]                
 
             if 'v' in variables:
-                timestep.v    = nc['v'][index_here, :, self.N4.m_vi:(self.N4.x_vi+1), self.N4.m_vj:(self.N4.x_vj+1)]
+                timestep.v    = nc['v'][index_here, :, self.N4.m_vi:(self.N4.x_vi+1), self.N4.m_vj:(self.N4.x_vj+1)]                
 
             if 'ua' in variables:
                 try:
@@ -746,12 +785,18 @@ class ROMSTimeStep:
     Fields we expect in other routines from this field
     '''
     netcdf_target_index: int
-    salt: np.array = np.empty(0)
-    temp: np.array = np.empty(0)
-    u: np.array = np.empty(0)
-    v: np.array = np.empty(0)
-    ua: np.array = np.empty(0)
-    va: np.array = np.empty(0)
+    #salt: np.array = np.empty(0)
+    #temp: np.array = np.empty(0)
+    #u: np.array = np.empty(0)
+    #v: np.array = np.empty(0)
+    #ua: np.array = np.empty(0)
+    #va: np.array = np.empty(0)
+    salt: np.array = field(default_factory=empty_numpy_array_factory)
+    temp: np.array = field(default_factory=empty_numpy_array_factory)
+    u: np.array = field(default_factory=empty_numpy_array_factory)
+    v: np.array = field(default_factory=empty_numpy_array_factory)
+    ua: np.array = field(default_factory=empty_numpy_array_factory)
+    va: np.array = field(default_factory=empty_numpy_array_factory)
 
 class NoAvailableData(Exception): pass
 class InputError(Exception): pass
