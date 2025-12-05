@@ -60,7 +60,7 @@ def main(M,
     print(F'- Preparing pyTMD to read results from {source}')
     model = pyTMD.io.model(
         directory = model_dir,
-        constituents = ['K2', 'N2', 'O1', 'K1', 'M2', 'S2'], 
+        constituents = ['M2', 'S2', 'K2', 'N2', 'O1', 'K1'], 
     )
     model.elevation(m = source)
 
