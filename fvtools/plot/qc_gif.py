@@ -647,7 +647,7 @@ class HorizontalMaker(AnimationFields, GeoReference):
         cont = self.M.plot_cvs(
             self.field, 
             cmap = cmo.cm.dense,
-            Norm = self.cb[self.var]['norm']
+            Norm = self.cb[self.var]['norm'],
             verbose = False
             )
         self.update_figure(title = self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S') + f' in sigma = {self.sigma}')
