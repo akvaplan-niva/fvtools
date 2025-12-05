@@ -9,7 +9,6 @@ import shapely as shp
 import networkx as nx
 import cartopy.crs as ccrs
 
-
 from pyproj import Proj, Transformer
 from netCDF4 import Dataset
 from matplotlib.collections import PatchCollection
@@ -2125,6 +2124,15 @@ class LoadNest:
                     setattr(self, key, nest[key])
             except:
                 continue
+
+        if 'info' in nest.keys():
+            self.info = nest['info']
+            try:
+                self.reference = self.info['reference']
+            except:
+                pass
+        else:
+            self.casename = 'FVCOM experiment'
 
 class NestROMS2FVCOM:
     def calcWeights(self, M, w1=2.5e-4, w2=2.5e-5):
