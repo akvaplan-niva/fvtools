@@ -1,21 +1,15 @@
 # ----------------------------------------------------------------------------------
 #              Dump data from a ROMS run to a FVCOM restart file
 # ----------------------------------------------------------------------------------
-import os
-import pyproj
 import fvtools.nesting.roms_nesting_fg as rn
 import netCDF4
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import progressbar as pb
 import fvtools.nesting.vertical_interpolation as vi
 
-from datetime import datetime, timedelta
-from time import gmtime, strftime
+from datetime import timedelta
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.grid.roms_grid import get_roms_grid
-from scipy.spatial import cKDTree as KDTree
+from pykdtree.kdtree import KDTree
 from fvtools.grid.roms_grid import RomsDownloader
 from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
 
@@ -30,8 +24,7 @@ def main(restartfile, mother, uv=False, proj='epsg:32633', latlon = False):
     uv           - set True if you want to interpolate velocity fields to the mesh
     proj         - set projection, default: epsg:32633 (UTM33)
     '''
-    # FVCOM grid object
-    # ----
+    # FVCOM and ROMS grid objects
     ROMS = get_roms_grid(mother)
 
     print(f'\nInterpolate data from {ROMS} to {restartfile}\n---')
@@ -40,7 +33,6 @@ def main(restartfile, mother, uv=False, proj='epsg:32633', latlon = False):
     ROMS.Proj = M.Proj
 
     # Fields we will interpolate to the restart file
-    # ----
     if uv:
         coords = ['rho','u','v']
         variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']
@@ -50,11 +42,9 @@ def main(restartfile, mother, uv=False, proj='epsg:32633', latlon = False):
         variables = ['salt', 'temp', 'zeta']
 
     # Load a part of the ROMS grid covering the FVCOM domain
-    # ----
     ROMS.load_grid(M.x, M.y)
 
     # Interpolation coefficients
-    # ----
     print('\nCompute interpolation coefficients')
     N4 = N4ROMSRESTART(ROMS, 
                         x = M.x, y = M.y,
@@ -66,15 +56,31 @@ def main(restartfile, mother, uv=False, proj='epsg:32633', latlon = False):
     N4.nearest4()
 
     # Land correction (we can't use ROMS land points)
-    # ---
     print('    - Adjust interpolation coefficients to remove land')
-    N4.rho_index, N4.rho_coef = N4.correct_land(N4.rho_index, N4.rho_coef, ROMS.cropped_x_rho, ROMS.cropped_y_rho, M.x, M.y, ROMS.Land_rho)
+    N4.rho_index, N4.rho_coef = N4.correct_land(
+        N4.rho_index, N4.rho_coef, 
+        ROMS.cropped_x_rho, ROMS.cropped_y_rho, 
+        M.x, M.y, 
+        ROMS.Land_rho
+        )
     if uv:
-        N4.u_index, N4.u_coef = N4.correct_land(N4.u_index, N4.u_coef, ROMS.cropped_x_u, ROMS.cropped_y_u, M.xc, M.yc, ROMS.Land_u, zero = True)
-        N4.v_index, N4.v_coef = N4.correct_land(N4.v_index, N4.v_coef, ROMS.cropped_x_v, ROMS.cropped_y_v, M.xc, M.yc, ROMS.Land_v, zero = True)
+        N4.u_index, N4.u_coef = N4.correct_land(
+            N4.u_index, N4.u_coef, 
+            ROMS.cropped_x_u, ROMS.cropped_y_u, 
+            M.xc, M.yc, 
+            ROMS.Land_u, 
+            zero = True
+            )
+        N4.v_index, N4.v_coef = N4.correct_land(
+            N4.v_index, N4.v_coef, 
+            ROMS.cropped_x_v, ROMS.cropped_y_v, 
+            M.xc, M.yc, 
+            ROMS.Land_v, 
+            zero = True
+            )
 
-    # Update FVCOM depth and ROMS depth with sea surface perturbation (i.e. tides ++) before finding vertical interpolation weights
-    # ---
+    # Update FVCOM depth and ROMS depth with sea surface perturbation (i.e. tides ++) 
+    # before finding vertical interpolation weights
     N4.FV     = M
     N4.ROMS   = ROMS
     
@@ -84,9 +90,10 @@ def main(restartfile, mother, uv=False, proj='epsg:32633', latlon = False):
     timestep  = Restarter.download(variables = variables)
 
     # Add the FVCOM grid and depth to the interpolator
-    # ---
     M.zeta = np.sum(timestep.zeta[N4.rho_index] * N4.rho_coef, axis = 1)
-    N4.h  = M.d  # Add sea surface perturbation to FVCOM, FVCOM_grid will now say that M.d = M.h + M.zeta
+    
+    # Add sea surface perturbation to FVCOM, FVCOM_grid will now say that M.d = M.h + M.zeta
+    N4.h  = M.d
     N4.FV = M
     N4.ROMS.z = timestep.zeta
 
@@ -94,7 +101,8 @@ def main(restartfile, mother, uv=False, proj='epsg:32633', latlon = False):
     N4 = vi.add_vertical_interpolation2N4(N4, coords = coords)
 
     print('\nInterpolate and store ROMS hydrography to the FVCOM restart file')
-    Restarter = Roms2FVCOMRestart(restartfile, N4, M.tri, variables, latlon, verbose=True) #re-initializing the interpolator just to make sure that everything is ready...
+    # re-initializing the interpolator just to make sure that everything is ready...
+    Restarter = Roms2FVCOMRestart(restartfile, N4, M.tri, variables, latlon, verbose=True) 
     timestep = Restarter.download(variables = variables)
     Restarter.dump(timestep, variables = variables)
     print('\n- Fin.')
