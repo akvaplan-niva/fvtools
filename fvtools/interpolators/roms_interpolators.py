@@ -2,7 +2,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from fvtools.grid.roms_grid import CropRho, CropU, CropV
 from .nearest4 import N4
-from dataclasses import dataclass
 
 class N4_interpolation(CropRho, CropU, CropV):
     '''
@@ -32,10 +31,28 @@ class N4_interpolation(CropRho, CropU, CropV):
         
         np.save('nearest4roms.npy', d)
 
+class N4nestdepth:
+    '''
+    the depth we interpolate to depends on the horizontal interpolation scheme
+    '''
+    @property
+    def fvcom_rho_dpt(self):
+        return np.sum(self.ROMS.h_rho[self.ROMS.fv_rho_mask][self.rho_index] * self.rho_coef, axis=1)
+
+    @property
+    def fvcom_u_dpt(self):
+        return np.sum(self.ROMS.h_u[self.ROMS.fv_u_mask][self.u_index] *self.u_coef, axis=1)
+
+    @property
+    def fvcom_v_dpt(self):
+        return np.sum(self.ROMS.h_v[self.ROMS.fv_v_mask][self.v_index] *self.v_coef, axis=1)
+
 class N4ROMS(N4):
     '''
     Object with indices and coefficients for ROMS to FVCOM interpolation using bilinear coefficients
     '''
+    mother = 'ROMS'
+
     # Mesh details
     # ----
     @property
@@ -121,26 +138,30 @@ class N4ROMS(N4):
             return
 
         error_occured = False
-        for field in ['rho','u','v']:
-            indices = getattr(self.ROMS, f'Land_{field}')[getattr(self, f'{field}_index')]
+        for field in ['scalar', 'uv']:
+            indices = self.GLORYS.land_mask.ravel()[getattr(self, f'{field}_index')]
             if indices.any():
                 if not error_occured:
                     plt.figure()
-                    if M is not None:
-                        M.plot_grid()
-                    else:
-                        plt.plot(self.x, self.y, 'r.', label = 'FVCOM')
+                    plt.triplot(self.x, self.y, self.tri, c = 'k', label = 'FVCOM', zorder = 100)
                     error_occured = True
-
-
-                # Plot all ROMS land points in the vicinity
-                plt.plot(getattr(self.ROMS, f'cropped_x_{field}')[getattr(self.ROMS, f'Land_{field}')], 
-                         getattr(self.ROMS, f'cropped_y_{field}')[getattr(self.ROMS, f'Land_{field}')], 'k.', zorder = 5)
+                    
+                    # Plot all ROMS land points in the vicinity
+                    plt.plot(self.data_points[:, 0], self.data_points[:, 1], 'b.', zorder = 5)
+                    plt.axis('equal')
+                
+                    # Plot all ROMS land points in the vicinity
+                    plt.plot(
+                        self.data_points[self.GLORYS.land_mask.ravel(), 0], 
+                        self.data_points[self.GLORYS.land_mask.ravel(), 1],
+                        'g.', 
+                        zorder = 5,
+                        label = f'GLORYS land'
+                    )
 
                 # Plot ROMS land points intersecting with FVCOM
-                x_roms = getattr(self.ROMS, f'cropped_x_{field}').ravel()[getattr(self, f'{field}_index')[indices]]
-                y_roms = getattr(self.ROMS, f'cropped_y_{field}').ravel()[getattr(self, f'{field}_index')[indices]]
-                plt.scatter(x_roms, y_roms, label = f'{field} points', zorder = 10)
+                int_land = self.data_points[getattr(self, f'{field}_index')[indices]]
+                plt.plot(int_land[:,0], int_land[:,1], 'r.', label = f'{field} points', zorder = 10)
 
         # After all fields have been plotted
         # ----
@@ -149,16 +170,6 @@ class N4ROMS(N4):
             plt.title('Points in ROMS land mask intersecting with FVCOM mesh')
             plt.legend(loc = 'upper right')
             raise LandError('ROMS intersects with your FVCOM experiment in the nestingzone, see the figure and adjust the mesh.')
-
-    def domain_exception_plot(self, ROMS_points):
-        '''
-        Plot that illustrates where FVCOM extends beyond ROMS
-        '''
-        plt.plot(ROMS_points[:, 0], ROMS_points[:, 1], 'r.', label = 'ROMS')
-        plt.plot(self.x, self.y, 'b.', label = 'FVCOM')
-        plt.legend()
-        plt.axis('equal')
-        plt.show(block=False)
 
     def dump(self):
         '''
@@ -196,6 +207,17 @@ class N4ROMS(N4):
             setattr(smallerN4, field, getattr(source, field))
         return smallerN4
 
+class N4ROMSNESTING(N4ROMS, N4nestdepth):
+    def __init__(self, ROMS, x = None, y = None, tri = None, uv = False, land_check=True):
+        '''
+        Initialize empty attributes
+        '''
+        self.x, self.y = x, y
+        self.tri = tri
+        self.uv = uv
+        self.land_check = land_check
+        self.ROMS = ROMS
+
 class LinearInterpolation:
     '''
     Linearly interpolate data from ROMS to FVCOM grid points
@@ -205,6 +227,7 @@ class LinearInterpolation:
     def horizontal_interpolation(self, timestep, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']):
         '''
         bi-linear interpolation from one ROMS point to another
+        - Hm... We should probably interpolate horizontally after we have interpolated vertically to get the correct depth - huh?
         '''
         zlen = timestep.salt.shape[-1]
         if 'u' in variables:
