@@ -5,20 +5,17 @@ import netCDF4
 import numpy as np
 import pandas as pd
 import progressbar as pb
-import matplotlib.pyplot as plt
 import multiprocessing as mp
 
-from numba import njit
 from time import gmtime, strftime
-from functools import cached_property
-from datetime import datetime, timedelta
-from scipy.spatial import cKDTree as KDTree
+
+from datetime import datetime
 
 # fvtools
 from fvtools.nesting import vertical_interpolation as vi
 from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
-from fvtools.gridding.prepare_inputfiles import write_FVCOM_bath
-from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
+from fvtools.interpolators.roms_interpolators import N4ROMSNESTING, LinearInterpolation
+from fvtools.nesting.matchtopo import MatchTopo
 from fvtools.grid.roms_grid import get_roms_grid, NoAvailableData, RomsDownloader, ROMSTimeStep
 
 def main(fvcom_grd,
@@ -146,33 +143,6 @@ def make_fileList(start_time, stop_time, ROMS):
 # --------------------------------------------------------------------------------------
 #                             Grid and interpolation objects
 # --------------------------------------------------------------------------------------
-class N4nestdepth:
-    '''
-    the depth we interpolate to depends on the horizontal interpolation scheme
-    '''
-    @property
-    def fvcom_rho_dpt(self):
-        return np.sum(self.ROMS.h_rho[self.ROMS.fv_rho_mask][self.rho_index] * self.rho_coef, axis=1)
-
-    @property
-    def fvcom_u_dpt(self):
-        return np.sum(self.ROMS.h_u[self.ROMS.fv_u_mask][self.u_index] *self.u_coef, axis=1)
-
-    @property
-    def fvcom_v_dpt(self):
-        return np.sum(self.ROMS.h_v[self.ROMS.fv_v_mask][self.v_index] *self.v_coef, axis=1)
-
-class N4ROMSNESTING(N4ROMS, N4nestdepth):
-    def __init__(self, ROMS, x = None, y = None, tri = None, uv = False, land_check=True):
-        '''
-        Initialize empty attributes
-        '''
-        self.x, self.y = x, y
-        self.tri = tri
-        self.uv = uv
-        self.land_check = land_check
-        self.ROMS = ROMS
-
 # Downloading and interpolating to nesting-file
 class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
     '''
@@ -245,7 +215,6 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         q.put('kill')
         pool.close()
         pool.join()
-        
 
     # Multi processing workers, listeners and managers
     # ----
@@ -301,125 +270,6 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         # Generic (in theory, one should be able to use a time-dependent weight in the nestingzone, I've never seen it done though)
         self.out.variables['weight_node'][timestep.counter, :] = self.N4.weight_node
         self.out.variables['weight_cell'][timestep.counter, :] = self.N4.weight_cell
-
-class MatchTopo:
-    def __init__(self, ROMS, M, NEST, latlon):
-        '''
-        Rutine matching ROMS depth with FVCOM depth, same-same in nestingzone,
-        but a smooth transition from ROMS to BuildCase topo on the outside of it
-        '''
-        self.M = M 
-        self.ROMS = ROMS
-        self.NEST = NEST
-        self.latlon = latlon
-
-    @property
-    def R_edge_of_nestingzone(self):
-        '''
-        R_edge_of_nestingzone is the radius from obc nodes where we will modify the bathymetry to be identical to ROMS
-        '''
-        return 2*self.NEST.R
-
-    @property
-    def R_edge_of_smoothing_zone(self):
-        '''
-        Distance from the OBC where we will use the bathymetry computed by BuildCase
-        '''
-        return 6*self.NEST.R
-    
-    @cached_property
-    def Rdst(self):
-        '''
-        The distance each node in the mesh is from the OBC
-        '''
-        obc_tree = KDTree(np.array([self.M.x[self.M.obc_nodes], self.M.y[self.M.obc_nodes]]).transpose())
-        Rdst, _ = obc_tree.query(np.array([self.M.x, self.M.y]).transpose())
-        return Rdst
-
-    @property
-    def nestingzone_nodes(self):
-        '''
-        Nodes where we will set h equal to h_roms
-        '''
-        return np.where(self.Rdst <= self.R_edge_of_nestingzone)[0]
-
-    @property
-    def transition_nodes(self):
-        '''
-        Nodes where we linearly (based on distance from the nestingzone) transition from ROMS depth to FVCOM depth
-        '''
-        return np.where(np.logical_and(self.Rdst > self.R_edge_of_nestingzone, self.Rdst <= self.R_edge_of_smoothing_zone))[0]
-
-    @property
-    def nodes_to_change(self):
-        '''
-        All nodes in the mesh where we will change the bathymetry
-        '''
-        return np.where(self.Rdst <= self.R_edge_of_smoothing_zone)[0]
-
-    @cached_property
-    def weight(self):
-        '''
-        weights for creathing a smooth bathymetry transition from ROMS to FVCOM near the nestingzone
-        '''
-        weight = np.zeros(self.M.x.shape)
-        R_outer_edge = np.max(self.Rdst[self.transition_nodes])
-
-        # Compute weights in the transition zone
-        width_transition = self.Rdst[self.nestingzone_nodes].max() - R_outer_edge
-        a = 1.0/width_transition
-        b = R_outer_edge/width_transition
-        weight[self.transition_nodes]  = a*self.Rdst[self.transition_nodes] - b
-
-        # Just to make sure that the nestingzone is 1
-        weight[self.nestingzone_nodes] = 1
-        return weight
-
-    def add_ROMS_bathymetry_to_FVCOM_and_NEST(self):
-        '''
-        Add ROMS bathymetry to the nestingzone, create a smooth transition from ROMS bathymetry to FVCOM bathymetry. 
-        Writes new bathymetry to _dpt.dat file and updates M.npy
-        '''
-        # No need to re-do this step if we already have done it...
-        try:
-            if self.M.info['true if updated by roms_nesting_fg'] == True:
-                print('  - This experiment has already been matched with ROMS bathymetry, skipping step')
-                self.match_depth_in_nest_and_model()
-                return self.M, self.NEST
-        except:
-            pass
-
-        # Prepare interpolator, add ROMS bathymetry to the transition-zone in h_roms
-        N4B = N4ROMSNESTING(self.ROMS, x = self.M.x[self.nodes_to_change], y = self.M.y[self.nodes_to_change], uv = False, land_check = False) # the depth at ROMS land is equal to min_depth
-        N4B.nearest4()
-
-        # Make copy of FVCOM bathymetry, set depth in the "to change range" equal to ROMS bathy
-        h_roms = np.copy(self.M.h)
-        h_roms[self.nodes_to_change] = np.sum(N4B.ROMS.h_rho[N4B.ROMS.fv_rho_mask][N4B.rho_index]*N4B.rho_coef, axis=1)
-
-        # Update the nodes by to their distance from the obc
-        self.M.h  = h_roms*self.weight + self.M.h*(1-self.weight)
-        self.match_depth_in_nest_and_model()
-
-        # Store the smoothed bathymetry to the mesh (ends up in casename_dep.dat)
-        self.store_bathymetry()
-        return self.M, self.NEST
-
-    def match_depth_in_nest_and_model(self):
-        '''
-        Ensures that the nest and the mother model has the same bathymetry
-        '''
-        ind = self.M.find_nearest(self.NEST.x, self.NEST.y)
-        self.NEST.h = self.M.h[ind]
-
-    def store_bathymetry(self):
-        '''
-        First to FVCOM readable input file, then update the M.npy file with the correct bathymetry
-        '''
-        self.M.write_bath(filename = f"./input/{self.M.info['casename']}_dep.dat", latlon = self.latlon)
-        print('- Updating M.npy with the new bathymetry')
-        self.M.info['true if updated by roms_nesting_fg'] = True # for later
-        self.M.to_npy()
 
 # ==============================================================================================
 #                            Write an empty output file

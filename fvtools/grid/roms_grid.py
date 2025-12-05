@@ -9,11 +9,10 @@ import time as time_mod
 
 from datetime import datetime, timedelta
 from functools import cached_property
-from netCDF4 import Dataset, num2date
-from pyproj import Proj
-from dataclasses import dataclass
+from netCDF4 import Dataset
+from dataclasses import dataclass, field
 
-def get_roms_grid(mother, projection = None, offset = 7500):
+def get_roms_grid(mother, projection = None):
     '''
     Returns a ROMS object for the mother model of question
     - we currently have readers for NorShelf (mother=NS) and the IMR- (HI-NK) and MET (MET-NK) operated NorKyst models.
@@ -746,12 +745,12 @@ class ROMSTimeStep:
     Fields we expect in other routines from this field
     '''
     netcdf_target_index: int
-    salt: np.array = np.empty(0)
-    temp: np.array = np.empty(0)
-    u: np.array = np.empty(0)
-    v: np.array = np.empty(0)
-    ua: np.array = np.empty(0)
-    va: np.array = np.empty(0)
+    salt: np.ndarray = field(default_factory=lambda: np.array([0, 0, 0]))
+    temp: np.ndarray = field(default_factory=lambda: np.array([0, 0, 0]))
+    u: np.ndarray = field(default_factory=lambda: np.array([0, 0, 0]))
+    v: np.ndarray = field(default_factory=lambda: np.array([0, 0, 0]))
+    ua: np.ndarray = field(default_factory=lambda: np.array([0, 0, 0]))
+    va: np.ndarray = field(default_factory=lambda: np.array([0, 0, 0]))
 
 class NoAvailableData(Exception): pass
 class InputError(Exception): pass

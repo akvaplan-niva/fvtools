@@ -2,15 +2,10 @@
 #       Create a file containing information about the nestgrid
 # ---------------------------------------------------------------------
 import numpy as np
-import sys
-import fvtools.grid.fvgrid as fvg
 import matplotlib.pyplot as plt
-from pyproj import Proj, transform
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from scipy.spatial import cKDTree as KDTree
 
-def main(mesh, 
-         R = None):
+def main(mesh, R = None):
     '''
     Create a "ngrd.npy" file to be read by the routines creating nesting files
 
@@ -19,26 +14,11 @@ def main(mesh,
     '''
     print('Computing nestzone metrics')
     # Store the stuff we need to create a nestingfile in this dict
-    # ----
-    M    = FVCOM_grid(mesh)
-    M.R  = R
-    FULL = {}
-
-    # Store the full grid for later
-    # ----
-    FULL['xn'] = np.copy(M.x)
-    FULL['yn'] = np.copy(M.y)
-    FULL['nv'] = np.copy(M.tri)
-    FULL['xc'] = triangulate(FULL,'xn')
-    FULL['yc'] = triangulate(FULL,'yn')
+    M = FVCOM_grid(mesh)
 
     print(f'- Number of nodestrings: {len(M.nodestrings)}')
-    # "Cut corners" on the solid sides of the nestingzone
-    # ----
-    M.oend1 = 1; M.oend2 = 1
 
     # Adjust sides
-    # ----
     circular = False
     if len(M.nodestrings) == 1:
         if M.nodestrings[0][0] == M.nodestrings[0][-1]:
@@ -46,29 +26,26 @@ def main(mesh,
             circular = True
         
     print('- Cut nestzone out of mesh')
-    NEST = adjust_sides(M, circular)
+    NEST = adjust_sides(M, circular, R)
     
     # Convert to get latlon
-    # ----
     print('- Projecting latlon')
-    NEST['lonn'], NEST['latn'] = project(NEST['xn'], NEST['yn'], to = M.info['reference'])
-    
+    NEST['lonn'], NEST['latn'] = M.Proj(NEST['xn'], NEST['yn'], inverse = True)
+
     # Get cell values
-    # ----
-    NEST['lonc'], NEST['latc'] = project(NEST['xc'], NEST['yc'], to = M.info['reference'])
+    NEST['lonc'], NEST['latc'] = M.Proj(NEST['xc'], NEST['yc'], inverse = True)
 
     # Find corresponding indices (necessary for fvcom2fvcom)
-    # ----
     print('- Find nearest mesh points:')
-    NEST['nid'], NEST['cid'] = nearest_mother(FULL, NEST)
+    NEST['nid'] = M.find_nearest(NEST['xn'], NEST['yn'], grid = 'node')
+    NEST['cid'] = M.find_nearest(NEST['xc'], NEST['yc'], grid = 'cell')
 
     # Save. (Creates a structure readable by roms_nesting and fvcom2fvcom nesting)
-    # ----
     NEST['oend1'] = 1; NEST['oend2'] = 1
     NEST['R'] = R
     NEST['info'] = {}
     NEST['info']['reference'] = M.info['reference']
-    np.save('ngrd.npy',NEST)
+    np.save('ngrd.npy', NEST)
 
     if R is not None:
         plt.figure()
@@ -79,66 +56,15 @@ def main(mesh,
 # ------------------------------------------------------------------------------------------------------------
 #                                       Subroutines
 # ------------------------------------------------------------------------------------------------------------
-def read_2dm(my2dm):
-    '''
-    Reads 2dm-file, returns basic grid info
-    '''
-    try:
-        triangle, nodes, X, Y, Z, types, nstr = fvg.read_sms_mesh(my2dm, nodestrings=True)
-    except ValueError:
-        raise ValueError('Make sure to save the file with a nodestring')
-
-    points    = np.array([X,Y]).transpose()
-    return X, Y, triangle, nstr
-
-def project(x, y, to = 'UTM33W'):
-    '''
-    Project the positions from latlon to UTM33W
-    (can be upgraded to other reference systems in the future
-    '''
-    WGS84    = Proj('epsg:4326')
-    UTM33W   = Proj(proj='utm', zone = '33', ellps='WGS84')
-    lon, lat = transform(UTM33W, WGS84, x, y, always_xy = True)
-    return lon, lat
-
-def nearest_mother(FULL,NEST):
-    '''
-    Find common indices of the nest and computation mesh
-    '''
-    # Get coordinates
-    x_me     = FULL['xn'];  y_me  = FULL['yn']
-    x_nst    = NEST['xn'];  y_nst = NEST['yn']
-
-    xc_me    = FULL['xc']; yc_me  = FULL['yc']
-    xc_nst   = NEST['xc']; yc_nst = NEST['yc']
-
-    # Store as point-arrays
-    node_nst = np.array([x_nst, y_nst]).transpose()
-    cell_nst = np.array([xc_nst,yc_nst]).transpose()
-
-    node_me  = np.array([x_me, y_me]).transpose()
-    cell_me  = np.array([xc_me,yc_me]).transpose()
-
-    print('  -> node')
-    tree              = KDTree(node_me)
-    p,inds            = tree.query(node_nst)
-    nearest_mesh_node = inds.astype(int)
-
-    print('  -> cell')
-    tree              = KDTree(cell_me)
-    p,inds            = tree.query(cell_nst)
-    nearest_mesh_cell = inds.astype(int)
-
-    return nearest_mesh_node, nearest_mesh_cell
-
-def adjust_sides(M, circular):
+def adjust_sides(M, circular, R):
     '''
     Cut of the sides of the nestingzone
     '''
     nstrs = len(M.nodestrings)
 
     print('  -> Cropping obc nodes')
-    x_obc = np.empty(0); y_obc = np.empty(0)
+    x_obc = np.empty(0); 
+    y_obc = np.empty(0)
     if circular:
         x_obc = M.x[M.nodestrings[0]]
         y_obc = M.y[M.nodestrings[0]]
@@ -149,35 +75,35 @@ def adjust_sides(M, circular):
             y_tmp = M.y[M.nodestrings[i]]
         
             # Look at the sides one-by-one
-            x_tmp, y_tmp = crop_obc(M, x_tmp, y_tmp, x_tmp[0], y_tmp[0])
-            x_tmp, y_tmp = crop_obc(M, x_tmp, y_tmp, x_tmp[-1], y_tmp[-1])
+            x_tmp, y_tmp = crop_obc(x_tmp, y_tmp, x_tmp[0], y_tmp[0], R)
+            x_tmp, y_tmp = crop_obc(x_tmp, y_tmp, x_tmp[-1], y_tmp[-1], R)
 
             x_obc = np.append(x_obc, x_tmp)
             y_obc = np.append(y_obc, y_tmp)
 
     # Find cells within R from x_obc and y_obc
-    NEST = crop_mesh(M, x_obc, y_obc)
+    NEST = crop_mesh(M, x_obc, y_obc, R)
 
     return NEST
 
-def crop_obc(M, x_obc, y_obc, xcoast, ycoast):
+def crop_obc(x_obc, y_obc, xcoast, ycoast, R):
     '''
     Make cropped nestingzone
     '''
     dist  = np.sqrt((x_obc-xcoast)**2+(y_obc-ycoast)**2)
-    inds  = np.where(dist >= 0.895*M.R)[0]
+    inds  = np.where(dist >= 0.895*R)[0]
 
     return x_obc[inds], y_obc[inds]
 
-def crop_mesh(M, x_obc, y_obc):
+def crop_mesh(M, x_obc, y_obc, R):
     '''
     Get the triangles within R from the cropped obc
     '''
     print('  -> Find the necessary cells')
     NEST_cells = []
     for i,p in enumerate(zip(M.xc, M.yc)):
-        dst = np.sqrt((x_obc-p[0])**2+(y_obc-p[1])**2)
-        ltR = np.where(dst<=M.R)[0]
+        dst = np.sqrt((x_obc - p[0])**2 + (y_obc - p[1])**2)
+        ltR = np.where(dst < R)[0]
         if len(ltR) > 0:
             NEST_cells.append(i)
 
@@ -208,6 +134,6 @@ def crop_mesh(M, x_obc, y_obc):
     dNEST['yc']  = triangulate(dNEST,'yn')
     return dNEST
 
-def triangulate(NEST,var):
+def triangulate(NEST, var):
     c = (NEST[var][NEST['nv'][:,0]] + NEST[var][NEST['nv'][:,1]] + NEST[var][NEST['nv'][:,2]])/3.0
     return c

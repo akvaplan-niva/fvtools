@@ -41,17 +41,27 @@ class Nearest4Points:
     @property
     def ball_radius(self):
         dst = np.sqrt((self.xy_source[:,0] - self.xy_source_center[0,0])**2 + (self.xy_source[:,1] - self.xy_source_center[0,1])**2)
-        return 1.3*dst[dst.argsort()[0]] # 1.3 was arbitrary, but turns ot to make sure that we only find the points we need
+        return 1.3*dst[dst.argsort()[0]] # 1.3 was arbitrary, but turns out to make sure that we only find the points we need
 
     @property
     def nearest4inds(self):
-        return self.source_tree.query_ball_point(self.source_center_tree.data[self.center_closest_to_fvcom], r = self.ball_radius)
+        '''
+        Find the nearest 4 larger scale grid model points that bound each FVCOM model point
+        '''
+        return self.source_tree.query_ball_point(
+            self.source_center_tree.data[self.center_closest_to_fvcom], 
+            r = self.ball_radius
+            )
 
 class N4(Nearest4Points):
     '''
     Used to compute the nearest 4 coefficients
     '''
-    def get_interpolation_matrices(self, xy_source=None, xy_source_center=None, xy_fvcom=None, nfvcom = None, widget_title = None):
+    def get_interpolation_matrices(
+            self, 
+            xy_source=None, xy_source_center=None, xy_fvcom=None, 
+            widget_title = None
+            ):
         '''
         Find the 4 source indices around this fvcom point, compute bi-linear interpolation coefficients to get *there*
         '''
@@ -68,6 +78,18 @@ class N4(Nearest4Points):
         # - we can't send objects to numba nopython mode, hence we must convert the np.object array to a np.ndarray
         n4indices = np.array([np.array(nearest4, dtype=np.int64) for nearest4 in self.nearest4inds], dtype=np.int64)
         return compute_interpolation_coefficients(n4indices, self.xy_source, xy_fvcom, len(xy_fvcom[:,0]))
+
+    def domain_exception_plot(self, points):
+        '''
+        Plot that illustrates where FVCOM extends beyond mother model
+        '''
+        plt.plot(points[:, 0], points[:, 1], 'r.', label = self.mother)
+        plt.plot(self.x, self.y, 'b.', label = 'FVCOM')
+        plt.legend()
+        plt.axis('equal')
+        plt.show(block=False)
+
+    # Consider adding land check logic here (should be the same for all interpolators)
 
 @njit
 def compute_interpolation_coefficients(source_indices, source_points, xy_fvcom, nfvcom):
@@ -122,20 +144,27 @@ def _rotate_subset(source_x, source_y, fvcom_x, fvcom_y):
     second_corner      = np.where(source_x == first_to_the_right)
     angle              = np.arctan2(source_y[second_corner] - source_y[first_corner], \
                                     source_x[second_corner] - source_x[first_corner])
-
+    
     # Rotate around origo
     x_tmp = (source_x - source_x[first_corner])  
     y_tmp = (source_y - source_y[first_corner])
     fx_t  = (fvcom_x  - source_x[first_corner])
     fy_t  = (fvcom_y  - source_y[first_corner])
 
-    # Rotate source coordinates
-    source_x = x_tmp*np.cos(-angle) - y_tmp*np.sin(-angle)
-    source_y = x_tmp*np.sin(-angle) + y_tmp*np.cos(-angle)
+    # Check if the corners already are straight
+    if np.min(angle) != 0:
+        # Rotate source coordinates
+        source_x = x_tmp*np.cos(-angle) - y_tmp*np.sin(-angle)
+        source_y = x_tmp*np.sin(-angle) + y_tmp*np.cos(-angle)
 
-    # Rotate FVCOM
-    fvcom_x = fx_t*np.cos(-angle) - fy_t*np.sin(-angle)
-    fvcom_y = fx_t*np.sin(-angle) + fy_t*np.cos(-angle)
+        # Rotate FVCOM
+        f_x = fx_t*np.cos(-angle) - fy_t*np.sin(-angle)
+        f_y = fx_t*np.sin(-angle) + fy_t*np.cos(-angle)
+
+        # to avoid type mismatch
+        fvcom_x = f_x[0]
+        fvcom_y = f_y[0]
+
     return source_x, source_y, fvcom_x, fvcom_y
 
 # debug, just used to show that the interpolation scheme works
