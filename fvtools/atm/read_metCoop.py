@@ -245,7 +245,7 @@ class AROMEDownloader:
             pool = mp.Pool(nprocs + 2) # +2 to make sure that we always have room for workers after listener and the watcher are added to the list
 
         # Initialize the listener
-        watcher = pool.apply_async(self._listener, (q,))
+        _ = pool.apply_async(self._listener, (q,))
 
         # Send data to workers
         jobs = []
