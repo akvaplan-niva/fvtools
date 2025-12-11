@@ -1,7 +1,8 @@
 import xarray as xr
 import numpy as np
+from .base import BaseGrid
 
-class GLORYS:
+class GLORYS(BaseGrid):
     def __init__(self, ncglorys):
         '''
         Initialize grid variables for the GLORYS model
@@ -30,35 +31,6 @@ class GLORYS:
         '''
         return np.isnan(self.depth_below_geoid)
     
-    @property
-    def lon_center(self):
-        '''
-        Longitude in the center of lat/lon cells
-        '''
-        return (self.lon[:-1,:-1] + self.lon[1:,1:])/2
-    
-    @property
-    def lat_center(self):
-        '''
-        Latitude in the center of lat/lon cells
-        '''
-        return (self.lat[:-1,:-1] + self.lat[1:,1:])/2
-    
-    @property
-    def lonlat_center(self):
-        '''
-        center coordinate as (n,2) array
-        '''
-        return np.array([self.lon_center.ravel(), self.lat_center.ravel()]).T
-    
-    @property
-    def lonlat_data(self):
-        '''
-        data coordinate as (n,2) array
-        '''
-        return np.array([self.lon.ravel(), self.lat.ravel()]).T
-    
-    # Aliases
     @property
     def h_rho(self):
         '''
