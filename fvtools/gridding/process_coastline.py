@@ -227,7 +227,7 @@ def make_coast(mp_coast, mp_sub, scale_in, coastline_out):
     # Remove unnecessary coastline
     # ---------------------------------------------------------------------
     print("\nRead subdivision scales from: %s\n" % scale_in)
-    scales    = np.loadtxt(scale_in,dtype=str)
+    scales    = np.loadtxt(scale_in, dtype=str)
 
     # The input file can have names for each subpolygon, or it can have pure
     # numbers. Better solution for people with too much on their mind to care
