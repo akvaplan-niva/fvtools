@@ -1,10 +1,10 @@
 # Object we use to load an AROME grid, and subsequently interpolate data from the AROME grid to the FVCOM mesh
-import pyproj
 import numpy as np
 from datetime import datetime
 from functools import cached_property
 from netCDF4 import Dataset
 from abc import ABC, abstractmethod
+from .base import BaseGrid
 
 def get_arome_grids(startdate, stopdate, Proj):
     # The arome grid changed feb. 5 2020
@@ -33,7 +33,7 @@ class AROMEversion(ABC):
         '''
         pass
 
-class AROMEbase:
+class AROMEbase(BaseGrid):
     '''
     When dealing with old AROME data, we need to access data stored on several grids.
     '''
@@ -53,13 +53,6 @@ class AROMEbase:
     @property
     def y_center(self):
         return ((self.y[1:,1:]+self.y[:-1,1:])/2 + (self.y[1:,:-1]+self.y[:-1,:-1])/2)/2
-
-    def crop_grid(self, xlim, ylim):
-        """Find indices of grid points inside specified domain"""
-
-        ind1 = np.logical_and(self.x >= xlim[0], self.x <= xlim[1])
-        ind2 = np.logical_and(self.y >= ylim[0], self.y <= ylim[1])
-        return np.logical_and(ind1, ind2)
 
     def crop_extended(self, xlim, ylim):
         """ 
