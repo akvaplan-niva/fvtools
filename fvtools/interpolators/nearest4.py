@@ -161,7 +161,7 @@ def _rotate_subset(source_x, source_y, fvcom_x, fvcom_y):
         f_x = fx_t*np.cos(-angle) - fy_t*np.sin(-angle)
         f_y = fx_t*np.sin(-angle) + fy_t*np.cos(-angle)
 
-        # to avoid type mismatch
+        # to avoid a numba type mismatch, we must make sure that we're not returning an array
         fvcom_x = f_x[0]
         fvcom_y = f_y[0]
 
