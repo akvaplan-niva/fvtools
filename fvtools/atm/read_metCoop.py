@@ -13,7 +13,6 @@ from fvtools.interpolators.arome_interpolators import N4AROME
 
 from time import gmtime, strftime
 from datetime import datetime, timedelta
-from functools import cached_property
 from dataclasses import dataclass
 
 '''
@@ -477,7 +476,7 @@ def create_nc_forcing_file(name, FVCOM_grd, times, latlon, epsg):
             nc.interpolation_projection = epsg
 
         # Create dimensions
-        nc.createDimension('time', 0)
+        nc.createDimension('time', None)
         nc.createDimension('node', len(FVCOM_grd.x))
         nc.createDimension('nele', len(FVCOM_grd.xc))
         nc.createDimension('three', 3)
@@ -633,7 +632,6 @@ def create_nc_forcing_file(name, FVCOM_grd, times, latlon, epsg):
         vwind_speed.grid         = 'fvcom_grid'
         vwind_speed.coordinates  = ''
         vwind_speed.type         = 'data'
-
 
         nc.variables['x'][:]    = FVCOM_grd.x
         nc.variables['y'][:]    = FVCOM_grd.y
