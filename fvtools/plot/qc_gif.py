@@ -489,7 +489,7 @@ def parse_input(folder = None, fname = None, filelist = None, start = None, stop
             if field in ['pv', 'vorticity', 'sp']:
                 continue
 
-            with Dataset(files[0]) as d:
+            with Dataset(List[0]) as d:
                 cb[field]['units'] = d[field].units
 
         # To determine colorbar limits (rewrite later on so that the code is shared with qc_fileList)
