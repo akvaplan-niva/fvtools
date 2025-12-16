@@ -6,14 +6,13 @@ import fvtools.gridding.coast as coast
 import scipy.interpolate as scint
 import scipy.ndimage as ndimage
 import pandas as pd
-import fvtools.gridding.coast as coast
 import warnings
 import subprocess
 import os
 from matplotlib.path import Path
-from matplotlib.widgets import Slider, Button, RadioButtons, TextBox
+from matplotlib.widgets import Slider, Button
 from matplotlib.path import Path
-from scipy.spatial import cKDTree as KDTree
+from pykdtree.kdtree import KDTree
 
 def read_mesh(meshfile):
     with open(meshfile) as f:
@@ -54,49 +53,44 @@ def gfunc(rmax, dfact, rfact, dev1, dev2, Ld, rcoast):
     res   = gf+rcoast 
     return res, x
 
-def distfunc(rfact    = 35.0, 
-             dfact    = 35.0, 
-             Ld       = 50.0e3,  
-             dev1     = 25.0, 
-             dev2     = 25.0, 
-             maxres   = None, 
-             strres   = None, 
-             obcnodes = None,
-             resfield = None,
-             polyparam='PolyParameters.txt',
-             boundaryfile='output/boundary.txt', 
-             islandfile='output/islands.txt'):
+def distfunc(
+        grid,
+        rfact     = 35.0, 
+        dfact     = 35.0, 
+        Ld        = 50.0e3,  
+        dev1      = 25.0, 
+        dev2      = 25.0, 
+        maxres    = None,
+        resfield  = None,
+        polyparam ='PolyParameters.txt'
+        ):
     '''
     Testing distance resolution function, plus estimate of necessary number of nodes
     All values except for rmax, Ld and rcoast can be adjusted within the widget.
 
-    res     = distfunc(rfact=3.0, dfact=12.0, Ld=4.0e5,  dev1=6.0, dev2=4.0,
+    This function is solved in the domain
+        res     = distfunc(rfact=3.0, dfact=12.0, Ld=4.0e5,  dev1=6.0, dev2=4.0,
                        rcoast=100.0)
+
+    Input:
+    grid   - domain.make_structgrid(strres, boundaryfile = boundaryfile, islandfile = islandfile)
     rfact  - factor determining the near coastal length scales
     dfact  - factor determining the middle resolution from rcoast and rmax
     Ld     - typical length from coast to obc
     dev1   - factor determining near coastal gradient, higher number=steeper curve
     dev2   - (what is this then?)
-    strres - Resolution of the structured grid used to estimate the necessary number of nodes
     '''
     # Finding the stuff neaded to estimate the number of nodes
-    if strres is None:
-        par    = pd.read_csv(polyparam, sep=';')
-        strres = (par['max_res'].max()+par['min_res'].min())/2
-
     if maxres is None:
         par    = pd.read_csv(polyparam, sep=';')
         maxres = par['max_res'].max()
-
-    grid = make_structgrid(strres, obcnodes, boundaryfile = boundaryfile, islandfile = islandfile)
 
     # Check if there is a resolution field in the input folder
     grid['resolution_field'] = None
     if resfield:
         grid = add_resfield_data(grid, resfield)
 
-    nodenum, dum  = get_numberofnodes(dfact, rfact, dev1, dev2, 
-                                      Ld, grid, maxres, strres)
+    nodenum, _  = get_numberofnodes(dfact, rfact, dev1, dev2, Ld, grid, maxres)
 
     fig, ax = plt.subplots()
     plt.subplots_adjust(bottom=0.40)
@@ -148,8 +142,7 @@ def distfunc(rfact    = 35.0,
         fig.canvas.draw_idle()
 
     def nodenr(event):
-        nodenum,theres = get_numberofnodes(sdfact.val, srfact.val, sdev1.val, 
-                                           sdev2.val, sLd.val, grid, maxres, strres)
+        nodenum,theres = get_numberofnodes(sdfact.val, srfact.val, sdev1.val, sdev2.val, sLd.val, grid, maxres)
         ax.set_title(f'You need ca. {int(nodenum)} nodes.')
 
         plt.figure()
@@ -167,84 +160,113 @@ def distfunc(rfact    = 35.0,
     giver.on_clicked(nodenr)
     plt.show(block=True)
 
-def make_structgrid(strres, obcnodes, boundaryfile='output/boundary.txt', islandfile='output/islands.txt'):
+def make_structgrid(maxgridres, gridres_levels = 5, boundaryfile='output/boundary.txt', islandfile='output/islands.txt'):
     '''
     Creates structured grids with resolution res covering the part of the domain 
     which is not covered by land.
 
-    res          = resolution of the structured grid
+    maxgridres   = maximum resolution of the structured grid
+    gridres_levels = number of resolution levels (maxgridres / 2**n)
     boundaryfile = file containing the boundary polygon
     islandfile   = file containing island polygons
     '''
     # Initiate storage:
     grid   = {}
 
-    # 1. Read the island and boundary
+    # 1. Read the island and boundary and build a KDTree for the coastline
     try:
-        pi, xi, yi, di  = coast.read_islands(islands_file   = islandfile)
+        island_pol, xi, yi, di  = coast.read_islands(islands_file   = islandfile)
     except:
         xi = np.empty(0)
         yi = np.empty(0)
         pi = np.empty(0)
-        di = np.empty(0)
+        island_pol = np.empty(0)
         print('- no islands')
-    xb, yb, db, mob, obc = coast.read_boundary(boundary_file = boundaryfile)
 
+    island_pol = np.array(island_pol)
+    unique_islands = np.unique(island_pol)
+    island_paths = []
+    for i in unique_islands:
+        island_paths.append(Path(np.array([xi[island_pol==i],yi[island_pol==i]]).T))
+
+    xb, yb, db, _, _ = coast.read_boundary(boundary_file = boundaryfile)
     grid['coast_x']   = np.append(xi, xb)
     grid['coast_y']   = np.append(yi, yb)
     grid['coast_res'] = np.append(di, db)
+    grid['x']      = np.empty(0)
+    grid['y']      = np.empty(0)
+    grid['strres'] = np.empty(0)
+    coasttree = KDTree(np.array([grid['coast_x'], grid['coast_y']]).T)
 
-    # 2. Create structured mesh covering everything
-    tmp    = np.array(np.meshgrid(np.arange(xb.min(),xb.max()+strres, strres),
-                                  np.arange(yb.min(),yb.max()+strres, strres)))
-    xarr   = np.ravel(tmp[0,:,:])
-    yarr   = np.ravel(tmp[1,:,:])
+    # We use 5 different resolution levels
+    gridres = [int(maxgridres/(2**n)) for n in range(gridres_levels)]
+    struct_trees   = {} 
 
-    # 3. Remove points falling outside the domain or within islands
-    #    i.  Outside the outer boundary
-    p      = Path(np.array([xb,yb]).T)
-    flags  = p.contains_points(np.array([xarr,yarr]).T)
-    xarr   = xarr[flags]
-    yarr   = yarr[flags]
-    
-    #    ii. Points inside islands
-    pi = np.array(pi)
-    for i in np.unique(pi):
-        p     = Path(np.array([xi[pi==i],yi[pi==i]]).T)
-        flags = p.contains_points(np.array([xarr,yarr]).T)
-        xarr  = xarr[flags==False]; yarr = yarr[flags==False]
+    print('Creating a structured grid for')
+    for strres in gridres:
+        print(f'- {strres} m')
+        x, y = np.array(
+            np.meshgrid(
+                np.arange(xb.min(),xb.max() + strres, strres),
+                np.arange(yb.min(),yb.max() + strres, strres)
+                )
+                )
+        xarr   = x.ravel()
+        yarr   = y.ravel()
+        
+        # 3. Remove points falling outside the domain, within islands or within existing ocean grid points
+        # i.  Outside the outer boundary
+        print('  - Removing points outside of the model domain.')
+        p     = Path(np.array([xb,yb]).T)
+        flags = p.contains_points(np.array([xarr, yarr]).T)
+        xarr  = xarr[flags]
+        yarr  = yarr[flags]
 
-    grid['x'] = xarr
-    grid['y'] = yarr
+        if strres != min(gridres):
+            d, _ = coasttree.query(np.array([xarr, yarr]).T)
+            xarr = xarr[d > strres]
+            yarr = yarr[d > strres]
+            
+        # ii. Within existing struct grid cell
+        if any(struct_trees):
+            for res in struct_trees:
+                # Do not consider points that are ocean in a coarser grid
+                d, index = struct_trees[res]['tree'].query(np.array([xarr, yarr]).T)
 
+                # Remove points that are very close to existing ocean points
+                is_ocean_in_coarse = struct_trees[res]['ocean'][index]
+                is_ocean_in_coarse[d > res/2 + strres/2] = False
+        
+                # To avoid duplicate resolution estimates
+                xarr = xarr[~is_ocean_in_coarse]
+                yarr = yarr[~is_ocean_in_coarse]
+        
+        # Create a KDTree for this resolution bracket
+        struct_trees[strres] = {}
+        struct_trees[strres]['tree']  = KDTree(np.array([xarr, yarr]).T)
+        struct_trees[strres]['ocean'] = np.zeros(len(xarr), dtype = bool)
+        
+        # iii. Points inside islands
+        print(f'  - Removing points that are within islands. Starting with {len(xarr)} points.')
+        for p in island_paths:
+            flags = p.contains_points(np.array([xarr, yarr]).T)
+            xarr  = xarr[flags==False]
+            yarr  = yarr[flags==False]
+
+        # Only proceed if there are any points left...
+        if not any(xarr):
+            _ = struct_trees.pop(strres)
+            continue
+        
+        # Tag which of these points are on land
+        print(f'  - Added {len(xarr)} points to the resolution estimate grid.')
+        _, index = struct_trees[strres]['tree'].query(np.array([xarr, yarr]).T)
+        struct_trees[strres]['ocean'][index] = True
+        grid['x']      = np.append(grid['x'], xarr)
+        grid['y']      = np.append(grid['y'], yarr)
+        grid['strres'] = np.append(grid['strres'], strres * np.ones(len(xarr)))
+    print(f'Finished, we now have {len(grid['x'])} resolution grid points')
     return grid
-
-def structured_subdomains(xarr,yarr,dst,rcoast,areas):
-    '''
-    Divides grid into subdomains. Probably not needed anymore.
-    '''
-    area = []; indices = []
-    for (index,tmp) in enumerate(areas):
-        area.append(tmp)
-        indices.append(index)
-    
-    grids     = dict(type='Subdomain grids',grids=[])
-    xcov      = []; ycov  = []; dcov= []
-    remaining = np.ones(xarr.shape,dtype=bool)
-    for i in indices:
-        p     = Path(np.array(area[i].exterior.coords.xy).transpose())
-        flags = p.contains_points(zip(xarr,yarr))
-        tmpd  = dict(type='Subdomain '+str(i), x = xarr[flags], y = yarr[flags], 
-                     ds = dst[flags], rc = rcoast[flags])
-        grids['grids'].append(tmpd)
-        remaining[flags] = False
-
-    if len(xarr[remaining] > 0):
-        tmpd = dict(type='Remaining',x=xarr[remaining], y = yarr[remaining], 
-                    ds = dst[remaining], rc = rcoast[remaining])
-        grids['grids'].append(tmpd)
-    
-    return grids
 
 def read_domainres(grids=None, filename='PolyParameters.txt'):
     par    = pd.read_csv(filename,sep=';')
@@ -254,52 +276,55 @@ def read_domainres(grids=None, filename='PolyParameters.txt'):
         n_it = 1
     else:
         n_it   = len(grids['grids'])
-    minr   = []
-    maxr   = []
+        
     if (n_it) > len(minres):
         # The outermost grid may not be completely covered by the polygons.
         smin    = pd.Series([max(minres)],index=[n_it-1])
         smax    = pd.Series([max(maxres)],index=[n_it-1])
-        minrres = minres.append(smin)
-        maxrres = maxres.append(smax)
+        minres = minres.append(smin)
+        maxres = maxres.append(smax)
 
     return minres, maxres
     
-def get_numberofnodes(dfact, rfact, dev1, dev2, Ld, grid, rmax, resolution):
+def get_numberofnodes(dfact, rfact, dev1, dev2, Ld, grid, rmax):
     '''
     Just taking the distance from nearest coast into account.
     The result will be more realistic when including stuff like topores
     and pointres in the calculation.
     '''
-    # 1. The surface area of each gridpoint is res**2
-    area       = float(resolution**2) # To avoid integer errors
     nodes      = 0.0
     theres     = []
     x          = []
     y          = []
+    coast_tree = KDTree(np.array([grid['coast_x'], grid['coast_y']]).T)
 
     for n in range(len(grid['x'])):
-        res  = distfunc_onepoint(grid, 
-                                 grid['x'][n], 
-                                 grid['y'][n], 
-                                 dfact = dfact, 
-                                 rfact = rfact, 
-                                 dev1 = dev1, 
-                                 dev2 = dev2, 
-                                 Ld = Ld, 
-                                 rmax = rmax)
+        res  = distfunc_onepoint(
+            grid, 
+            grid['x'][n], 
+            grid['y'][n], 
+            coast_tree,
+            dfact = dfact, 
+            rfact = rfact, 
+            dev1 = dev1, 
+            dev2 = dev2, 
+            Ld = Ld, 
+            rmax = rmax,
+            )
     
         if grid['resolution_field'] is not None:
             res = min(res, grid['resolution_field'][n])
 
         Atri   = (np.sqrt(3.0)/4.0)*res**2
-        nodes += area/Atri
+        # 1. The surface area of each gridpoint is grid_res**2, the number of triangles needed to
+        #    cover that area is grid_res**2 / triangle_area
+        nodes += float(grid['strres'][n]**2)/Atri
         theres.append(res)
 
     # Develop: Adjustable colorbar
     # --------------------------------------------------------------------
     plt.figure()
-    plt.scatter(grid['x'],grid['y'],1,theres)
+    plt.scatter(grid['x'], grid['y'], 1, theres)
     plt.axis('equal')
     plt.title('Resolution in the domain.')
     plt.xticks([])
@@ -312,10 +337,14 @@ def get_numberofnodes(dfact, rfact, dev1, dev2, Ld, grid, rmax, resolution):
     print(f'--> We need ~{int(nodes/1.8)} nodes.')
     return int(nodes/1.8), theres
 
-def distfunc_onepoint(grid, xp, yp, rfact=3.0, dfact=12.0, Ld=4.0e5,  dev1=4.0, dev2=4.0, 
-                      rmax=2400.0):
+def distfunc_onepoint(
+        grid, xp, yp, coast_tree, rfact=3.0, dfact=12.0, Ld=4.0e5,  dev1=4.0, dev2=4.0, rmax=2400.0
+        ):
     # 1. Find the distance from point to coast
-    x = np.sqrt((grid['coast_x']-xp)**2+(grid['coast_y']-yp)**2)
+    # --> We realistically don't need to assess the distance to all nearby
+    x, _ = coast_tree.query(
+        np.array([xp, yp])[:,None].T, k = 2000
+    )
 
     # 2. Solve gfunc
     r2    = rmax / rfact
