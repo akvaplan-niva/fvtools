@@ -513,6 +513,53 @@ def parse_input(folder = None, fname = None, filelist = None, start = None, stop
                         if d.variables.get(field)[:, :].max() > cb[field]['max']:
                             cb[field]['max'] = d.variables.get(field)[:, :].max()
 
+        for var in cb:
+            # Standard settings:
+            cb[var]['cmap'] = cmo.cm.turbid
+            try:
+                cb[var]['label'] = cb[var]['units']
+            except:
+                cb[var]['label'] = ''
+            cb[var]['colorticks'] = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
+            cb[var]['norm'] = None
+            cb[var]['extend'] = 'both'
+
+            # Exceptions
+            if var == 'salinity':
+                cb[var]['cmap'] = cmo.cm.haline
+
+            if var == 'temp':
+                cb[var]['cmap'] = cmo.cm.thermal
+                cb[var]['label'] = r'$^\circ$C'
+
+            if var == 'zeta':
+                vmin = cb[var]['min']
+                vmax = cb[var]['max']
+                if vmax <0 or vmin >0:
+                    cb[var]['cmap'] = cmo.cm.deep 
+                else:    
+                    cb[var]['cmap'] = cmo.tools.crop(cmo.cm.balance, vmin, vmax, 0)
+
+            
+            if 'tracer' in var:
+                cb[var]['cmap'] = cmo.cm.dense
+                cb[var]['label'] = cb[var]['units']
+
+            # Colorticks
+            if var == 'vorticity':
+                cb[var]['cmap'] = cmo.cm.curl
+                cb[var]['colorticks'] = np.linspace(-0.0001, 0.0001, 30)
+                cb[var]['label'] = '1/s'
+
+            if var == 'pv':
+                cb[var]['cmap'] = cmo.cm.curl
+                cb[var]['colorticks'] = np.linspace(-0.00001, 0.00001, 30)
+                cb[var]['label'] = '1/ms'
+
+            if var == 'sp':
+                cb[var]['cmap'] = cmo.cm.speed
+                cb[var]['colorticks'] = np.linspace(0, 0.4, 30)
+                cb[var]['label'] = 'm/s'
 
     else:
         if folder is not None:
