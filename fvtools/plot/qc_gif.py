@@ -480,21 +480,39 @@ def parse_input(folder = None, fname = None, filelist = None, start = None, stop
         # ----
         fl = Filelist(filelist, start, stop)
         time, dates, List, index = fl.time, fl.datetime, fl.path, fl.index        
-        
-        # Prepare the colorbar (quick version)
+
+        # For contour plots
         cb = {}
-        d_min = Dataset(List[0])
-        d_max = Dataset(List[-1])
         for field in var:
-            if field in ['vorticity','pv']:
-                continue
             cb[field] = {}
-            cb[field]['max'] = max(d_min[field][:].max(), d_max[field][:].max())
-            cb[field]['min'] = min(d_min[field][:].min(), d_max[field][:].min())
-            if field == 'salinity':
-                cb['salinity']['min'] = 29
-            with Dataset(fl.path[0]) as d:
+            cb[field]['max'], cb[field]['min'] = -100, 100
+            if field in ['pv', 'vorticity', 'sp']:
+                continue
+
+            with Dataset(files[0]) as d:
                 cb[field]['units'] = d[field].units
+
+        # To determine colorbar limits (rewrite later on so that the code is shared with qc_fileList)
+        for file in [List[0], List[-1]]:
+            with Dataset(file) as d:
+                for field in var:
+                    if field in ['vorticity', 'pv', 'sp']:
+                        continue
+                    
+                    if type(sigma) is not str and sigma is not None and field != 'zeta':
+                        if d.variables.get(field)[:, sigma, :].min() < cb[field]['min']:
+                            cb[field]['min'] = d.variables.get(field)[:, sigma, :][:].min() 
+                    
+                        if d.variables.get(field)[:, sigma, :].max() > cb[field]['max']:
+                            cb[field]['max'] = d.variables.get(field)[:, sigma, :][:].max()
+                    
+                    else:
+                        if d.variables.get(field)[:, :].min() < cb[field]['min']:
+                            cb[field]['min'] = d.variables.get(field)[:, :].min() 
+                    
+                        if d.variables.get(field)[:, :].max() > cb[field]['max']:
+                            cb[field]['max'] = d.variables.get(field)[:, :].max()
+
 
     else:
         if folder is not None:
