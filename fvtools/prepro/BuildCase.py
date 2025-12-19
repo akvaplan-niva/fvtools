@@ -119,7 +119,7 @@ class DepthHandler:
         if np.argwhere(np.isnan(h_raw)).size > 0:
             print(f'Nan found in h_raw. Nans are set to {self.min_depth} m. '+\
                   'Consider using a better bathymetry that has good coverage of the entire domain.'+\
-                  'Number of nans found: {np.argwhere(np.isnan(h_raw)).size}')
+                  f'Number of nans found: {np.argwhere(np.isnan(h_raw)).size}')
             h_raw[np.argwhere(np.isnan(h_raw))] = self.min_depth
         self.h_raw = h_raw
 
@@ -492,6 +492,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
     Sources:
         2dm file:      {self.filepath}
          - projection: {self.dm_projection}
+
         depth file:    {self.depth_file}
          - projection: {self.depth_projection}
 
