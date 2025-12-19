@@ -39,7 +39,7 @@ def make_bathymetry(save_name,
         nearest = find_nearest(baty.x, baty.y, b.x, b.y)
         notTooClose = nearest[0] >= ds
         b = b[notTooClose]
-        baty = baty.append(b)
+        baty = baty._append(b)
     
     if add_coast:
         print('Add coastline')
@@ -61,9 +61,9 @@ def add_gridded50(baty,
     xyz_files = [f for f in infolder if f.split('.')[-1]=='xyz'] # xyz-files in folder
     for f in xyz_files:
         print(f)
-        data = pd.read_csv(os.path.join(datafolder, f), sep=' ', names=['x', 'y', 'z'])
+        data = pd.read_csv(os.path.join(datafolder, f), sep=' ', names=['x', 'y', 'z'], on_bad_lines='skip')
         data = crop_data(data, lon_lim, lat_lim)
-        baty = baty.append(data)
+        baty = baty._append(data)
 
     baty['source'] = 'g'
     return baty
@@ -81,13 +81,13 @@ def add_primaer(baty,
     xyz_files = [f for f in infolder if f.split('.')[-1]=='xyz'] # xyz-files in folder
     for f in xyz_files:
         print(f)
-        data = pd.read_csv(os.path.join(datafolder, f), sep=',')
+        data = pd.read_csv(os.path.join(datafolder, f), sep=',', on_bad_lines='skip')
         data = crop_data(data, lon_lim, lat_lim)
         if len(data)>0:
             nearest = find_nearest(baty.x, baty.y, data.x, data.y)
             notTooClose = nearest[0] >= ds
             data = data[notTooClose]
-            baty = baty.append(data)
+            baty = baty._append(data)
 
     return baty
 
@@ -101,7 +101,7 @@ def find_nearest(x, y, xi, yi):
 def crop_data(data, 
               lon_lim, 
               lat_lim, 
-              proj="+proj=utm +zone=33W, +north +ellps=WGS84 +datum=WGS84 +units=m +no_defs"):
+              proj="epsg:32633"):
     
     '''Remove data outside given limits.'''
 
@@ -147,6 +147,5 @@ def add_coastline(topo, coast_file):
     
     xy = pd.DataFrame({'x': x, 'y': y, 'z': z, 'source': source})
 
-    topo = topo.append(xy)
+    topo = topo._append(xy)
     return topo
-    
