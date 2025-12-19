@@ -32,6 +32,7 @@ def main(folder = None,
          fps    = 12,
          mname  = None,
          dpi    = 100,
+         nlevels = 20,
          reference = 'epsg:32633',
          **kwargs):
     '''
@@ -65,6 +66,8 @@ def main(folder = None,
     stop:         'yyyy-mm-dd-hh' string - last timestep in movie
     fps:          movie framerate ('out' by default)
     section_res:  horizontal resolution of transect (if not specified, we will use 60 points)
+    dpi:          pixels pr inch
+    nlevels:      number of contour levels
     Report issues/bugs to hes@akvaplan.niva.no
     '''
     # Copy the input to a dictionary
@@ -110,12 +113,15 @@ def get_input(
         fps    = 12,
         mname  = None,
         dpi    = 100,
+        nlevels = 20,
         reference = 'epsg:32633',
         **kwargs
         ):
     '''
     Returns a dict with all keyword arguments (kwargs) needed to run 
     surface_movie, zlevel_movie and section_movie (including filelist).
+    
+    See .main for input descriptions
 
     Example usage:
     ---
@@ -308,6 +314,70 @@ def get_animator():
         raise ValueError('None of the standard animators are available, can not make the movie')
     return FuncAnimation, codec
 
+def initialize_cb(file, var):
+    '''create the colorbar handler'''
+    cb = {}
+    for field in var:
+        cb[field] = {}
+        cb[field]['max'], cb[field]['min'] = -100, 100
+        if field in ['pv', 'vorticity', 'sp']:
+            continue
+
+        with Dataset(file) as d:
+            cb[field]['units'] = d[field].units
+    return var
+
+def setup_colorbar(cb, var, nlevels = 30):
+    '''Set colormap, colorticks etc.'''
+    for var in cb:
+        # Standard settings:
+        cb[var]['cmap'] = cmo.cm.turbid
+        try:
+            cb[var]['label'] = cb[var]['units']
+        except:
+            cb[var]['label'] = ''
+        cb[var]['colorticks'] = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/nlevels, nlevels)
+        cb[var]['norm'] = None
+        cb[var]['extend'] = 'both'
+
+        # Exceptions
+        if var == 'salinity':
+            cb[var]['cmap'] = cmo.cm.haline
+
+        if var == 'temp':
+            cb[var]['cmap'] = cmo.cm.thermal
+            cb[var]['label'] = r'$^\circ$C'
+
+        if var == 'zeta':
+            vmin = cb[var]['min']
+            vmax = cb[var]['max']
+            if vmax <0 or vmin >0:
+                cb[var]['cmap'] = cmo.cm.deep 
+            else:    
+                cb[var]['cmap'] = cmo.tools.crop(cmo.cm.balance, vmin, vmax, 0)
+
+        
+        if 'tracer' in var:
+            cb[var]['cmap'] = cmo.cm.dense
+            cb[var]['label'] = cb[var]['units']
+
+        # Colorticks
+        if var == 'vorticity':
+            cb[var]['cmap'] = cmo.cm.curl
+            cb[var]['colorticks'] = np.linspace(-0.0001, 0.0001, nlevels)
+            cb[var]['label'] = '1/s'
+
+        if var == 'pv':
+            cb[var]['cmap'] = cmo.cm.curl
+            cb[var]['colorticks'] = np.linspace(-0.00001, 0.00001, nlevels)
+            cb[var]['label'] = '1/ms'
+
+        if var == 'sp':
+            cb[var]['cmap'] = cmo.cm.speed
+            cb[var]['colorticks'] = np.linspace(0, 0.4, nlevels)
+            cb[var]['label'] = 'm/s'
+    return cb
+
 def write_movie(mmaker, anim, mname, field, codec, writer):
     if mname is None:
         mname = mmaker.M.casename
@@ -326,7 +396,7 @@ def allFiles(folder):
     ncfiles = [folder + file for file in ncfiles]
     return ncfiles
 
-def qc_fileList(files, var, start, stop, sigma = None):
+def qc_fileList(files, var, start, stop, sigma = None, nlevels = None):
     '''
     Take a timestep, couple it to a file
     - files: FileList
@@ -342,15 +412,7 @@ def qc_fileList(files, var, start, stop, sigma = None):
     time, List, index  = np.empty(0), [], []
 
     # For contour plots
-    cb = {}
-    for field in var:
-        cb[field] = {}
-        cb[field]['max'], cb[field]['min'] = -100, 100
-        if field in ['pv', 'vorticity', 'sp']:
-            continue
-
-        with Dataset(files[0]) as d:
-            cb[field]['units'] = d[field].units
+    cb = initialize_cb(files[0], var)
 
     # Loop over all files
     for this in files:
@@ -403,57 +465,11 @@ def qc_fileList(files, var, start, stop, sigma = None):
                         cb[field]['max'] = d.variables.get(field)[indices, :].max()
 
     # Set colormap settings
-    for var in cb:
-        # Standard settings:
-        cb[var]['cmap'] = cmo.cm.turbid
-        try:
-            cb[var]['label'] = cb[var]['units']
-        except:
-            cb[var]['label'] = ''
-        cb[var]['colorticks'] = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
-        cb[var]['norm'] = None
-        cb[var]['extend'] = 'both'
-
-        # Exceptions
-        if var == 'salinity':
-            cb[var]['cmap'] = cmo.cm.haline
-
-        if var == 'temp':
-            cb[var]['cmap'] = cmo.cm.thermal
-            cb[var]['label'] = r'$^\circ$C'
-
-        if var == 'zeta':
-            vmin = cb[var]['min']
-            vmax = cb[var]['max']
-            if vmax <0 or vmin >0:
-                cb[var]['cmap'] = cmo.cm.deep 
-            else:    
-                cb[var]['cmap'] = cmo.tools.crop(cmo.cm.balance, vmin, vmax, 0)
-
-        
-        if 'tracer' in var:
-            cb[var]['cmap'] = cmo.cm.dense
-            cb[var]['label'] = cb[var]['units']
-
-        # Colorticks
-        if var == 'vorticity':
-            cb[var]['cmap'] = cmo.cm.curl
-            cb[var]['colorticks'] = np.linspace(-0.0001, 0.0001, 30)
-            cb[var]['label'] = '1/s'
-
-        if var == 'pv':
-            cb[var]['cmap'] = cmo.cm.curl
-            cb[var]['colorticks'] = np.linspace(-0.00001, 0.00001, 30)
-            cb[var]['label'] = '1/ms'
-
-        if var == 'sp':
-            cb[var]['cmap'] = cmo.cm.speed
-            cb[var]['colorticks'] = np.linspace(0, 0.4, 30)
-            cb[var]['label'] = 'm/s'
+    cb = setup_colorbar(cb, var, nlevels = nlevels)
 
     return time, num2date(time = time), List, index, cb
 
-def parse_time_input(file_in, start, stop):
+def parse_time_input(start, stop):
     """
     Translate time input to FVCOM time
     """
@@ -471,7 +487,7 @@ def parse_time_input(file_in, start, stop):
 
     return start, stop
 
-def parse_input(folder = None, fname = None, filelist = None, start = None, stop = None, sigma = None, var = None, **kwargs):
+def parse_input(folder = None, fname = None, filelist = None, start = None, stop = None, sigma = None, var = None, nlevels = None **kwargs):
     '''
     Return the fields the routine expects
     '''
@@ -482,15 +498,7 @@ def parse_input(folder = None, fname = None, filelist = None, start = None, stop
         time, dates, List, index = fl.time, fl.datetime, fl.path, fl.index        
 
         # For contour plots
-        cb = {}
-        for field in var:
-            cb[field] = {}
-            cb[field]['max'], cb[field]['min'] = -100, 100
-            if field in ['pv', 'vorticity', 'sp']:
-                continue
-
-            with Dataset(List[0]) as d:
-                cb[field]['units'] = d[field].units
+        cb = initialize_cb(List[0], var)
 
         # To determine colorbar limits (rewrite later on so that the code is shared with qc_fileList)
         for file in [List[0], List[-1]]:
@@ -513,54 +521,8 @@ def parse_input(folder = None, fname = None, filelist = None, start = None, stop
                         if d.variables.get(field)[:, :].max() > cb[field]['max']:
                             cb[field]['max'] = d.variables.get(field)[:, :].max()
 
-        for var in cb:
-            # Standard settings:
-            cb[var]['cmap'] = cmo.cm.turbid
-            try:
-                cb[var]['label'] = cb[var]['units']
-            except:
-                cb[var]['label'] = ''
-            cb[var]['colorticks'] = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/50, 50)
-            cb[var]['norm'] = None
-            cb[var]['extend'] = 'both'
-
-            # Exceptions
-            if var == 'salinity':
-                cb[var]['cmap'] = cmo.cm.haline
-
-            if var == 'temp':
-                cb[var]['cmap'] = cmo.cm.thermal
-                cb[var]['label'] = r'$^\circ$C'
-
-            if var == 'zeta':
-                vmin = cb[var]['min']
-                vmax = cb[var]['max']
-                if vmax <0 or vmin >0:
-                    cb[var]['cmap'] = cmo.cm.deep 
-                else:    
-                    cb[var]['cmap'] = cmo.tools.crop(cmo.cm.balance, vmin, vmax, 0)
-
-            
-            if 'tracer' in var:
-                cb[var]['cmap'] = cmo.cm.dense
-                cb[var]['label'] = cb[var]['units']
-
-            # Colorticks
-            if var == 'vorticity':
-                cb[var]['cmap'] = cmo.cm.curl
-                cb[var]['colorticks'] = np.linspace(-0.0001, 0.0001, 30)
-                cb[var]['label'] = '1/s'
-
-            if var == 'pv':
-                cb[var]['cmap'] = cmo.cm.curl
-                cb[var]['colorticks'] = np.linspace(-0.00001, 0.00001, 30)
-                cb[var]['label'] = '1/ms'
-
-            if var == 'sp':
-                cb[var]['cmap'] = cmo.cm.speed
-                cb[var]['colorticks'] = np.linspace(0, 0.4, 30)
-                cb[var]['label'] = 'm/s'
-
+        # Finish colorbar setup
+        cb = setup_colorbar(cb, var, nlevels = nlevels)
     else:
         if folder is not None:
             files = allFiles(folder)
@@ -570,10 +532,10 @@ def parse_input(folder = None, fname = None, filelist = None, start = None, stop
             raise InputError('You must provide the routine one of: folder, fname or filelist')
 
         # Prepare time (string to fvcom time)
-        start, stop = parse_time_input(files[0], start, stop)
+        start, stop = parse_time_input(start, stop)
 
         # Couple file to timestep
-        time, dates, List, index, cb = qc_fileList(files, var, start, stop, sigma = sigma)
+        time, dates, List, index, cb = qc_fileList(files, var, start, stop, sigma = sigma, nlevels = nlevels)
 
     print(f"Start: {dates[0].strftime('%d/%B-%Y, %H:%M:%S')}")
     print(f"End:   {dates[-1].strftime('%d/%B-%Y, %H:%M:%S')}")

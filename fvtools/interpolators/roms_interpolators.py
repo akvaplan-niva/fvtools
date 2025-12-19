@@ -138,29 +138,30 @@ class N4ROMS(N4):
             return
 
         error_occured = False
-        for field in ['scalar', 'uv']:
-            indices = self.GLORYS.land_mask.ravel()[getattr(self, f'{field}_index')]
+        for field in ['rho', 'u', 'v']:
+            indices = getattr(self.ROMS, f'Land_{field}').ravel()[getattr(self, f'{field}_index')]
             if indices.any():
+                # If so, we only need to plot the background once, hence "if not error_occured"
                 if not error_occured:
                     plt.figure()
                     plt.triplot(self.x, self.y, self.tri, c = 'k', label = 'FVCOM', zorder = 100)
                     error_occured = True
                     
                     # Plot all ROMS land points in the vicinity
-                    plt.plot(self.data_points[:, 0], self.data_points[:, 1], 'b.', zorder = 5)
+                    plt.plot(getattr(self, f'{field}_points')[:, 0], getattr(self, f'{field}_points')[:, 1], 'b.', zorder = 5)
                     plt.axis('equal')
                 
                     # Plot all ROMS land points in the vicinity
                     plt.plot(
-                        self.data_points[self.GLORYS.land_mask.ravel(), 0], 
-                        self.data_points[self.GLORYS.land_mask.ravel(), 1],
+                        getattr(self, f'{field}_points')[getattr(self.ROMS, f'Land_{field}').ravel(), 0], 
+                        getattr(self, f'{field}_points')[getattr(self.ROMS, f'Land_{field}').ravel(), 1],
                         'g.', 
                         zorder = 5,
-                        label = f'GLORYS land'
+                        label = f'ROMS land'
                     )
 
                 # Plot ROMS land points intersecting with FVCOM
-                int_land = self.data_points[getattr(self, f'{field}_index')[indices]]
+                int_land = getattr(self, f'{field}_points')[getattr(self, f'{field}_index')[indices]]
                 plt.plot(int_land[:,0], int_land[:,1], 'r.', label = f'{field} points', zorder = 10)
 
         # After all fields have been plotted

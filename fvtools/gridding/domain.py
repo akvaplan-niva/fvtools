@@ -342,9 +342,7 @@ def distfunc_onepoint(
         ):
     # 1. Find the distance from point to coast
     # --> We realistically don't need to assess the distance to all nearby
-    x, _ = coast_tree.query(
-        np.array([xp, yp])[:,None].T, k = 2000
-    )
+    x = np.sqrt((grid['coast_x']-xp)**2 + (grid['coast_y']-yp)**2)
 
     # 2. Solve gfunc
     r2    = rmax / rfact

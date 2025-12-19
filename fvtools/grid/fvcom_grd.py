@@ -2160,8 +2160,8 @@ class NestROMS2FVCOM:
         if self.oend1 == 1:
             new_x_obc, new_y_obc = [], []
             for n in range(self.x_obc.shape[0]):
-                dist       = np.sqrt((self.x_obc[n] - self.x_obc[n][0])**2 + (self.y_obc[n] - self.y_obc[n][0])**2)
-                i          = np.where(dist>self.R)
+                dist = np.sqrt(((self.x_obc[n] - self.x_obc[n][0])**2 + (self.y_obc[n] - self.y_obc[n][0])**2).astype(float))
+                i    = np.where(dist>self.R)
                 new_x_obc.append(self.x_obc[n][i])
                 new_y_obc.append(self.y_obc[n][i])
             self.x_obc, self.y_obc = np.array(new_x_obc), np.array(new_y_obc)
@@ -2169,7 +2169,7 @@ class NestROMS2FVCOM:
         if self.oend2 == 1:
             new_x_obc, new_y_obc = [], []
             for n in range(self.x_obc.shape[0]):
-                dist = np.sqrt((self.x_obc[n] - self.x_obc[n][-1])**2 + (self.y_obc[n] - self.y_obc[n][-1])**2)
+                dist = np.sqrt(((self.x_obc[n] - self.x_obc[n][-1])**2 + (self.y_obc[n] - self.y_obc[n][-1])**2).astype(float))
                 i    = np.where(dist>self.R)
                 new_x_obc.append(self.x_obc[n][i])
                 new_y_obc.append(self.y_obc[n][i])
