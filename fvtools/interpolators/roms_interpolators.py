@@ -148,7 +148,12 @@ class N4ROMS(N4):
                     error_occured = True
                     
                     # Plot all ROMS land points in the vicinity
-                    plt.plot(getattr(self, f'{field}_points')[:, 0], getattr(self, f'{field}_points')[:, 1], 'b.', marker = 's', zorder = 5, label = 'ROMS ocean')
+                    plt.plot(
+                        getattr(self, f'{field}_points')[:, 0], 
+                        getattr(self, f'{field}_points')[:, 1], 
+                        'b.', 
+                        marker = 's', zorder = 5, label = 'ROMS ocean'
+                        )
                     plt.axis('equal')
                 
                     # Plot all ROMS land points in the vicinity
@@ -156,6 +161,7 @@ class N4ROMS(N4):
                         getattr(self, f'{field}_points')[getattr(self.ROMS, f'Land_{field}').ravel(), 0], 
                         getattr(self, f'{field}_points')[getattr(self.ROMS, f'Land_{field}').ravel(), 1],
                         'g.', 
+                        marker = 's',
                         zorder = 5,
                         label = f'ROMS land'
                     )
