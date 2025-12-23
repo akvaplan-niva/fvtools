@@ -4,6 +4,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from fvtools.grid.fvcom_grd import FVCOM_grid
+from pykdtree.kdtree import KDTree
 
 def main(mesh, R = None):
     '''
@@ -100,16 +101,12 @@ def crop_mesh(M, x_obc, y_obc, R):
     Get the triangles within R from the cropped obc
     '''
     print('  -> Find the necessary cells')
-    NEST_cells = []
-    for i,p in enumerate(zip(M.xc, M.yc)):
-        dst = np.sqrt((x_obc - p[0])**2 + (y_obc - p[1])**2)
-        ltR = np.where(dst < R)[0]
-        if len(ltR) > 0:
-            NEST_cells.append(i)
+    obc_tree = KDTree(np.array([x_obc, y_obc]).T)
+    dst, _ = obc_tree.query(np.array([M.xc, M.yc]).T, distance_upper_bound = R)
 
     # Cells within search range
-    cells = np.unique(NEST_cells).astype(int)
-    
+    cells = np.where(dst <= R)[0]
+
     # Store the new nodes
     inds  = np.unique(M.tri[cells,:].ravel())
     x_new = M.x[inds]
@@ -117,21 +114,25 @@ def crop_mesh(M, x_obc, y_obc, R):
 
     # Create new nv structure
     print('  -> Create nest triangulation')
-    new_nv = np.nan*np.ones((len(cells), 3))
-    for i,c in enumerate(cells):
-        # Find corresponding x,y in the cell
-        cx = M.x[M.tri[c,:]]; cy = M.y[M.tri[c,:]]
-        for j,p in enumerate(zip(cx,cy)):
-            dst = np.sqrt((x_new-p[0])**2+(y_new-p[1])**2)
-            new_nv[i,j] = np.where(dst==dst.min())[0]
+    new_nv = np.nan*np.ones((len(cells), 3), dtype = int)
+    new_tree = KDTree(np.array([x_new, y_new]).T)
+
+    # Find corresponding x,y in the cells corners
+    cx = M.x[M.tri[cells,:]]
+    cy = M.y[M.tri[cells,:]]
+
+    for j in range(3):
+        _, index = new_tree.query(np.array([cx[:,j], cy[:,j]]).T)
+        new_nv[:,j] = index.astype(int)
+    new_nv = new_nv.astype(int)
 
     # Overwrite return nest-dict
-    dNEST        = {}
-    dNEST['xn']  = x_new
-    dNEST['yn']  = y_new
-    dNEST['nv']  = new_nv.astype(int)
-    dNEST['xc']  = triangulate(dNEST,'xn')
-    dNEST['yc']  = triangulate(dNEST,'yn')
+    dNEST = {}
+    dNEST['xn'] = x_new
+    dNEST['yn'] = y_new
+    dNEST['nv'] = new_nv.astype(int)
+    dNEST['xc'] = triangulate(dNEST,'xn')
+    dNEST['yc'] = triangulate(dNEST,'yn')
     return dNEST
 
 def triangulate(NEST, var):
