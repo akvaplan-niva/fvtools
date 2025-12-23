@@ -165,11 +165,13 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         self.N4 = N4.dump()
         self.latlon = latlon
 
-    def dump_single(self):
+    def dump_single(self, nprocs = None):
         '''
         Mostly for debug/illustration of the downloading/interpolation/writing process
         '''
-        widget = [f'Downloading, interpolating and dumping timesteps to nest: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
+        if nprocs:
+            print(f'  - Running in single mode')
+        widget = [f'  - Downloading, interpolating and dumping timesteps to nest: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.path))
         bar.start()
         with netCDF4.Dataset(self.outfile, 'r+') as self.out:
@@ -235,7 +237,7 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         '''
         The listener has write access to the netCDF and is responsible for dumping
         '''
-        widget = [f'  Downloading timesteps: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
+        widget = [f'  - Downloading timesteps: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.path))
         i=0
         bar.start()
