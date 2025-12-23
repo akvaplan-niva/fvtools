@@ -144,11 +144,11 @@ class N4ROMS(N4):
                 # If so, we only need to plot the background once, hence "if not error_occured"
                 if not error_occured:
                     plt.figure()
-                    plt.triplot(self.x, self.y, self.tri, c = 'k', label = 'FVCOM', zorder = 100)
+                    plt.triplot(self.x, self.y, self.tri, c = 'k', marker = 's', label = 'FVCOM', zorder = 100)
                     error_occured = True
                     
                     # Plot all ROMS land points in the vicinity
-                    plt.plot(getattr(self, f'{field}_points')[:, 0], getattr(self, f'{field}_points')[:, 1], 'b.', zorder = 5)
+                    plt.plot(getattr(self, f'{field}_points')[:, 0], getattr(self, f'{field}_points')[:, 1], 'b.', marker = 's', zorder = 5, label = 'ROMS ocean')
                     plt.axis('equal')
                 
                     # Plot all ROMS land points in the vicinity
@@ -162,7 +162,7 @@ class N4ROMS(N4):
 
                 # Plot ROMS land points intersecting with FVCOM
                 int_land = getattr(self, f'{field}_points')[getattr(self, f'{field}_index')[indices]]
-                plt.plot(int_land[:,0], int_land[:,1], 'r.', label = f'{field} points', zorder = 10)
+                plt.plot(int_land[:,0], int_land[:,1], 'r.', marker = 's', label = f'{field} points', zorder = 10)
 
         # After all fields have been plotted
         # ----
@@ -170,7 +170,7 @@ class N4ROMS(N4):
             plt.axis('equal')
             plt.title('Points in ROMS land mask intersecting with FVCOM mesh')
             plt.legend(loc = 'upper right')
-            raise LandError('ROMS intersects with your FVCOM experiment in the nestingzone, see the figure and adjust the mesh.')
+            raise LandError('ROMS land intersect with your FVCOM experiment in the nestingzone. See the figure and adjust the mesh.')
 
     def dump(self):
         '''
