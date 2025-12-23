@@ -1754,10 +1754,9 @@ class AnglesAndPhysics:
         if verbose:
             print(f'  - Required timestep approx: {min(ts_min):.2f} s')
             plt.figure()
-            contour = self.plot_contour(ts_min, cmap = 'jet', levels = np.linspace(min(ts_min), 3*min(ts_min), 20), extend = 'max')
+            contour = self.plot_contour(ts_min, cmap = 'jet', levels = np.linspace(min(ts_min), 3*min(ts_min), 20), extend = 'max', show = False)
             plt.colorbar(contour, label = 's')
             plt.axis('equal')
-            plt.show(block = False)
         self.ts = ts_min
 
 class LegacyFunctions:
