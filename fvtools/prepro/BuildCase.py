@@ -105,7 +105,7 @@ class DepthHandler:
     def make_depth(self):
         """Interpolate data from a "depth.txt" file to a FVCOM mesh, adds 'h_raw' to the mesh"""
         if type(self.depth_file) == int or type(self.depth_file) == float:
-            h_raw = dptfile*np.ones((self.x.shape)) # in case you need flat bathymetry
+            h_raw = self.depth_file*np.ones((self.x.shape)) # in case you need flat bathymetry
         else:
             if self.depth_file.split('.')[-1] == 'npy':
                 depth = self.load_numpybath(self.depth_file)
@@ -589,8 +589,8 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
             return
 
         levels  = np.arange(0, max(self.h_raw), increment)
+        
         fig, ax = plt.subplots(nrows = 1, ncols = 3, figsize = (15,8))
-
         cdat = ax[0].tricontourf(self.x, self.y, self.tri, self.h_raw, levels = levels, cmap = 'terrain')
         ax[0].tricontour(self.x, self.y, self.tri, self.h_raw, levels = levels, colors = 'k')
         ax[0].axis('equal')
