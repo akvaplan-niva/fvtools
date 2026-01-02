@@ -193,7 +193,7 @@ class OldAromeGrid(AROMEbase, AROMEversion):
         self.xex, self.yex = self.Proj(self.lonex, self.latex, inverse=False)
 
     @cached_property
-    def landmask(self):
+    def land_mask(self):
         '''
         MetCoOp fractional landmask. Let "1" indicate ocean. We only use this to avoid
         land radiation to the ocean model. Should be avoided and replaced with an albedo adjustment at
@@ -244,9 +244,9 @@ class NewAromeGrid(AROMEbase, AROMEversion):
         return self.y
 
     @cached_property
-    def landmask(self):
+    def land_mask(self):
         with Dataset(self.basepath) as nc:
-            _landfraction = (nc.variables.get('land_area_fraction')[0,0,:]-1.0)*-1.0
+            _landfraction = (nc.variables.get('land_area_fraction')[0, 0, :] - 1.0) * -1.0
         return _landfraction
 
     def test_day(self, day):

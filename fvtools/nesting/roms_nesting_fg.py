@@ -53,6 +53,8 @@ def main(fvcom_grd,
     print('- Load mesh info')
     M    = FVCOM_grid(fvcom_grd)
     NEST = NEST_grid(nest_grd, M, proj = M.reference)
+
+    # Add a projection, load the part of the full ROMS grid which covers the FVCOM nesting zone
     ROMS.Proj = M.Proj
     ROMS.load_grid(NEST.x, NEST.y, offset = NEST.R*6)
 

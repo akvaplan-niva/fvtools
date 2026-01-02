@@ -2,13 +2,11 @@
 #       Write ROMS ocean points to a shapefile
 # ---------------------------------------------------
 import numpy as np
-import fiona as fi
 import pandas as pd
 import geopandas as gpd
-import sys
 import pyproj
 from netCDF4 import Dataset
-from scipy.spatial import KDTree
+
 # ----------------------------------------------------
 
 def main(latlim, lonlim, mother):

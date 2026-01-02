@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import fvtools.gridding.coast as coast
 
 from matplotlib.path import Path
-from matplotlib.widgets import Slider, Button, RadioButtons, TextBox
+from matplotlib.widgets import Slider, Button
 from scipy.spatial import cKDTree as KDTree
 from functools import cached_property
 from numba import njit, prange

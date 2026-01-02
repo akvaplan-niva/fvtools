@@ -14,32 +14,6 @@ from matplotlib.widgets import Slider, Button
 from matplotlib.path import Path
 from pykdtree.kdtree import KDTree
 
-def read_mesh(meshfile):
-    with open(meshfile) as f:
-        nodenum = int(f.readline())
-        points  = np.loadtxt(f, delimiter = ' ', max_rows = nodenum)
-        trinum  = int(f.readline())
-        tri     = np.loadtxt(f, delimiter = ' ', max_rows = trinum, dtype=int)
-    return points, tri 
-
-def plot_mesh(points, triangles):
-    # remove triangles outside bounds
-    # not sure how they can appear
-    _triangles = []
-    for triple in triangles:
-        keep_triangle = True
-        for t in triple:
-            if not -1 < t < len(points):
-                keep_triangle = False
-        if keep_triangle:
-                _triangles.append(triple)
-
-    x, y = zip(*points)
-
-    plt.figure()
-    plt.gca().set_aspect('equal')
-    plt.triplot(x, y, _triangles, 'g-', markersize=0.2, linewidth=0.2)
-
 def gfunc(rmax, dfact, rfact, dev1, dev2, Ld, rcoast):
     x     = np.arange(0,Ld,10)
     r2    = rmax / rfact
@@ -269,7 +243,7 @@ def make_structgrid(maxgridres, gridres_levels = 5, boundaryfile='output/boundar
     return grid
 
 def read_domainres(grids=None, filename='PolyParameters.txt'):
-    par    = pd.read_csv(filename,sep=';')
+    par    = pd.read_csv(filename, sep=';')
     maxres = par.max_res
     minres = par.min_res
     if grids is None:
@@ -294,16 +268,12 @@ def get_numberofnodes(dfact, rfact, dev1, dev2, Ld, grid, rmax):
     '''
     nodes      = 0.0
     theres     = []
-    x          = []
-    y          = []
-    coast_tree = KDTree(np.array([grid['coast_x'], grid['coast_y']]).T)
 
     for n in range(len(grid['x'])):
         res  = distfunc_onepoint(
             grid, 
             grid['x'][n], 
-            grid['y'][n], 
-            coast_tree,
+            grid['y'][n],
             dfact = dfact, 
             rfact = rfact, 
             dev1 = dev1, 
@@ -316,8 +286,8 @@ def get_numberofnodes(dfact, rfact, dev1, dev2, Ld, grid, rmax):
             res = min(res, grid['resolution_field'][n])
 
         Atri   = (np.sqrt(3.0)/4.0)*res**2
-        # 1. The surface area of each gridpoint is grid_res**2, the number of triangles needed to
-        #    cover that area is grid_res**2 / triangle_area
+        # 1. The surface area of each gridpoint is grid_res**2
+        #    The number of triangles needed to cover that area is grid_res**2 / triangle_area
         nodes += float(grid['strres'][n]**2)/Atri
         theres.append(res)
 
@@ -338,10 +308,9 @@ def get_numberofnodes(dfact, rfact, dev1, dev2, Ld, grid, rmax):
     return int(nodes/1.8), theres
 
 def distfunc_onepoint(
-        grid, xp, yp, coast_tree, rfact=3.0, dfact=12.0, Ld=4.0e5,  dev1=4.0, dev2=4.0, rmax=2400.0
+        grid, xp, yp, rfact=3.0, dfact=12.0, Ld=4.0e5,  dev1=4.0, dev2=4.0, rmax=2400.0
         ):
     # 1. Find the distance from point to coast
-    # --> We realistically don't need to assess the distance to all nearby
     x = np.sqrt((grid['coast_x']-xp)**2 + (grid['coast_y']-yp)**2)
 
     # 2. Solve gfunc
@@ -361,43 +330,6 @@ def distfunc_onepoint(
 
     # determine the resolution based on f as described on the smeshing git
     return np.min(gfunc+grid['coast_res'])
-
-def old_distfunc(rfact  = 3.0, 
-                 dfact  = 12.0, 
-                 Ld     = 4.0e5,  
-                 dev1   = 4.0, 
-                 dev2   = 4.0, 
-                 rmax   = 2400.0, 
-                 rcoast = 100):
-    '''
-    Testing distance resolution function
-
-    res   = distfunc(rfact=3.0, dfact=12.0, Ld=4.0e5,  dev1=6.0, dev2=4.0,
-                     rcoast=100.0, rmax=2400.0)
-    rfact - factor determining the near coastal length scales
-    dfact - factor determining the middle resolution from rcoast and rmax
-    Ld    - typical length from coast to obc
-    dev1  - factor determining near coastal gradient, higher number=steeper curve
-    dev2  - factor determining the far field gradient
-    rmax  - maximum grid resolution to converge against
-    '''
-
-    x     = np.arange(0,Ld,10)
-    r2    = rmax / rfact
-    x2    = dfact * r2
-    a1    = x2  / dev1
-    a2    = (Ld - x2) / dev2
-    xm    = 2 * a1
-    xm2   = xm +2 * a2
-    gfunc = r2 * (2 - (1 - np.tanh((x - xm) / a1))) / 2 + (rmax - r2) * (2 - (1 - np.tanh((x - xm2) / a2)))
-    #gfunc = gfunc - gfunc[0]
-    #res   = gfunc + rcoast
-    res = gfunc
-
-    plt.plot(x, res)
-    plt.show()
-
-    return rfact, dfact, Ld,  dev1, dev2, rmax, rcoast, res
 
 def smoothres(h, gridspacing, drelmax, ncount):
     ''' '''
@@ -433,37 +365,6 @@ def smoothres(h, gridspacing, drelmax, ncount):
         h = np.copy(hnew)
 
     return hnew
-
-
-def old_inside_polygon(x, y, xp, yp, noisy = False):
-    """
-    Return True if a coordinate (x, y) is inside a polygon defined by
-    a list of verticies xp, yp.
-
-    Reference: http://www.ariel.com.au/a/python-point-int-poly.html
-    """
-    inside = np.empty([len(x),])
-    for k in range(len(x)):
-        if noisy:
-            if np.mod(k, 10000) == 0:
-                print(str(k) + ' of ' + str(len(x)))
-        n = len(xp)
-        inside[k] = False
-        p1x = xp[0]
-        p1y = yp[0]
-        for i in range(1, n + 1):
-            p2x = xp[i % n]
-            p2y = yp[i % n]
-            if y[k] > min(p1y, p2y):
-                if y[k] <= max(p1y, p2y):
-                    if x[k] <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (y[k] - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                        if p1x == p2x or x[k] <= xinters:
-                            inside[k] = not inside[k]
-            p1x, p1y = p2x, p2y
-    inside = inside == 1
-    return inside
 
 def inside_polygon(x,y,xp,yp):
     '''
@@ -740,302 +641,3 @@ def add_resfield_data(grid, resfield):
     grid['resolution_field'] = data[nearest_resfield_point,2]
 
     return grid
-
-def write_2dm(datafile, cangle = 5, new2dm = None):
-    '''
-    Reads a SMESHING output file and writes the output as a 2dm file
-    - optional:
-        cangle --> minimum acceptable angle in triangle corner
-        new2dm --> name of new 2dm file (standard: new2dm = datafile - .txt)
-    '''
-    if new2dm is None:
-        new2dm = datafile.split('.')[0]
-
-    points, trangs = read_mesh(datafile)
-
-    print('Raw mesh:')
-    theta  = trangles(points,trangs)
-    plt.show(block=False)
-
-    while True:
-        # Keep triangles with angles greater than cangle, delete the rest
-        gtc    = np.where(theta.min(axis=1)>cangle)
-        plt.figure()
-        plt.triplot(points[:,0],points[:,1],trangs,c='g',lw=0.2)
-        plt.title('raw grid from SMESHING')
-        plt.axis('equal')
-            
-        plt.figure()
-        plt.triplot(points[:,0], points[:,1], trangs[gtc[0],:], c='g', lw=0.2)
-        plt.title(f'modified grid after removing angles less than {cangle}')
-        plt.axis('equal')
-        plt.show(block = False)
-        
-        print('\n---------------------- ')
-        print('Old number of triangles: '+str(len(trangs[:,0])))
-        print('New number of triangles: '+str(len(gtc[0])))
-        print(' ')
-
-        if input('Good enough? y/[n] ').lower()=='y':
-            break
-
-        cangle = float(input('Enter the new critical angle:\n'))
-
-    # Show the angles that are less than 35 degrees
-    # -------------------------------------------------------------------
-    print('\nSlightly refined mesh:')
-    angles    = check_angles(trangs[gtc[0],:], points, cang=35)
-    
-    # Look for triangles with 2 edges toward land
-    # -------------------------------------------------------------------
-    neighbors = look_for_neighbors(points, trangs[gtc[0],:])
-
-    # Write the mesh to a .2dm file
-    # ----
-    trangs  = trangs[gtc[0],:]+1 # to get format that SMS is happy with
-    newfile = new2dm+'.2dm'
-    fid     = open(newfile,'w')
-
-    # write triangulation
-    # ----
-    for i in range(len(trangs[:,0])):
-        fid.write('E3T '+str(i+1)+' '+str(trangs[i,0])+' '+str(trangs[i,1])+\
-                  ' '+str(trangs[i,2])+' 1\n')
-
-    # write node positions
-    # ----
-    for i in range(len(points[:,0])):
-        fid.write('ND '+str(i+1)+' '+str(points[i,0])+' '+str(points[i,1])+' 0.00000001\n')
-
-    fid.close()
-
-def trangles(p,t):
-    '''
-    Reads points and triangulations from SMESHING and removes triangles 
-    with too small angles
-       C
-      / \
-     /___\
-    A     B
-    Solves the equation cos(theta) = a*b/|a||b|
-    '''
-    xn    = p[:,0]; yn = p[:,1]
-    x     = np.array([xn[t[:,0]],xn[t[:,1]],xn[t[:,2]]])
-    y     = np.array([yn[t[:,0]],yn[t[:,1]],yn[t[:,2]]])
-    
-    # cos(theta) = a * b / |a||b|
-    # Store each side as vectors
-    AB    = np.array([x[0,:]-x[1,:], y[0,:]-y[1,:]])
-    BC    = np.array([x[1,:]-x[2,:], y[1,:]-y[2,:]])
-    CA    = np.array([x[2,:]-x[0,:], y[2,:]-y[0,:]])
-    
-    # length of each triangle side
-    lAB   = np.sqrt(AB[0,:]**2+AB[1,:]**2)
-    lBC   = np.sqrt(BC[0,:]**2+BC[1,:]**2)
-    lCA   = np.sqrt(CA[0,:]**2+CA[1,:]**2)
-    a     = [lAB.min(), lBC.min(), lCA.min()]
-    b     = [lAB.max(), lBC.max(), lCA.max()]
-    
-    print(f'Minimum triangle wall length (resolution): {min(a)} m')
-    print(f'Maximum triangle wall length (resolution): {max(b)} m')
-    
-    # dot products
-    ABAC  = -(AB[0,:]*CA[0,:]+AB[1,:]*CA[1,:])
-    BABC  = -(AB[0,:]*BC[0,:]+AB[1,:]*BC[1,:])
-    CABC  = -(CA[0,:]*BC[0,:]+CA[1,:]*BC[1,:])
-    
-    # Get the angle (in degrees)
-    theta = np.array([np.arccos(ABAC/(lAB*lCA)), \
-                      np.arccos(BABC/(lAB*lBC)), \
-                      np.arccos(CABC/(lCA*lBC))])
-
-    # This will be removed soon...
-    theta[np.isnan(theta)] = 0
-    theta = theta*360.0/(2*np.pi) # radians to degrees
-    
-    # Find number of corners < 35*
-    th_raveled = np.ravel(theta)
-    gt35       = np.where(th_raveled<=35.0)
-    print(f'There are {len(th_raveled[gt35])} corners less than 35 degrees in this mesh\n')
-
-    fig, ax = plt.subplots(2,1)
-    ax[0].hist(lAB.ravel(),bins=80)
-    ax[0].set_title('Histogram of mesh resolution')
-    ax[0].set_xlabel('resolution')
-    ax[0].set_ylabel('# triangle corners')
-
-    ax[1].hist(theta.ravel(),bins=80)
-    ax[1].set_title('Histogram of triangle corner angles')
-    ax[1].set_xlabel('angle')
-    ax[1].set_ylabel('# triangle corners')
-    
-    return theta.T
-
-# ----------------------------------------------------------------------------------------------
-#   Basic QC stuff before you pass this to BuildCase
-# ----------------------------------------------------------------------------------------------
-
-def check_2dm(my2dm):
-    '''
-    Check if your cleaned 2dm file is any good
-    - Are the angles good?
-    - Are there any bad land-triangles?
-    '''
-    print('Loading the grid\n')
-    try:
-        triangle, nodes, X, Y, Z, types = fvgrd.read_sms_mesh(my2dm)
-    except ValueError:
-        raise ValueError('Make sure to save the file with a nodestring')
-
-    points    = np.array([X,Y]).transpose()
-
-    print('Calculating angles and resolutions\n')
-    #trangs    = trangles(points, triangle)
-    
-    # Check if the angles are less than 35 degrees
-    # -------------------------------------------------------------------
-    try:
-        angles    = check_angles(triangle, points, cang=35)
-    except IndexError:
-        raise IndexError('Remember to renumber the nodes before storing the .2dm file!')
-
-    # Look for triangles with 2 edges toward land
-    # -------------------------------------------------------------------
-    neighbors = look_for_neighbors(points, triangle)
-
-    if angles and neighbors:
-        print('-------\nThe mesh is good to go! :)')
-
-    elif angles and not neighbors:
-        print('\nFix the triangle(s) with only one neighbor\n')
-        print('--> Open the 2dm in SMS and fix it.')
-
-    elif neighbors and not angles:
-        print('\nFix the angles!')
-        print('--> Open the 2dm in SMS and fix it.')
-
-    elif not neighbors and not angles:
-        print('\nFix both the angles and the neighbors!')
-        print('--> Open the 2dm in SMS and fix it.')
-
-def look_for_neighbors(points, tris):
-    '''
-    See if the triangles have three neighbors
-    '''
-    from matplotlib.tri import Triangulation
-    tri      = Triangulation(points[:,0],points[:,1],triangles=tris)
-    near_tri = tri.neighbors
-    nnbor    = []
-
-    print('Counting number of neighbors for each triangle...')
-    for i in range(len(near_tri[:,0])):
-        nnbor.append(np.where(near_tri[i,:]==-1)[0].size)
-    nnbor = np.array(nnbor)
-
-    # If there are bad triangles present
-    # ------
-    bad_tris = np.where(nnbor == 2)[0]
-    if len(bad_tris)==1:
-        print('--> Found a triangle with just one neighbor\n')
-        good = False
-
-    elif len(bad_tris)>1:
-        print('--> Found ' + str(len(bad_tris)) + ' triangles with just one neighbor\n')
-        good = False
-
-    elif len(bad_tris)<1:
-        print("--> Didn't find bad triangles\n")
-        good = True
-
-    if good==False:
-        plt.figure()
-        plt.triplot(points[:,0], points[:,1], tris, c='g', lw=0.2)
-        bad_tri_pts = points[tris[bad_tris,:],:]
-        for i in range(len(bad_tri_pts[:,0,0])):
-            # First round: (initializing the vector)
-            if i == 0:
-                pts_this_tri = bad_tri_pts[i,:,:]
-                xbad = pts_this_tri[:,0]
-                ybad = pts_this_tri[:,1]
-
-                # Close the loop
-                xbad = np.append(xbad,pts_this_tri[0,0])
-                ybad = np.append(ybad,pts_this_tri[0,1])  
-
-            # All other rounds: 
-            else:
-                pts_this_tri = bad_tri_pts[i,:,:]
-                xbad = np.append(xbad,pts_this_tri[:,0])
-                ybad = np.append(ybad,pts_this_tri[:,1])
-                
-                # Close the loop
-                xbad = np.append(xbad,pts_this_tri[0,0])
-                ybad = np.append(ybad,pts_this_tri[0,1])                
-
-            # Make sure the triangles are plotted one by one
-            xbad = np.append(xbad, np.nan)
-            ybad = np.append(ybad, np.nan)
-            
-        plt.plot(xbad, ybad, 'or')
-
-        plt.title('Triangle(s) with just one neighbour (shown in red)')
-        plt.axis('equal')
-        plt.show(block = False)
-
-    return good
-
-def check_angles(triangles, points, cang=35):
-    '''
-    Checks if the triangles are < cang, and shows which triangles needs to be fixed.
-    '''
-    # If there are no bad angles, then we don't need to report anything
-    angles = True
-
-    # Find the angles
-    trangs = trangles(points, triangles)
-
-    # Shows the bad triangles
-    if np.any(np.where(trangs<cang)):
-        angles = False
-        print('\nThere are sharp triangles in the mesh, these are marked with red\n')
-
-        plt.figure()
-        plt.triplot(points[:,0], points[:,1], triangles, c='g', lw = 0.2)
-        
-        # Create new tri object
-        bad,vind    = np.where(trangs<35)
-        bad_tri_pts = points[triangles[bad,:],:]
-
-        # Visualize
-        for i in range(len(bad_tri_pts[:,0,0])):
-            # First round: (initializing the vector)
-            if i == 0:
-                pts_this_tri = bad_tri_pts[i,:,:]
-                xbad = pts_this_tri[:,0]
-                ybad = pts_this_tri[:,1]
-
-                # Close the loop
-                xbad = np.append(xbad,pts_this_tri[0,0])
-                ybad = np.append(ybad,pts_this_tri[0,1])  
-
-            # All other rounds: 
-            else:
-                pts_this_tri = bad_tri_pts[i,:,:]
-                xbad = np.append(xbad,pts_this_tri[:,0])
-                ybad = np.append(ybad,pts_this_tri[:,1])
-                
-                # Close the loop
-                xbad = np.append(xbad,pts_this_tri[0,0])
-                ybad = np.append(ybad,pts_this_tri[0,1])                
-
-            # Make sure the triangles are plotted one by one
-            xbad = np.append(xbad, np.nan)
-            ybad = np.append(ybad, np.nan)
-        
-        plt.plot(xbad, ybad, 'or')
-
-        plt.title('Triangles with too sharp angles (shown in red)')
-        plt.axis('equal')
-        plt.show(block = False)
-    
-    return angles

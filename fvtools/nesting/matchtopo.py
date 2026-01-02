@@ -144,8 +144,6 @@ class MatchTopo:
 
         # Make copy of FVCOM bathymetry, set depth in the "to change range" equal to ROMS bathy
         h_coarse = np.copy(self.M.h)
-        
-        # 
         h_coarse[np.isnan(h_coarse)] = self.M.h[np.isnan(h_coarse)]
         h_coarse[self.nodes_to_change] = np.sum(self.COARSE.h_rho[self.COARSE.fv_rho_mask][N4B.rho_index] * N4B.rho_coef, axis=1)
 

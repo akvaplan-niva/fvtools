@@ -375,7 +375,7 @@ class ROMSbase(ROMSdepths, ROMSCropper):
     def path(self):
         if not hasattr(self, '_path'):
             try:
-                self._path = self.test_day(datetime.now())
+                self._path = self.test_day(datetime(2024,1,1))
             except:
                 self._path = self.test_day(datetime.now()-timedelta(days=1))
         return self._path

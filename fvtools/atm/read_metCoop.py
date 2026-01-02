@@ -9,7 +9,8 @@ warnings.filterwarnings("ignore")
 
 from fvtools.grid.fvcom_grd import FVCOM_grid  # objects that load what we need to know about the FVCOM grid
 from fvtools.grid.arome_grid import get_arome_grids, NoAvailableData # objects that load arome grid data
-from fvtools.interpolators.arome_interpolators import N4AROME
+#from fvtools.interpolators.arome_interpolators import N4AROME
+from fvtools.interpolators.horizontal_interpolator import N4Coefficients
 
 from time import gmtime, strftime
 from datetime import datetime, timedelta
@@ -20,7 +21,7 @@ This script downloads AROME data, interpolates it to the FVCOM mesh (using a bil
 interpolated data to a netCDF forcing file.
 '''
 
-def main(grd_file, outfile, start_time, stop_time, nearest4=None, latlon=False):
+def main(grd_file, outfile, start_time, stop_time, latlon=False):
     '''
     Create AROME atmospheric forcing file for FVCOM 
 
@@ -30,7 +31,6 @@ def main(grd_file, outfile, start_time, stop_time, nearest4=None, latlon=False):
     outfile:     name of netcdf output
     start_time: 'yyyy-mm-dd-hh'
     stop_time:  'yyyy-mm-dd-hh'
-    nearest4:   'nearest4arome.npy' file if you have already made an _atm file for this mesh (=None by default)
     latlon:     Set true if you are making a latlon model (will otherwise rotate to adjust for UTM north/east distortion)
     '''
     print(f'\nCreate {outfile} - unstuctured grid atmospheric forcing file')
@@ -45,13 +45,8 @@ def main(grd_file, outfile, start_time, stop_time, nearest4=None, latlon=False):
     print('- Make a filelist')
     time, path, path_acc, path_rad, index = metcoop_make_fileList(startdate, stopdate, OldAROME = OldAROME, NewAROME = NewAROME)
 
-    if nearest4 is None:
-        print('\nCompute nearest4 interpolation coefficients.')
-    else:
-        print('\nLoad nearest4 interpolation coefficients')
-
     # Two different grids, with the option to load pre-loaded interpolation coefficients
-    oldN4, newN4 = get_nearest4(OldAROME, NewAROME, nearest4, M)
+    oldN4, newN4 = get_nearest4(OldAROME, NewAROME, M)
 
     # Dump to outfile
     print('\nDump to outfile\n---')
@@ -70,33 +65,24 @@ def get_start_and_stop_as_datetime(start_time, stop_time):
     stopdate   = datetime(int(stopnum[0]), int(stopnum[1]), int(stopnum[2]))
     return startdate, stopdate
 
-def get_nearest4(OldAROME, NewAROME, nearest4, M):
+def get_nearest4(OldAROME, NewAROME, M):
     '''
     The data on met/thredds is stored on two AROME/MetCoOp main grids - the "original" running to 5. feb. 2020, and the extended
     version running (over a bigger domain since they now work together with the baltic states) running ever since.
 
-    We seem to need two different interpolation algorithms, since they changed the grid (not sure if the norwegian
-    grid positions are the same as before)
+    We seem to need two different interpolation algorithms, since they changed the grid 
+    (not sure if the grid points covering Norway are the same as before)
     '''
-    N4A = None; newN4A = None
-    if OldAROME is None and NewAROME is None:
-        nearest4 = None
+    N4A = None
+    newN4A = None
 
     if OldAROME is not None:
-        N4A = N4AROME(M, OldAROME)
-
-        if nearest4 is not None:
-            N4A.load_nearest4(nearest4)
-
-        else:
-            N4A.compute_nearest4()
+        N4A = N4Coefficients(M, OldAROME)
+        N4A.compute_nearest4()
 
     if NewAROME is not None:
-        newN4A = N4AROME(M, NewAROME)
-        if nearest4 is not None:
-            newN4A.load_nearest4(nearest4)
-        else:
-            newN4A.compute_nearest4()
+        newN4A = N4Coefficients(M, NewAROME)
+        newN4A.compute_nearest4()
 
     return N4A, newN4A
 
@@ -643,7 +629,7 @@ def create_nc_forcing_file(name, FVCOM_grd, times, latlon, epsg):
         nc.variables['latc'][:] = FVCOM_grd.latc
         nc.variables['lonc'][:] = FVCOM_grd.lonc
 
-        tris                    = FVCOM_grd.tri+1
+        tris                    = FVCOM_grd.tri + 1
         nc.variables['nv'][:]   = tris.transpose()
 
         for counter, fvcom_time in enumerate(times):

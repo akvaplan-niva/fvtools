@@ -112,7 +112,7 @@ class N4AROME(N4, AromeDomainMasks):
         # Set weight of land points to zero and re-normalize (use nearest3)
         landbool = self.LandMask[newindex]==0
         newcoef[landbool] = 0
-        newcoef = newcoef/np.sum(newcoef,axis=1)[:,None]
+        newcoef = newcoef/np.sum(newcoef, axis=1)[:, None]
 
         # Find the nearest neighbour where all points are landpoints
         points_on_arome_land = np.where(np.isnan(newcoef[:,0]))[0]  # points completely covered by arome land

@@ -339,8 +339,6 @@ def make_coast_full(coastline_in, subdivision_in, scale_in, coastline_out, cropc
         if i > -1:
             intersect = []
             for j, c in enumerate(mp_coast):
-                #if np.mod(j, 1000) == 0:
-                #    print(j)
                 intersect.append(c.intersection(p_sub.buffer(scale2)))
             mpi = unary_union(intersect)
         else:

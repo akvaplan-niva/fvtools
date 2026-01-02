@@ -23,7 +23,7 @@ def main(grd_file, outfile, era5file, start_time, stop_time):
     start_time: 'yyyy-mm-dd-hh'
     stop_time:  'yyyy-mm-dd-hh'
     nearest4:   'nearest4arome.npy' file if you have already made an _atm file for this mesh (=None by default)
-    latlon:     Set true if you are making a latlon model (will otherwise rotate to adjust for UTM north/east distortion)
+    latlon:     Set true if you are making a latlon model (will otherwise rotate to adjust for UTM north/east distortion)s
     '''
     print(f'\nCreate {outfile} - unstuctured grid atmospheric forcing file\n---')
     print(f'- Load {grd_file} and {era5file}')
@@ -77,9 +77,38 @@ def main(grd_file, outfile, era5file, start_time, stop_time):
                         d[this_fvcom][i,:] = np.sum(g[era_variable[0]].isel(time = 0).data[N4.fv_domain_mask][N4.nindex] * N4.ncoef, axis = 1)
                     elif era_variable[1] == 'ocean':
                         d[this_fvcom][i,:] = np.sum(g[era_variable[0]].isel(time = 0).data[N4.fv_domain_mask][N4.nindex_ocean] * N4.ncoef_ocean, axis = 1)
+
+            # Rotate the wind vectors if the projection is not in lat/lon
+            if M.reference != 'epsg:4326':
+                u =  d['u_wind'][i, :]*np.cos(N4.cell_utm_angle) + d['v_wind'][i, :]*np.sin(N4.cell_utm_angle)
+                v = -d['u_wind'][i, :]*np.sin(N4.cell_utm_angle) + d['v_wind'][i, :]*np.cos(N4.cell_utm_angle)
+                d['u_wind'][i,:] = u
+                d['v_wind'][i,:] = v
+
     bar.finish()
     print(f'Finished! ERA5 data interpolated to {outfile}')
 
+# Scripts for rotating vectors from spherical to UTM coordinates
+def rotate_arome_vectors(timestep, N4):
+    '''
+    When running FVCOM in UTM mode, we need to rotate so that we account for true north
+    '''
+    timestep.Uwind, timestep.Vwind = _rotate_vector(timestep.Uwind, timestep.Vwind, N4.cell_utm_angle)
+    return timestep
+
+def _rotate_vector(u, v, angle):
+    '''
+    Rotates vectors from (x', y') system to (x,y)
+
+    (u, v) velocity components in (x', y') system
+    angle is the angle between (x') and (xnew)
+    returns unew, vnew
+    '''
+    unew =  u*np.cos(angle) + v*np.sin(angle)
+    vnew = -u*np.sin(angle) + v*np.cos(angle)
+    return unew, vnew
+
+# Create forcing file
 def create_surface_forcing_file(M, ncfile, format = 'NETCDF4', precision = 'f4', **kwargs):
     '''
     Write a forcing file for atmospheric data

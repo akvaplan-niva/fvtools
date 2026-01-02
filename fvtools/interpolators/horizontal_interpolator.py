@@ -1,28 +1,29 @@
 import numpy as np
 
-from fvtools.interpolators.nearest4 import N4 # base-class for nearest 4 interpolation & method to find nearest 4
-from scipy.spatial import cKDTree as KDTree
+from fvtools.interpolators.nearest4 import N4 # base-class for nearest 4 interpolation & the method used to find nearest 4
+from pykdtree.kdtree import KDTree
 from functools import cached_property
 
 class DomainMasks:
     '''
     We reduce the data we handle to reduce memory use
     '''
+    offset = 40_000
     @cached_property
     def fv_domain_mask(self):
         '''
         Reduces the number of AROME points we take in to consideration when computing the interpolation coefficients
         '''
-        return self.COARSE.crop_grid(xlim=[self.FVCOM_grd.x.min() - 40_000, self.FVCOM_grd.x.max() + 40_000],
-                                     ylim=[self.FVCOM_grd.y.min() - 40_000, self.FVCOM_grd.y.max() + 40_000])
+        return self.COARSE.crop_grid(xlim=[self.FVCOM_grd.x.min() - self.offset, self.FVCOM_grd.x.max() + self.offset],
+                                     ylim=[self.FVCOM_grd.y.min() - self.offset, self.FVCOM_grd.y.max() + self.offset])
 
     @cached_property
     def fv_domain_mask_ex(self):
         '''
         crops the ex-domain to the smaller arome domain found in other files
         '''
-        return self.COARSE.crop_extended(xlim=[self.FVCOM_grd.x.min() - 40_000, self.FVCOM_grd.x.max() + 40_000],
-                                         ylim=[self.FVCOM_grd.y.min() - 40_000, self.FVCOM_grd.y.max() + 40_000])
+        return self.COARSE.crop_extended(xlim=[self.FVCOM_grd.x.min() - self.offset, self.FVCOM_grd.x.max() + self.offset],
+                                         ylim=[self.FVCOM_grd.y.min() - self.offset, self.FVCOM_grd.y.max() + self.offset])
 
     @cached_property
     def xy_center_mask(self):
@@ -45,6 +46,12 @@ class N4Coefficients(N4, DomainMasks):
             squares with full-land coverage will use nearest ocean neighbor
     '''
     def __init__(self, FVCOM_grd, COARSE_grd):
+        '''
+        Docstring for __init__
+        
+        :param FVCOM_grd: An initialized FVCOM_grid object
+        :param COARSE_grd: An initialized coarse atmopsheric model grid object, either AROME_grid or ERA5 grid
+        '''
         self.FVCOM_grd = FVCOM_grd
         self.COARSE = COARSE_grd
 
@@ -62,15 +69,11 @@ class N4Coefficients(N4, DomainMasks):
 
     @property
     def fv_cells(self):
-        return np.array([self.FVCOM_grd.xc, self.FVCOM_grd.yc]).transpose()    
-
-    def load_nearest4(self, infile):
-        '''
-        Load an already computed nearest4.
-        '''
-        nearest4 = np.load(infile, allow_pickle=True).item()
-        for field in ['nindex', 'ncoef', 'cindex', 'ccoef', 'nindex_rad', 'ncoef_rad', 'cindex_rad', 'ccoef_rad']:
-            setattr(self, field, nearest4[field])
+        return np.array([self.FVCOM_grd.xc, self.FVCOM_grd.yc]).transpose()
+    
+    @property
+    def cell_utm_angle(self):
+        return self.FVCOM_grd.cell_utm_angle
 
     def compute_nearest4(self):
         '''
@@ -101,9 +104,9 @@ class N4Coefficients(N4, DomainMasks):
         newcoef  = np.copy(coef)
 
         # Set weight of land points to zero and re-normalize (use nearest3)
-        landbool = self.LandMask[newindex]==0
+        landbool = self.LandMask[newindex] == 0
         newcoef[landbool] = 0
-        newcoef = newcoef/np.sum(newcoef,axis=1)[:,None]
+        newcoef = newcoef/np.sum(newcoef, axis=1)[:, None]
 
         # Find the nearest neighbour where all points are landpoints
         points_on_COARSE_land = np.where(np.isnan(newcoef[:,0]))[0]  # points completely covered by arome land
@@ -122,14 +125,19 @@ class N4Coefficients(N4, DomainMasks):
         fvcom_x = np.sum(self.xy_coarse[index, 0]*coef, axis=1)
         fvcom_y = np.sum(self.xy_coarse[index, 1]*coef, axis=1)
 
+        # Ocean points in the COARSE model
+        ocean = self.LandMask==1
+        ocean_x = self.xy_coarse[ocean, 0]
+        ocean_y = self.xy_coarse[ocean, 1]
+
         # Create a tree referencing ocean points
-        ocean_tree = KDTree(np.array([self.xy_coarse[self.LandMask==1, 0], self.xy_coarse[self.LandMask==1, 1]]).transpose())
+        ocean_tree = KDTree(np.array([ocean_x, ocean_y]).transpose())
         full_coarse_tree = KDTree(self.xy_coarse)
 
         # Nearest ocean point
         _, _nearest_ocean = ocean_tree.query(np.array([fvcom_x, fvcom_y]).transpose())
-        nearest_ocean_x = self.xy_coarse[self.LandMask==1, 0][_nearest_ocean]
-        nearest_ocean_y = self.xy_coarse[self.LandMask==1, 1][_nearest_ocean]
+        nearest_ocean_x = ocean_x[_nearest_ocean]
+        nearest_ocean_y = ocean_y[_nearest_ocean]
 
         # With same indexing as the rest of AROME
         _, nearest_coarse_ocean = full_coarse_tree.query(np.array([nearest_ocean_x, nearest_ocean_y]).transpose())
@@ -137,7 +145,7 @@ class N4Coefficients(N4, DomainMasks):
 
     def dump(self):
         '''
-        Not sure if this is needed, but I am scared of using much more memory than needbe when paralellizing
+        Not sure if this is needed, but I am scared of using much more memory than needbe when parallellizing
         '''
         smallerN4 = N4_interpolation()
         smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['fv_domain_mask', 'nindex', 'cindex', 'nindex_rad'])
