@@ -148,8 +148,8 @@ class N4Coefficients(N4, DomainMasks):
         Not sure if this is needed, but I am scared of using much more memory than needbe when parallellizing
         '''
         smallerN4 = N4_interpolation()
-        smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['fv_domain_mask', 'nindex', 'cindex', 'nindex_rad'])
-        smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['ncoef', 'ccoef', 'ncoef_rad'])
+        smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['fv_domain_mask', 'nindex', 'cindex', 'nindex_ocean'])
+        smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['ncoef', 'ccoef', 'ncoef_ocean'])
         smallerN4 = self._set_attributes_to_dump(smallerN4, self.FVCOM_grd, ['cell_utm_angle'])
         if hasattr(self, 'fv_domain_mask_ex'):
             smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['fv_domain_mask_ex'])

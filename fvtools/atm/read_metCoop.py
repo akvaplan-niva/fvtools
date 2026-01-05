@@ -331,8 +331,8 @@ class AROMEDownloader:
         timestep.precip            = np.sum(timestep.precip[N4.nindex] * N4.ncoef, axis=1)
 
         # Radiation is gathered from nearest ocean points, thus they have their own interpolation method near to land
-        timestep.andLw             = np.sum(timestep.andLw[N4.nindex_rad] * N4.ncoef_rad, axis=1)
-        timestep.SwD               = np.sum(timestep.SwD[N4.nindex_rad] * N4.ncoef_rad, axis=1)
+        timestep.andLw             = np.sum(timestep.andLw[N4.nindex_ocean] * N4.ncoef_ocean, axis=1)
+        timestep.SwD               = np.sum(timestep.SwD[N4.nindex_ocean] * N4.ncoef_ocean, axis=1)
 
         return timestep
 
