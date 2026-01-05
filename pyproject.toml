@@ -69,6 +69,7 @@ dependencies = [
     "utm",
     "wcwidth",
     "xarray",
+    "netCDF4",
     "xyzservices",
     "chardet",
     "numba",

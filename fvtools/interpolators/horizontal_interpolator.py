@@ -53,7 +53,7 @@ class N4Coefficients(N4, DomainMasks):
         :param COARSE_grd: An initialized coarse atmopsheric model grid object, either AROME_grid or ERA5 grid
         '''
         self.FVCOM_grd = FVCOM_grd
-        self.COARSE = COARSE_grd
+        self.COARSE    = COARSE_grd
 
     @property
     def xy_coarse(self):
