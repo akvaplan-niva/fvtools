@@ -21,16 +21,19 @@ def get_roms_grid(mother, projection = None):
     ROMS model often used for SAR operational forecasting and other outside-of-the-coast applications.
     '''
     if mother == 'D-NS':
-        ROMS = NorShelf(True)
+        ROMS = NorShelf(avg = True)
 
     elif mother == 'H-NS':
-        ROMS = NorShelf(False)
+        ROMS = NorShelf(avg = False)
 
     elif mother == 'HI-NK':
         ROMS = HINorKyst()
 
-    elif mother == 'MET-NK':
-        ROMS = METNorKyst()
+    elif mother == 'MET-NKv2':
+        ROMS = METNorKystV2()
+    
+    elif mother == 'MET-NKv3':
+        ROMS = METNorKystV3()
 
     else:
         raise InputError(f'{mother=} is not a valid option. See docstring for more info.')
@@ -513,12 +516,12 @@ class HINorKyst(ROMSbase):
             ncfiles.extend([dr+'/'+fil for fil in stuff if '.nc' in fil])
         return ncfiles
 
-class METNorKyst(ROMSbase):
+class METNorKystV2(ROMSbase):
     '''
     Routines to check if MET-NorKyst data is available
     '''
     def __str__(self):
-        return 'Met Norway NorKyst'
+        return 'Met Norway NorKyst version 2'
 
     def test_day(self, date):
         '''
@@ -529,14 +532,6 @@ class METNorKyst(ROMSbase):
         self.path = file
         return file
 
-    def test_ncfile(self, file):
-        try:
-            with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
-                    raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
-        except:
-            raise NoAvailableData
-
     def get_norkyst_url(self, date):
         '''
         Give it a date, and you will get the corresponding url in return
@@ -546,6 +541,47 @@ class METNorKyst(ROMSbase):
         month       = '{:02d}'.format(date.month)
         day         = '{:02d}'.format(date.day)
         return f'{https}{year}{month}{day}.nc'
+
+    def test_ncfile(self, file):
+        try:
+            with Dataset(file, 'r') as d:
+                if len(d.variables['ocean_time'][:])<24:
+                    raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
+        except:
+            raise NoAvailableData
+
+class METNorKystV3(ROMSbase):
+    '''Routines to check if MET-NorKyst v3 data is available'''
+    def __str__(self):
+        return 'MET Norway NorKyst version 3'
+    
+    def test_day(self, date):
+        '''
+        Check if the file exists that day, and that it has enough data
+        '''
+        file = self.get_norkyst_url(date)
+        self.test_ncfile(file)
+        self.path = file
+        return file
+
+    def get_norkyst_url(self, date):
+        '''
+        Give it a date, and you will get the corresponding url in return
+        '''
+        https       = 'https://thredds.met.no/thredds/dodsC/fou-hi/new_norkyst800m/his/ocean_his.an.'
+        https       = 'https://thredds.met.no/thredds/dodsC/fou-hi/new_norkyst800m/norkyst_v3_test/his/'
+        year        = str(date.year)
+        month       = '{:02d}'.format(date.month)
+        day         = '{:02d}'.format(date.day)
+        return f'{https}/{year}/{month}/{day}/norkyst800_his_sdepth_{year}{month}{day}T00Z_m00_AN.nc'
+    
+    def test_ncfile(self, file):
+        try:
+            with Dataset(file, 'r') as d:
+                if len(d.variables['ocean_time'][:])<24:
+                    raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
+        except:
+            raise NoAvailableData
 
 class NorShelf(ROMSbase):
     '''
@@ -558,7 +594,10 @@ class NorShelf(ROMSbase):
         else:
             return 'NorShelf hourly values'
 
-    def __init__(self, avg):
+    def __init__(self, avg = False):
+        '''
+        Access NorShelf grid data, will by default try to load hourly values. Set avg to True if you want daily averages.
+        '''
         self.avg  = avg
         self.path = 'https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_an_20210531T00Z.nc'
         self.min_len = 24

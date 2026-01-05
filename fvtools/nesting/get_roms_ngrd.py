@@ -98,7 +98,8 @@ def crop_obc(x_obc, y_obc, xcoast, ycoast, R):
 
 def crop_mesh(M, x_obc, y_obc, R):
     '''
-    Get the triangles within R from the cropped obc
+    Create a nestingzone mesh for the triangles in M that are with a distance R from the
+    open boundary nodes.
     '''
     print('  -> Find the necessary cells')
     obc_tree = KDTree(np.array([x_obc, y_obc]).T)
@@ -118,11 +119,11 @@ def crop_mesh(M, x_obc, y_obc, R):
     new_tree = KDTree(np.array([x_new, y_new]).T)
 
     # Find corresponding x,y in the cells corners
-    cx = M.x[M.tri[cells,:]]
-    cy = M.y[M.tri[cells,:]]
+    triangle_corner_x = M.x[M.tri[cells,:]]
+    triangle_corner_y = M.y[M.tri[cells,:]]
 
     for j in range(3):
-        _, index = new_tree.query(np.array([cx[:,j], cy[:,j]]).T)
+        _, index = new_tree.query(np.array([triangle_corner_x[:,j], triangle_corner_y[:,j]]).T)
         new_nv[:,j] = index.astype(int)
     new_nv = new_nv.astype(int)
 

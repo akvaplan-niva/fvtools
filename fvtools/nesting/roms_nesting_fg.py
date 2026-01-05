@@ -42,7 +42,9 @@ def main(fvcom_grd,
     optional:
     ----
     mother     - ROMS model to nest into
-                 - 'HI-NK' or 'MET-NK' for NorKyst-800 
+                 - 'HI-NK'    for NorKyst-800 version 1
+                 - 'MET-NKv2' for NorKyst-800 version 2, with data from 2017-02-20 to 2025-10-17
+                 - 'MET-NKv3' for NorKyst-800 version 3, with data from 2023-05-07 to present
                  - 'H-NS' or 'D-NS' for hourly values or daily averages from NorShelf-2.4km
     weights    - tuple giving the weight interval for the nest nodes and cells. By default, weights = [2.5e-4, 2.5e-5].
     nprocs     - Number of processes to use when downloading (set equal to None to use all available cores)
