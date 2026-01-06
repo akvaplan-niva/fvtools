@@ -487,7 +487,14 @@ def parse_time_input(start, stop):
 
     return start, stop
 
-def parse_input(folder = None, fname = None, filelist = None, start = None, stop = None, sigma = None, var = None, nlevels = None **kwargs):
+def parse_input(
+        folder = None, fname = None, filelist = None, 
+        start = None, stop = None, 
+        sigma = None, 
+        var = None, 
+        nlevels = None,
+        **kwargs
+        ):
     '''
     Return the fields the routine expects
     '''
