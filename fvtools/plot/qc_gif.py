@@ -325,7 +325,7 @@ def initialize_cb(file, var):
 
         with Dataset(file) as d:
             cb[field]['units'] = d[field].units
-    return var
+    return cb
 
 def setup_colorbar(cb, var, nlevels = 30):
     '''Set colormap, colorticks etc.'''
