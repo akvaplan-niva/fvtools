@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import progressbar as pb
-#import fvtools.nesting.vertical_interpolation as vi
-import fvtools.nesting.vertical_interpolation_updated as vi
+import fvtools.nesting.vertical_interpolation as vi
+#import fvtools.nesting.vertical_interpolation_updated as vi
 
 from datetime import datetime, timedelta
 from time import gmtime, strftime
