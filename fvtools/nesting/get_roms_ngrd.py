@@ -40,10 +40,10 @@ def main(mesh,
     # Adjust sides
     # ----
     circular = False
-    if len(M.nodestrings) == 1:
-        if M.nodestrings[0][0] == M.nodestrings[0][-1]:
-            print('-- this nest is circular')
-            circular = True
+    #if M.nodestrings.shape[1] == 1:
+    #    if M.nodestrings[0][0] == M.nodestrings[0][-1]:
+    #        print('-- this nest is circular')
+    #        circular = True
         
     print('- Cut nestzone out of mesh')
     NEST = adjust_sides(M, circular)
@@ -51,11 +51,13 @@ def main(mesh,
     # Convert to get latlon
     # ----
     print('- Projecting latlon')
-    NEST['lonn'], NEST['latn'] = project(NEST['xn'], NEST['yn'], to = M.info['reference'])
+    #NEST['lonn'], NEST['latn'] = project(NEST['xn'], NEST['yn'], to = M.info['reference'])
+    NEST['lonn'], NEST['latn'] = project_updated(NEST['xn'], NEST['yn'], from_proj = M.reference)
     
     # Get cell values
     # ----
-    NEST['lonc'], NEST['latc'] = project(NEST['xc'], NEST['yc'], to = M.info['reference'])
+    #NEST['lonc'], NEST['latc'] = project(NEST['xc'], NEST['yc'], to = M.info['reference'])
+    NEST['lonc'], NEST['latc'] = project_updated(NEST['xc'], NEST['yc'], from_proj = M.reference)
 
     # Find corresponding indices (necessary for fvcom2fvcom)
     # ----
@@ -67,7 +69,8 @@ def main(mesh,
     NEST['oend1'] = 1; NEST['oend2'] = 1
     NEST['R'] = R
     NEST['info'] = {}
-    NEST['info']['reference'] = M.info['reference']
+    #NEST['info']['reference'] = M.info['reference']
+    NEST['info']['reference'] = M.reference
     np.save('ngrd.npy',NEST)
 
     if R is not None:
@@ -100,6 +103,36 @@ def project(x, y, to = 'UTM33W'):
     UTM33W   = Proj(proj='utm', zone = '33', ellps='WGS84')
     lon, lat = transform(UTM33W, WGS84, x, y, always_xy = True)
     return lon, lat
+
+def project_updated(x, y, from_proj='epsg:3031', to='epsg:4326'):
+    '''
+    This function is not used! Just included for projection related mismatch in early stages of tool development
+    Projects positions from a source coordinate reference system (CRS) 
+    to a destination CRS.
+    
+    The 'to' parameter (destination CRS) is the only one used by the 
+    parent function 'main', but the function is generalized here to accept
+    any 'from_proj' (source CRS).
+
+    Parameters:
+    x (array): Array of X-coordinates (e.g., Easting or Longitude).
+    y (array): Array of Y-coordinates (e.g., Northing or Latitude).
+    from_proj (str): The EPSG code of the input coordinates (source CRS). 
+                     Defaults to 'epsg:3031' (UTM 33N).
+    to (str): The EPSG code of the desired output coordinates (destination CRS).
+              Defaults to 'epsg:4326' (WGS84 Lat/Lon).
+
+    Returns:
+    x_out, y_out (tuple): Arrays of transformed X and Y coordinates.
+    '''
+    # Define the source and destination projections using the input strings
+    source_crs = Proj(from_proj)
+    destination_crs = Proj(to)
+
+    # Perform the transformation
+    x_out, y_out = transform(source_crs, destination_crs, x, y, always_xy=True)
+    
+    return x_out, y_out
 
 def nearest_mother(FULL,NEST):
     '''

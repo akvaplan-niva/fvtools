@@ -13,20 +13,12 @@ def add_vertical_interpolation2N4(N4, coords = ['rho', 'u', 'v'], widget_tile = 
 
         # z interpolated to fvcom-points
         z_roms = np.sum(z_roms[getattr(N4, f'{c}_index'), :] * getattr(N4, f'{c}_coef')[:, :, None], axis=1)
-        #z_roms = np.array(np.flip(z_roms, axis=1))
-        
-        # Returning to the older version and making the change by np.ascontiguousarray()
         z_roms = np.flip(z_roms, axis=1)
+
         # converting a possible <class 'numpy.ma.core.MaskedArray'> to <class 'numpy.ndarray'>
         z_roms = np.ascontiguousarray(z_roms)
 
         # Find FVCOM depth
-        #if c == 'rho':
-        #    z_fvcom = np.array(getattr(N4.FV, 'siglay') * N4.fvcom_rho_dpt[:, None])
-        #else:
-        #    z_fvcom = np.array(getattr(N4.FV, 'siglay_center') * (0.5*N4.fvcom_u_dpt[:, None] + 0.5*N4.fvcom_v_dpt[:, None]))
-
-        # Returning to the older version and making the change by np.ascontiguousarray()
         if c == 'rho':
             z_fvcom = getattr(N4.FV, 'siglay') * N4.fvcom_rho_dpt[:, None]
         else:
@@ -34,7 +26,7 @@ def add_vertical_interpolation2N4(N4, coords = ['rho', 'u', 'v'], widget_tile = 
 
         # converting a possible <class 'numpy.ma.core.MaskedArray'> to <class 'numpy.ndarray'>
         z_fvcom = np.ascontiguousarray(z_fvcom)
-         
+        
         z_roms, z_fvcom = prepare_z_dimensions(z_roms.T, z_fvcom.T)
         ind1, ind2, weigths1, weigths2 = calc_interp_matrices(-z_roms, -z_fvcom)
         
@@ -53,7 +45,6 @@ def prepare_z_dimensions(z_roms, z_fvcom):
     if len(z_fvcom.shape) == 1:
         z_fvcom = z_fvcom[:, None]
     return z_roms, z_fvcom
-    
 @njit
 def calc_interp_matrices(z1, z2):
     '''

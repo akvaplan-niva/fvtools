@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from scipy.spatial import cKDTree as KDTree
 
 # fvtools
-from fvtools.nesting import vertical_interpolation_updated as vi
+from fvtools.nesting import vertical_interpolation as vi
 from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
 from fvtools.gridding.prepare_inputfiles import write_FVCOM_bath
 from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
