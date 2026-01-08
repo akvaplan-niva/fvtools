@@ -6,7 +6,10 @@ from numba import njit
 
 class Nearest4Points:
     '''
-    Builder for nearest 4 points, which is needed when preparing to use the N4 bi-linear coefficient subset.
+    Work in progress, not used yet...
+
+    Builder for nearest 4 points, which is needed when preparing to use the N4 bi-linear coefficient subset
+    Will generalize building of nearest 4- indices for AROME and ROMS input.
 
     xy_source        = (n,2) x,y
     xy_source_center = (m,2) x,y
@@ -23,7 +26,7 @@ class Nearest4Points:
         |        |
         |        |
 
-    We find the m-point which is closest to the FVCOM point, and use that to find the "box" that out FVCOM point is within.
+    We find the m-point that is closest to the FVCOM point, and use that to find the "box" that out FVCOM point is within.
     '''
     @property
     def source_tree(self):
@@ -47,9 +50,77 @@ class Nearest4Points:
     def nearest4inds(self):
         return self.source_tree.query_ball_point(self.source_center_tree.data[self.center_closest_to_fvcom], r = self.ball_radius)
 
+#    @property
+#    def nearest4inds_knn(self):
+#        '''
+#        Robustly finds the 4 nearest source (n) points to the closest center (m) point, 
+#        using k=4 query to guarantee fixed-size output.
+#        '''
+        # 1. Get the coordinates of the closest center point (m) to each FVCOM point (f)
+#        center_points = self.source_center_tree.data[self.center_closest_to_fvcom]
+        
+        # 2. Query the *source* tree (n-points) for the 4 nearest neighbors 
+        #    of those center points. This guarantees a fixed size of 4.
+#        _, indices = self.source_tree.query(center_points, k=4) 
+        
+#        return indices
+
+    @property
+    def nearest4inds_knn(self):
+        '''
+        Robustly finds the 4 nearest source (n) points to the closest center (m) point.
+        Uses k=12 bulk query for speed, and implements a k=4 shortcut check for 
+        physical uniqueness before iterating through all 12 points.
+        '''
+        
+        # 1. Get the coordinates of the closest center point (m) to each FVCOM point (f)
+        center_points = self.source_center_tree.data[self.center_closest_to_fvcom]
+        
+        # 2. Query the *source* tree (n-points) for the 12 nearest neighbors (fast bulk operation)
+        k_neighbors = 12
+        # indices_k12 has shape (n_fvcom, k_neighbors), sorted by distance
+        _, indices_k12 = self.source_tree.query(center_points, k=k_neighbors) 
+        
+        # 3. Process the K=12 results to get the first 4 physically unique indices
+        n_fvcom = indices_k12.shape[0]
+        final_indices = np.zeros((n_fvcom, 4), dtype=np.int64)
+        
+        # Iterate through each points surroinding center points close to FVCOM target points
+        for i in range(n_fvcom):
+            neighbors_12 = indices_k12[i, :]
+            
+            # OPTIMIZATION: Check the closest k=4 first (90% case)
+            neighbors_k4_coords = [tuple(self.xy_source[idx]) for idx in neighbors_12[0:4]]
+            
+            if len(set(neighbors_k4_coords)) == 4:
+                # FAST PATH: The first 4 closest points are already physically unique
+                final_indices[i, :] = neighbors_12[0:4]
+            else:
+                # FALLBACK PATH: Duplicates found in the closest 4. Must iterate over the k=12 list.
+                unique_indices_list = []
+                found_coords_set = set()
+                
+                # Iterate through all 12 nearest neighbors in order of distance
+                for index in neighbors_12:
+                    current_coord = tuple(self.xy_source[index])
+                    
+                    if current_coord not in found_coords_set:
+                        found_coords_set.add(current_coord)
+                        unique_indices_list.append(index)
+                    
+                    if len(unique_indices_list) == 4:
+                        break
+                
+                # Assign the first 4 unique indices found (max 4)
+                final_indices[i, :len(unique_indices_list)] = unique_indices_list
+
+        # Return the indices of the 4 physically unique closest points
+        return final_indices
+
+
 class N4(Nearest4Points):
     '''
-    Used to compute the nearest 4 coefficients
+    Series of staticmethods, ROMS and AROME interpolators use these to some extent
     '''
     def get_interpolation_matrices(self, xy_source=None, xy_source_center=None, xy_fvcom=None, nfvcom = None, widget_title = None):
         '''
@@ -64,9 +135,12 @@ class N4(Nearest4Points):
         self.xy_fvcom = xy_fvcom
 
         print(f'  - Finding nearest 4 {widget_title} weights')
-
         # - we can't send objects to numba nopython mode, hence we must convert the np.object array to a np.ndarray
-        n4indices = np.array([np.array(nearest4, dtype=np.int64) for nearest4 in self.nearest4inds], dtype=np.int64)
+        # n4indices = np.array([np.array(nearest4, dtype=np.int64) for nearest4 in self.nearest4inds], dtype=np.int64)        
+        n4indices = self.nearest4inds_knn
+
+        
+        
         return compute_interpolation_coefficients(n4indices, self.xy_source, xy_fvcom, len(xy_fvcom[:,0]))
 
 @njit
@@ -113,21 +187,36 @@ def _rotate_subset(source_x, source_y, fvcom_x, fvcom_y):
     Since bilinear coefficients is particular about squares being square and straight
     '''
     # Get the corner to rotate around
-    first_corner       = np.where(source_y == np.min(source_y))
+    #first_corner       = np.where(source_y == np.min(source_y))
+    first_corner_idx = np.argmin(source_y).item()
 
     # Get the angle to rotate
-    dist               = np.sqrt((source_x - source_x[first_corner])**2 + (source_x-source_x[first_corner])**2)
+    #dist               = np.sqrt((source_x - source_x[first_corner])**2 + (source_x-source_x[first_corner])**2)
+    dist = np.sqrt((source_x - source_x[first_corner_idx])**2 + (source_y - source_y[first_corner_idx])**2)
+    
     x_tmp1             = source_x[np.argsort(dist)[1:]]
+    
     first_to_the_right = x_tmp1[np.where(x_tmp1 == np.max(x_tmp1))]
-    second_corner      = np.where(source_x == first_to_the_right)
-    angle              = np.arctan2(source_y[second_corner] - source_y[first_corner], \
-                                    source_x[second_corner] - source_x[first_corner])
+    #second_corner      = np.where(source_x == first_to_the_right)
+    second_corner = np.where(source_x == first_to_the_right)[0].item()
+    #angle              = np.arctan2(source_y[second_corner] - source_y[first_corner], \
+    #                                source_x[second_corner] - source_x[first_corner])
+
+    angle = np.arctan2(source_y[second_corner] - source_y[first_corner_idx], source_x[second_corner] - source_x[first_corner_idx])
 
     # Rotate around origo
-    x_tmp = (source_x - source_x[first_corner])  
-    y_tmp = (source_y - source_y[first_corner])
-    fx_t  = (fvcom_x  - source_x[first_corner])
-    fy_t  = (fvcom_y  - source_y[first_corner])
+    #x_tmp = (source_x - source_x[first_corner])  
+    #y_tmp = (source_y - source_y[first_corner])
+    #fx_t  = (fvcom_x  - source_x[first_corner])
+    #fy_t  = (fvcom_y  - source_y[first_corner])
+
+    x0 = source_x[first_corner_idx] # Scalar new inclusion
+    y0 = source_y[first_corner_idx] # Scalar new inclusion
+
+    x_tmp = (source_x - x0)    
+    y_tmp = (source_y - y0)    
+    fx_t  = (fvcom_x  - x0)
+    fy_t  = (fvcom_y  - y0) 
 
     # Rotate source coordinates
     source_x = x_tmp*np.cos(-angle) - y_tmp*np.sin(-angle)
