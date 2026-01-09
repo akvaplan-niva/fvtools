@@ -1,4 +1,6 @@
 # fvtools/util/spatial.py
+from fvtools.grid.fvcom_grd import FVCOM_grid
+
 import numpy as np
 try:
     from pyproj import Transformer, CRS
@@ -40,10 +42,15 @@ def _extract_xy_any(M, field_x="x", field_y="y"):
     avail = list(getattr(M, "__dict__", {}).keys()) if hasattr(M, "__dict__") else (list(M.keys()) if isinstance(M, dict) else [])
     raise ValueError(f"M does not expose '{field_x},{field_y}'. Available fields/attrs: {avail}")
 
+#def _load_M(m_path_or_obj):
+#    return _unwrap_maybe_object_array(
+#        np.load(m_path_or_obj, allow_pickle=True) if isinstance(m_path_or_obj, str) else m_path_or_obj
+#    )
+
 def _load_M(m_path_or_obj):
-    return _unwrap_maybe_object_array(
-        np.load(m_path_or_obj, allow_pickle=True) if isinstance(m_path_or_obj, str) else m_path_or_obj
-    )
+    return FVCOM_grid(m_path_or_obj)
+
+
 
 def _project_lonlat(lon, lat, crs_to):
     """
