@@ -25,19 +25,14 @@ def get_nbe(M):
     print('  - find neighbors')
     near_tri = tri.neighbors
 
-    # Find triangles at the boundary
-    print('  - find triangles near the model boundary')
-    boundary_tri      = [i for i, tri in enumerate(near_tri) if -1 in tri]
-
     print('  - isolate the nodes and cells in the domain from those near the boundary')
-    btri_neighbors    = near_tri[boundary_tri, :]
     identify          = np.where(near_tri == -1)
     boundary_elements = identify[0]
     nodes_1           = identify[1]
     nodes_2           = (nodes_1+1)%3
     boundary_nodes_1  = M.tri[boundary_elements, nodes_1]
     boundary_nodes_2  = M.tri[boundary_elements, nodes_2]
-    boundary_nodes    = np.append(boundary_nodes_1,boundary_nodes_2)
+    boundary_nodes    = np.append(boundary_nodes_1, boundary_nodes_2)
     boundary_nodes    = np.unique(boundary_nodes)
 
     # Mark elements and nodes bording to land with 1, and 2 with obc
