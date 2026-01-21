@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from fvtools.grid.roms_grid import CropRho, CropU, CropV
+from fvtools.grid.cropper_roms import CropRho, CropU, CropV
 from .nearest4 import N4
 
 class N4_interpolation(CropRho, CropU, CropV):

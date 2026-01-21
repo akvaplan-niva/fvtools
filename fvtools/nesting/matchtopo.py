@@ -134,10 +134,10 @@ class MatchTopo:
 
         # Prepare interpolator
         N4B = N4ROMSNESTING(
-            self.COARSE, 
-            x = self.M.x[self.nodes_to_change], 
-            y = self.M.y[self.nodes_to_change], 
-            uv = False, 
+            self.COARSE,
+            x = self.M.x[self.nodes_to_change],
+            y = self.M.y[self.nodes_to_change],
+            uv = False,
             land_check = False
             ) # the depth at ROMS land is equal to min_depth
         N4B.nearest4()
@@ -150,6 +150,9 @@ class MatchTopo:
         # Update the nodes by to their distance from the obc
         self.M.h  = h_coarse*self.weight + self.M.h*(1 - self.weight)
         self.match_depth_in_nest_and_model()
+
+        # Re-calculate the sigma distribution from the input file, as it can (when using the SOUZA option) be depth dependent
+        self.M.read_sigma()
 
         # Store the smoothed bathymetry to the mesh (ends up in casename_dep.dat)
         self.store_bathymetry()
