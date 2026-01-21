@@ -2,20 +2,18 @@
 #                                Routines to access specific ROMS models
 # =================================================================================================================
 import numpy as np
-import os
-import sys
-import pandas as pd
 import time as time_mod
 
 from datetime import datetime, timedelta
 from functools import cached_property
 from netCDF4 import Dataset
 from dataclasses import dataclass, field
+from .cropper_roms import ROMSCropper
 
 def get_roms_grid(mother, projection = None):
     '''
     Returns a ROMS object for the mother model of question
-    - we currently have readers for NorShelf (mother=NS) and the IMR- (HI-NK) and MET (MET-NK) operated NorKyst models.
+    - we currently have readers for NorShelf (mother=NS) and the MET NorKyst models (NKv2 and NKv3).
 
     NorKyst is a 800 m grid spacing ROMS model intended for Norway-scale fjord studies. NorShelf is a data assimilated
     ROMS model often used for SAR operational forecasting and other outside-of-the-coast applications.
@@ -26,13 +24,10 @@ def get_roms_grid(mother, projection = None):
     elif mother == 'H-NS':
         ROMS = NorShelf(avg = False)
 
-    elif mother == 'HI-NK':
-        ROMS = HINorKyst()
-
-    elif mother == 'MET-NKv2':
+    elif mother == 'NKv2':
         ROMS = METNorKystV2()
     
-    elif mother == 'MET-NKv3':
+    elif mother == 'NKv3':
         ROMS = METNorKystV3()
 
     else:
@@ -66,7 +61,7 @@ class ROMSdepths:
     @property
     def h_rho(self):
         '''depth at rho points'''
-        return self._h_rho+self.zeta
+        return self._h_rho + self.zeta
     
     @h_rho.setter
     def h_rho(self, var):
@@ -82,7 +77,11 @@ class ROMSdepths:
 
     @property
     def S_rho(self):
-        '''Depth where scalar-variables are stored'''
+        '''
+        Depth where scalar-variables are stored
+        - Will depend on which stretching function the ROMS model was operated with
+        - See more details in the ROMS documentation, 
+        '''
         S_rho = np.tile(np.zeros((self.lon_rho.shape))[:,:, None], (1,1,len(self.Cs_r)))
         for i, (s, c) in enumerate(zip(self.s_rho, self.Cs_r)):
             S_rho[:, :, i] = (self.hc*s + self.h_rho[:, :]*c)/(self.hc+self.h_rho)
@@ -93,7 +92,7 @@ class ROMSdepths:
         '''
         Depth at interface between sigma layers (as well as top/bottom). Stored in the same way as internally in ROMS
         '''
-        S_w   = np.tile(np.zeros((self.lon_rho.shape))[None, :, :], (len(self.Cs_w),1,1))
+        S_w   = np.tile(np.zeros((self.lon_rho.shape))[None, :, :], (len(self.Cs_w), 1, 1))
         for i, (s, c) in enumerate(zip(self.s_w, self.Cs_w)):
             S_w[i, :, :] = (self.hc*s + self.h_rho[:, :]*c)/(self.hc+self.h_rho)
         return S_w
@@ -106,7 +105,7 @@ class ROMSdepths:
     @property
     def z_rho(self):
         '''depth at centre of sigma layers'''
-        return self.h_rho[:,:,None] * self.S_rho
+        return self.h_rho[:, :, None] * self.S_rho
 
     @property
     def z_u(self):
@@ -133,226 +132,6 @@ class ROMSdepths:
     def dsigma_v(self):
         return np.diff(self.zw_v, axis = 0)/self.h_v[None, :, :]
 
-# We always deal with a cropped verison of the ROMS grid in the nesting- restart- and movie routines.
-# These classes are used to crop the roms domain to cover xbounds, ybounds (xy-coordinates), and provides metrics (m_ri, x_ri) etc,
-# to be used when we crop data on-the-fly while downloading.
-class CropRho:
-    def crop_rho(self):
-        """
-        Find indices of grid points inside specified domain
-        """
-        ind1 = np.logical_and(self.x_rho >= np.min(self.xbounds)-self.offset, self.x_rho <= np.max(self.xbounds)+self.offset)
-        ind2 = np.logical_and(self.y_rho >= np.min(self.ybounds)-self.offset, self.y_rho <= np.max(self.ybounds)+self.offset)
-        return np.logical_and(ind1, ind2)
-
-    @property
-    def fv_rho_mask(self):
-        if not hasattr(self, '_fv_rho_mask'):
-            self._fv_rho_mask = self.crop_rho()
-        return self._fv_rho_mask
-
-    @fv_rho_mask.setter
-    def fv_rho_mask(self, var):
-        self._fv_rho_mask = var
-
-    @cached_property
-    def cropped_rho_mask(self):
-        '''Cropped version of the rho-mask that we use when processing the data downloaded from thredds'''
-        return self.fv_rho_mask[self.m_ri:self.x_ri+1, self.m_rj:self.x_rj+1]
-
-    @cached_property
-    def m_ri(self):
-        '''min i-index for rho-points'''
-        rho_i, rho_j = np.where(self.fv_rho_mask)
-        return min(rho_i)
-
-    @cached_property
-    def x_ri(self):
-        '''max i-index for rho points'''
-        rho_i, rho_j = np.where(self.fv_rho_mask)
-        return max(rho_i)
-
-    @cached_property
-    def m_rj(self):
-        '''min j-index for rho-points'''
-        rho_i, rho_j = np.where(self.fv_rho_mask)
-        return min(rho_j)
-
-    @cached_property
-    def x_rj(self):
-        '''max j-index for rho points'''
-        rho_i, rho_j = np.where(self.fv_rho_mask)
-        return max(rho_j)
-
-class CropU:
-    def crop_u(self):
-        """
-        Find indices of grid points inside specified domain
-        """
-        ind1 = np.logical_and(self.x_u >= np.min(self.xbounds)-self.offset, self.x_u <= np.max(self.xbounds)+self.offset)
-        ind2 = np.logical_and(self.y_u >= np.min(self.ybounds)-self.offset, self.y_u <= np.max(self.ybounds)+self.offset)
-        return np.logical_and(ind1, ind2)
-
-    @property
-    def fv_u_mask(self):
-        if not hasattr(self, '_fv_u_mask'):
-            self._fv_u_mask = self.crop_u()
-        return self._fv_u_mask
-
-    @fv_u_mask.setter
-    def fv_u_mask(self, var):
-        self._fv_u_mask = var
-
-    @cached_property
-    def cropped_u_mask(self):
-        return self.fv_u_mask[self.m_ui:self.x_ui+1, self.m_uj:self.x_uj+1]
-
-    @cached_property
-    def m_ui(self):
-        u_i, u_j = np.where(self.fv_u_mask)
-        return min(u_i)
-
-    @cached_property
-    def x_ui(self):
-        u_i, u_j = np.where(self.fv_u_mask)
-        return max(u_i)
-
-    @cached_property
-    def m_uj(self):
-        u_i, u_j = np.where(self.fv_u_mask)
-        return min(u_j)
-
-    @cached_property
-    def x_uj(self):
-        u_i, u_j = np.where(self.fv_u_mask)
-        return max(u_j)
-
-class CropV:
-    def crop_v(self):
-        """
-        Find indices of grid points inside specified domain
-        """
-        ind1 = np.logical_and(self.x_v >= np.min(self.xbounds)-self.offset, self.x_v <= np.max(self.xbounds)+self.offset)
-        ind2 = np.logical_and(self.y_v >= np.min(self.ybounds)-self.offset, self.y_v <= np.max(self.ybounds)+self.offset)
-        return np.logical_and(ind1, ind2)
-
-    @property
-    def fv_v_mask(self):
-        if not hasattr(self, '_fv_v_mask'):
-            self._fv_v_mask = self.crop_v()
-        return self._fv_v_mask
-
-    @fv_v_mask.setter
-    def fv_v_mask(self, var):
-        self._fv_v_mask = var
-
-    @cached_property
-    def cropped_v_mask(self):
-        return self.fv_v_mask[self.m_vi:self.x_vi+1, self.m_vj:self.x_vj+1]
-
-    @cached_property
-    def m_vi(self):
-        v_i, v_j = np.where(self.fv_v_mask)
-        return min(v_i)
-
-    @cached_property
-    def x_vi(self):
-        v_i, v_j = np.where(self.fv_v_mask)
-        return max(v_i)
-
-    @cached_property
-    def m_vj(self):
-        v_i, v_j = np.where(self.fv_v_mask)
-        return min(v_j)
-
-    @cached_property
-    def x_vj(self):
-        v_i, v_j = np.where(self.fv_v_mask)
-        return max(v_j)
-
-class ROMSCropper(CropU, CropV, CropRho):
-    '''
-    Class that uses the crop-properties to fit arrays to the desired subdomain
-    '''
-    @property
-    def cropped_dsigma_v(self):
-        '''
-        sigma layer thickness of each ROMS layer
-        '''
-        return self.dsigma_v[:, self.m_vi:self.x_vi+1, self.m_vj:self.x_vj+1]
-    
-    @property
-    def cropped_dsigma_u(self):
-        '''
-        sigma layer thickness of each ROMS layer
-        '''
-        return self.dsigma_u[:, self.m_ui:self.x_ui+1, self.m_uj:self.x_uj+1]
-
-    # Cropped roms coordinates as (n,) arrays.
-    @property
-    def cropped_x_rho(self):
-        return self.x_rho[self.fv_rho_mask]
-
-    @property
-    def cropped_y_rho(self):
-        return self.y_rho[self.fv_rho_mask]
-
-    @property
-    def cropped_x_u(self):
-        return self.x_u[self.fv_u_mask]
-
-    @property
-    def cropped_y_u(self):
-        return self.y_u[self.fv_u_mask]
-
-    @property
-    def cropped_x_v(self):
-        return self.x_v[self.fv_v_mask]
-
-    @property
-    def cropped_y_v(self):
-        return self.y_v[self.fv_v_mask]
-
-    # Land-mask
-    @property
-    def Land_rho(self):
-        '''rho mask cropped to fit with the mesh we're interpolating to'''
-        return self.rho_mask[self.fv_rho_mask]
-
-    @property
-    def Land_u(self):
-        '''u mask cropped to fit with the mesh we're interpolating to'''
-        return self.u_mask[self.fv_u_mask]
-
-    @property
-    def Land_v(self):
-        '''v mask cropped to fit with the mesh we're interpolating to'''
-        return self.v_mask[self.fv_v_mask]
-
-    @property
-    def cropped_x_psi(self):
-        umask = np.logical_and(self.fv_u_mask[1:,:], self.fv_u_mask[:-1,:])
-        vmask = np.logical_and(self.fv_v_mask[:,1:], self.fv_v_mask[:,:-1])
-        psi_mask = np.logical_and(umask,vmask)
-        return (self.x_u[1:,:] + self.x_u[:-1,:])[psi_mask]/2
-
-    @property
-    def cropped_y_psi(self):
-        umask = np.logical_and(self.fv_u_mask[1:,:], self.fv_u_mask[:-1,:])
-        vmask = np.logical_and(self.fv_v_mask[:,1:], self.fv_v_mask[:,:-1])
-        psi_mask = np.logical_and(umask,vmask)
-        return (self.y_v[:,1:] + self.y_v[:,:-1])[psi_mask]/2
-
-    @property
-    def cropped_x_rho_grid(self):
-        '''Exclusively used in the ROMS movie maker'''
-        return self.x_rho[self.m_ri:(self.x_ri+1), self.m_rj:(self.x_rj+1)]
-
-    @property
-    def cropped_y_rho_grid(self):
-        '''Exclusively used in the ROMS movie maker'''
-        return self.y_rho[self.m_ri:(self.x_ri+1), self.m_rj:(self.x_rj+1)]
-
 class ROMSbase(ROMSdepths, ROMSCropper):
     '''
     Containing methods we need when trying to couple a FVCOM and ROMS model
@@ -365,7 +144,6 @@ class ROMSbase(ROMSdepths, ROMSCropper):
         - offset:  offset in x-y direction (to make sure to include all relevant ROMS points)
         '''
         # Add xbounds and ybounds to self
-        # ----
         self.xbounds = xbounds
         self.ybounds = ybounds
         self.offset  = offset
@@ -395,17 +173,31 @@ class ROMSbase(ROMSdepths, ROMSCropper):
         - stretching functions (for rho and w points)
         - angle between XI-axis and east
         '''
-        ncdata = Dataset(self.path, 'r')
-        load_position_fields = ['lon_rho', 'lat_rho', 'lat_u', 'lat_v', 'lon_u', 'lon_v',
-                                'h', 'angle', 'Cs_r', 's_rho', 'Cs_w', 's_w', 'hc']
-        for load in load_position_fields:
-            setattr(self, load, ncdata.variables.get(load)[:])
-        self.h_rho = self.__dict__.pop('h')
+        load_position_fields = [
+            'lon_rho', 'lat_rho', 
+            'lat_u', 'lat_v', 
+            'lon_u', 'lon_v',
+            'h', 'angle', 
+            'Cs_r', 's_rho', 
+            'Cs_w', 's_w', 
+            'hc',
+            'Vstretch'
+            ]
+        with Dataset(self.path, 'r') as ncdata:
+            for load in load_position_fields:
+                try:
+                    setattr(self, load, ncdata.variables.get(load)[:])
+                except:
+                    if load == 'Vstretch':
+                        setattr(self, load, ncdata.variables.get('Vstretching')[:])
+                    else:
+                        raise TypeError(f'{load} is not available in {self.path}.')
 
-        load_mask = ['u', 'v', 'rho']
-        for load in load_mask:
-            setattr(self, f'{load}_mask', ((ncdata.variables.get(f'mask_{load}')[:]-1)*(-1)).astype(bool))
-        ncdata.close()
+            self.h_rho = self.__dict__.pop('h')
+
+            load_mask = ['u', 'v', 'rho']
+            for load in load_mask:
+                setattr(self, f'{load}_mask', ((ncdata.variables.get(f'mask_{load}')[:]-1)*(-1)).astype(bool))
 
     def get_x_y_z(self):
         '''
@@ -416,106 +208,6 @@ class ROMSbase(ROMSdepths, ROMSCropper):
         self.x_v,   self.y_v   = self.Proj(self.lon_v,   self.lat_v,   inverse=False)
 
 # Each ROMS setup will have its own quirks w/respect to finding data, these quirks should be adressed in these subclasses
-# ----
-class HINorKyst(ROMSbase):
-    '''
-    Routines to check if HI-NorKyst data is available, inherits grid-methods from ROMSbase
-    '''
-    def __str__(self):
-        return 'Havforskningsinstituttet NorKyst simulations'
-
-    @cached_property
-    def all_local_norkyst_files(self):
-        '''
-        property holding all local ncfiles
-        '''
-        self.folders     = ['/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2016-2017',\
-                            '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2017',\
-                            '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2018',\
-                            '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2019',\
-                            '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_20194',\
-                            '/cluster/shared/NS9067K/apn_backup/ROMS/NK800_2020']
-        self._bottom_folders()
-        return self._list_ncfiles()
-
-    def test_day(self, date):
-        '''
-        See if the local file exists that day, and has enough data
-        date: datetime object
-        '''
-        file = self.get_norkyst_local(date)
-        self.test_ncfile(file)
-        self.path = file
-        return file
-
-    def test_ncfile(self, file):
-        try:
-            with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
-                    raise NoAvailableData(f'{file} does not have a complete timeseries')
-        except:
-            raise NoAvailableData
-
-    def get_norkyst_local(self, date):
-        '''
-        Looks for NorKyst data in the predefined folders.
-        '''
-        return self._connect_date_to_file(self.all_local_norkyst_files, date)
-
-    def _connect_date_to_file(self, all_ncfiles, date):
-        '''
-        check which date to start with
-        '''
-        # Identify the files using their names (ie. not a filelist approach?)
-        # ----
-        year  = str(date.year)
-        month = '{:02d}'.format(date.month)
-        day   = '{:02d}'.format(date.day)
-
-        files = [files for files in all_ncfiles if year+month+day in files]
-
-        # I want the file that starts the same date as my date
-        # ----
-        for f in files:
-            if f'{year}{month}{day}' in f.split('_')[-1].split('-')[0]:
-                read_file = f
-                break
-
-        return read_file
-
-    def _bottom_folders(self):
-        '''
-        Returns the folders on the bottom of the pyramid (hence the name)
-        mandatory:
-        folders   - parent folder(s) to cycle through
-        '''
-        # ----
-        dirs = []
-        for folder in self.folders:
-            dirs.extend([x[0] for x in os.walk(folder)])
-
-        # remove folders that are not at the top of the tree
-        # ----
-        leaf_branch = []
-        for dr in dirs:
-            if dr[-1]=='/':
-                continue
-            else:
-                # This string is at the end of the branch, thus this is where the data is stored
-                # ----
-                leaf_branch.append(dr)
-        self.subfolders = leaf_branch
-
-    def _list_ncfiles(self):
-        '''
-        returns list of all files in directories (or in one single directory)
-        '''
-        ncfiles = []
-        for dr in self.subfolders:
-            stuff   = os.listdir(dr)
-            ncfiles.extend([dr+'/'+fil for fil in stuff if '.nc' in fil])
-        return ncfiles
-
 class METNorKystV2(ROMSbase):
     '''
     Routines to check if MET-NorKyst data is available
@@ -568,7 +260,6 @@ class METNorKystV3(ROMSbase):
         '''
         Give it a date, and you will get the corresponding url in return
         '''
-        https       = 'https://thredds.met.no/thredds/dodsC/fou-hi/new_norkyst800m/his/ocean_his.an.'
         https       = 'https://thredds.met.no/thredds/dodsC/fou-hi/new_norkyst800m/norkyst_v3_test/his/'
         year        = str(date.year)
         month       = '{:02d}'.format(date.month)
@@ -612,7 +303,6 @@ class NorShelf(ROMSbase):
         file = self.get_norshelf_day_url(date)
 
         # Test if the data is good
-        # ----
         forecast_nr = 0
         while True:
             try:
@@ -658,7 +348,6 @@ class NorShelf(ROMSbase):
         return https+ "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
 
 # Methods for downloading data from a ROMS output file and preparing them to be interpolated to FVCOM
-# ----
 class RomsDownloader:
     '''
     Routine that downloads data. It will automatically stop and wait if the thredds server goes down / the data we need is temporarily unavailable
