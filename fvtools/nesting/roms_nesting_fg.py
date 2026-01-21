@@ -197,7 +197,7 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         manager = mp.Manager() # We need a manager since all processes (minus one) will communicate with the writer
         q = manager.Queue()    # q is convey messages from the workers to the listener
         if nprocs is None:
-            pool = mp.Pool(mp.cpu_count()+2)
+            pool = mp.Pool(mp.cpu_count() + 2)
         else:
             pool = mp.Pool(nprocs+2) # +2 to make sure that the listener and the watcher does not overpopulate the list
 

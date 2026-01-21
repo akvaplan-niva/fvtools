@@ -13,7 +13,6 @@ version_number = 4.0
 
 import os
 import numpy as np
-import fvtools.grid.fvgrid as fvg
 import matplotlib.pyplot as plt
 
 from pyproj import Proj, transform
@@ -22,7 +21,6 @@ from matplotlib.tri import Triangulation
 from datetime import datetime
 from numba import jit, njit
 from fvtools.grid.fvcom_grd import GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropGrid, ExportGrid, CellTriangulation, PropertiesFromTGE, GridProximity, CoastLine, AnglesAndPhysics
-from fvtools.grid.tge import get_NBE
 from functools import cached_property
 
 def main(dmfile = None,
@@ -63,12 +61,14 @@ def main(dmfile = None,
     '''
     if sigma_file is None: 
         sigma_file = f'./input/{casename}_sigma.dat'
-        
-    bc = BuildCase(dmfile=dmfile, depth_file=depth_file, casename=casename,
-                   dm_projection=dm_projection, depth_projection=depth_projection, target_projection=target_projection, 
-                   sigma_file=sigma_file,
-                   rx0max=rx0max, SmoothFactor=SmoothFactor, min_depth=min_depth, 
-                   sponge_radius=sponge_radius, sponge_factor=sponge_factor, latlon=latlon)
+    
+    # Copy the input to a dictionary
+    vars = dir()
+    kwargs = {}
+    for variable in vars:
+        kwargs[variable] = eval(variable)
+
+    bc = BuildCase(**kwargs)
     return bc
 
 class DepthHandler:
@@ -148,59 +148,10 @@ class DepthHandler:
                 depth_data = np.loadtxt(dptfile, delimiter=' ')
             except:
                 depth_data = np.loadtxt(dptfile, skiprows = 1, delimiter = ',', usecols = [0,1,2])
-        numpy_bath_name = f'{dptfile.split(".txt")[0]}.npy'
+        numpy_bath_name = f'{dptfile.replace(".txt", "").replace(".csv", "")}.npy'
         print(f'- Storing the full bathymetry as: {numpy_bath_name}')
         np.save(numpy_bath_name, depth_data)
         return depth_data
-
-    def read_sigma(self):
-        '''Generate a tanh sigma coordinate distribution
-
-        Parameters:
-        ----
-        sigmafile:   A casename_sigma.dat file
-
-        Returns:
-        ----
-        lev, lay:    Sigma coordinate lev and lay (valid for the entire domain)
-        '''
-        # Read the input parameters from the casename_sigma.dat file
-        data = np.loadtxt(self.sigmafile, delimiter = '=', dtype = str)
-        if data[1,1] == ' TANH ':
-            nlev = int(data[0,1])
-            du   = float(data[2,1])
-            dl   = float(data[3,1])
-            lev  = np.zeros((nlev))
-            for k in np.arange(nlev-1):
-                x1 = np.tanh((dl + du) * (nlev - 2 - k) / (nlev - 1) - dl)
-                x2 = np.tanh(dl)
-                x3 = x2 + np.tanh(du)
-                lev[k+1] = (x1 + x2) / x3 - 1.0
-
-        elif data[1,1] == ' UNIFORM' or data[1,1] == 'UNIFORM':
-            nlev = int(data[0,1])
-            lev = np.zeros(nlev)
-            for k in np.arange(1,nlev+1):
-                lev[k-1] = -((k - 1)/(nlev - 1))
-
-        elif data[1,1] == ' GEOMETRIC':
-            nlev = int(data[0,1])
-            lev = np.zeros(nlev)
-            p_sigma = np.double(data[2,1])
-            for k in range(1, int(np.floor((nlev+1)/2)+1)):
-                lev[k-1]=-((k-1)/((nlev+1)/2 - 1))**p_sigma/2
-            for k in range(int(np.floor((nlev+1)/2))+1,nlev+1):
-                lev[k-1]=((nlev-k)/((nlev+1)/2-1))**p_sigma/2-1
-
-        else:
-            raise ValueError(f'BuildCase supports tanh-, geometric- and uniform-coordinates at the moment. {data[1,1]} is invalid.')
-
-        # Siglay
-        lay = [(lev[k]+lev[k+1])/2 for k in range(len(lev)-1)]
-
-        # Store
-        self.siglev = np.tile(lev, (len(self.x), 1))
-        self.siglay = np.tile(np.array(lay), (len(self.x), 1))
 
     def crop(self, depth_data):
         """
@@ -214,8 +165,8 @@ class DepthHandler:
             raise ValueError('The bathymetry file does not cover the model domain!')
 
         print('  - Crop the bathymetry data')
-        ind1 = np.logical_and(depth_data[:,0] >= min(self.x_d)-5000.0, depth_data[:,0] <= max(self.x_d)+5000.0)
-        ind2 = np.logical_and(depth_data[:,1] >= min(self.y_d)-5000.0, depth_data[:,1] <= max(self.y_d)+5000.0)
+        ind1 = np.logical_and(depth_data[:, 0] >= min(self.x_d) - 5000.0, depth_data[:, 0] <= max(self.x_d) + 5000.0)
+        ind2 = np.logical_and(depth_data[:, 1] >= min(self.y_d) - 5000.0, depth_data[:, 1] <= max(self.y_d) + 5000.0)
         ind  = np.logical_and(ind1, ind2)
 
         depth = {}
@@ -323,7 +274,9 @@ class DepthHandler:
         return bath, rmax, corrected
 
     def setup_metrics(self):
-        """Setup metrics for secondary connectivity (nodes surrounding nodes)"""
+        """
+        Setup metrics for secondary connectivity (nodes surrounding nodes). These are needed when smoothing the topography.
+        """
         tri   = Triangulation(self.x, self.y, self.tri)
         ntsn  = np.zeros((len(self.x))).astype(int)
         nbsn  = -1*np.ones((len(self.x),12)).astype(int)
@@ -334,7 +287,7 @@ class DepthHandler:
     @staticmethod
     @njit
     def calculate_nbsn_ntsn(edges, nbsn, ntsn):
-        for i, edge in enumerate(edges):
+        for edge in edges:
             lmin = np.min(np.abs(nbsn[edge[0],:]-edge[1]))
             if lmin != 0:
                 nbsn[edge[0], ntsn[edge[0]]] = edge[1]
@@ -401,7 +354,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         # Some names are expected by GridLoader and Coordinates - such as filepath and reference
         self.latlon = latlon
         self.filepath, self.sigmafile, self.depth_file, self.reference = dmfile, sigma_file, depth_file, dm_projection
-        self.verbose = False # since FVCOM_grid expects this one
+        self.verbose = False # defined since FVCOM_grid expects this one, set to False and we don't want to be overwhelmed with messages
         if latlon:
             print(f'\nBuilding case: {casename} from: {dmfile} with bathymetry from: {depth_file.split("/")[-1]} in spherical coordinates')
         else:
@@ -424,7 +377,7 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         cells = self._return_valid_triangles(self.x, self.y, self.tri)
         if len(cells) != len(self.xc):
             print(f'  - There are {len(self.xc)-len(cells)} illegal nodes in this mesh, removing those')
-            fig, ax = plt.subplots(1, 1)
+            _, ax = plt.subplots(1, 1)
             self.plot_grid(ax = ax, label='input grid', show = False)
 
             # Find the ones we remove
@@ -440,8 +393,9 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
             points_removed = np.array(list(set_old - set_new))
             
 
-            # subgrid (returns a FVCOM_grid instance, we update necessary fields)
-            # - a BuildCase class is not a FVCOM_grid, so the subgridding is a bit of a hack - to get the nodestrings, we must delete the _full_model_boundary
+            # Subgrid (returns a new FVCOM_grid instance, we update necessary fields)
+            # - a BuildCase class is not an FVCOM_grid, so the subgridding enherits sone stuff that we don't want
+            # - to get the nodestrings, we must delete the _full_model_boundary
             new = self.subgrid(cells = cells)
             self.x, self.y, self.lon, self.lat, self.tri, self.obc_nodes = new.x, new.y, new.lon, new.lat, new.tri, new.obc_nodes
             for attr in ['full_model_boundary', 'nodestrings', 'coastline_nodes']:
@@ -470,58 +424,79 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         if not updated_grid:
             self.main()
         else:
-            print('- The grid was changed, you may want to inspect it before running BuildCase.main(). Writing changed grid to auto_cleaned_grid.2dm')
+            print('- The grid was changed, you may want to inspect it before running .main(). Writing changed grid to auto_cleaned_grid.2dm')
 
     def __str__(self):
-        return f'''
----
-    Grid:
-        number of nodes:     {len(self.x)}
-        number of triangles: {len(self.xc)}
-        minimum angle:       {self.grid_angles.min():.2f}
-        minimum resolution:  {self.grid_res.min():.2f} m
-        #triangles <35 degrees: {len(np.where(self.grid_angles.min(axis=1)<35)[0])}
+        str_grid = f'''
+                    ---
+                    Grid:
+                        # nodes:            {len(self.x)}
+                        # triangles:        {len(self.xc)}
+                        minimum angle:      {self.grid_angles.min():.2f}
+                        minimum resolution: {self.grid_res.min():.2f} m
+                        # triangles <35 degrees: {len(np.where(self.grid_angles.min(axis=1)<35)[0])}
+                    '''
+        str_end = f'''
+                    Settings:
+                        sponge radius: {self.sponge_radius}
+                        sponge factor: {self.sponge_factor}
+                        minimum depth: {self.min_depth}
+                        rx0 target:    {self.rx0max}
+                        laplacian smoothing factor: {self.SmoothFactor}
 
-    Settings:
-        sponge radius: {self.sponge_radius}
-        sponge factor: {self.sponge_factor}
-        minimum depth: {self.min_depth}
-        rx0 target:    {self.rx0max}
-        laplacian smoothing factor: {self.SmoothFactor}
+                    Sources:
+                        2dm file:      {self.filepath}
+                        - projection: {self.dm_projection}
 
-    Sources:
-        2dm file:      {self.filepath}
-         - projection: {self.dm_projection}
+                        depth file:    {self.depth_file}
+                        - projection: {self.depth_projection}
 
-        depth file:    {self.depth_file}
-         - projection: {self.depth_projection}
-
-    Target projection: {self.target_projection}
-----
-'''
+                    Target projection: {self.target_projection}
+                    ----
+                    '''
+        try: 
+            str_sigma = f'''
+            Vertical layers
+                # sigma layers:     {self.siglay.shape[1]}
+                # sigma levels:     {self.siglev.shape[1]}
+            '''
+            str_out = str_grid + str_sigma + str_end
+        except:
+            str_out = str_grid + str_end
+        return str_out
 
     def main(self):
         '''
         Interpolate bathymetry to mesh, smooth it, write .dat input files
         '''
-        print('- Read sigma')
-        self.read_sigma()
+        print('- Reading the sigma file to check if it contains valid information')
+        self._check_that_sigmafile_is_valid(self.sigmafile)
+
         print('- Compute nbsn, ntsn')
         self.setup_metrics()
+        
         print('- Interpolate depth to mesh')
         self.make_depth()
         self.h = np.copy(self.h_raw)
+        
         print('- Smooth topo')
         self.smooth_topo()
         self.show_depth()
+
+        print('- Read sigma')
+        self.read_sigma(self.sigmafile)
+        
         print('- Compute CFL criteria')
         self.get_cfl()
         self.add_dict_info()
-        print('- Write .dat files')
+
+        print('- Write necessary .dat files')
         self.write_grd(latlon = self.latlon)
         self.write_obc()
         self.write_sponge()
-        self.write_cor()
+        self.write_cor(latlon = self.latlon)
+
+        print('- Dumping all setup info to M.npy')
         self.to_npy()
 
     @cached_property
