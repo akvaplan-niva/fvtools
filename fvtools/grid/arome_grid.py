@@ -64,6 +64,7 @@ class AROMEbase(BaseGrid):
         return np.logical_and(ind1, ind2)
 
     def infer_day_month_year(self, date):
+        self._date = date
         self.year  = str(date.year)
         self.month = '{:02d}'.format(date.month)
         self.day   = '{:02d}'.format(date.day)
@@ -233,7 +234,10 @@ class NewAromeGrid(AROMEbase, AROMEversion):
 
     @property
     def meps_file(self):
-        return f'/{self.year}/{self.month}/{self.day}/meps_det_2_5km_{self.year}{self.month}{self.day}T00Z.nc'
+        if self._date < datetime(2023, 9, 30):
+            return f'/{self.year}/{self.month}/{self.day}/meps_det_2_5km_{self.year}{self.month}{self.day}T00Z.nc'
+        else:
+            return f'/{self.year}/{self.month}/{self.day}/meps_det_sfc_{self.year}{self.month}{self.day}T00Z.ncml'
     
     @property
     def xex(self):
