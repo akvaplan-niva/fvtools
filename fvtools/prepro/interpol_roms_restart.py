@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore")
 def main(restartfile, mother, uv=False, proj='epsg:32633', latlon = False):
     '''
     restartfile  - restart file formatted for FVCOM
-    mother       - 'HI-NK' or 'MET-NK' for NorKyst-800
+    mother       - 'NKv2' or 'NKv3' for NorKyst-800
                    'H-NS' for hourly- or 'D-NS' for daily averaged NorShelf 2.4km files
     uv           - set True if you want to interpolate velocity fields to the mesh
     proj         - set projection, default: epsg:32633 (UTM33)
