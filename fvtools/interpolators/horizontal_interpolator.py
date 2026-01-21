@@ -80,7 +80,7 @@ class N4Coefficients(N4, DomainMasks):
         Create nearest four indices and weights for all of the fields
         '''
         # Check that the coarse grid covers the FVCOM grid
-        print('  - Compute interpolation coefficients')
+        print('- Compute interpolation coefficients')
         self.nindex, self.ncoef = self.get_interpolation_matrices(xy_source = self.xy_coarse,
                                                                   xy_source_center = self.xy_coarse_center,
                                                                   xy_fvcom = self.fv_nodes,
