@@ -161,6 +161,151 @@ class GridLoader:
             tri     = np.loadtxt(f, delimiter = ' ', max_rows = trinum, dtype=int)
         self._direct_initialization(x = points[:,0], y = points[:,1], tri = tri)
 
+    def _check_that_sigmafile_is_valid(self, sigmafile):
+        data = np.loadtxt(sigmafile, delimiter = '=', dtype = str)
+        if data[1,1] in [' TANH', ' UNIFORM', ' SOUZA']:
+            pass
+        elif data[1,1] in [' GEOMETRIC']:
+            raise ValueError('GEOMETRIC is implemented, but has not been tested. Double check that BuildCase.read_sigma is equivalent to FVCOM')
+        else:
+            raise ValueError(f'Invalid sigma layer method')
+
+    def read_sigma(self, sigmafile = None):
+        '''
+        Generate a sigma coordinate distribution based on the input file to FVCOM
+
+        Parameters:
+        ----
+        sigmafile:   A casename_sigma.dat file
+
+        Returns:
+        ----
+        lev, lay:    Sigma coordinate lev and lay (valid for the entire domain)
+        '''
+        if not sigmafile:
+            sigmafile = f'input/{self.casename}_sigma.dat'
+            
+        self._check_that_sigmafile_is_valid(sigmafile)
+        
+        # Read the input parameters from the casename_sigma.dat file
+        data = np.loadtxt(sigmafile, delimiter = '=', dtype = str)
+        if data[1,1] == ' TANH ':
+            self._tanh_sigma(data)
+
+        elif data[1,1] == ' UNIFORM' or data[1,1] == 'UNIFORM':
+            self._uniform_sigma(data)
+
+        elif data[1,1] == ' GEOMETRIC':
+            self._geometric_sigma(data)
+
+        elif data[1,1] == ' SOUZA':
+            self._souza_sigma(data)
+
+        else:
+            raise ValueError(f'BuildCase supports tanh-, geometric- and uniform-coordinates at the moment. {data[1,1]} is invalid.')
+    
+    def _tanh_sigma(self, data):
+        '''
+        Used to define a sigma distribution with better resolution near the surface
+        '''
+        nlev = int(data[0,1])
+        du   = float(data[2,1])
+        dl   = float(data[3,1])
+        lev  = np.zeros((nlev))
+        for k in np.arange(nlev-1):
+            x1 = np.tanh((dl + du) * (nlev - 2 - k) / (nlev - 1) - dl)
+            x2 = np.tanh(dl)
+            x3 = x2 + np.tanh(du)
+            lev[k+1] = (x1 + x2) / x3 - 1.0
+
+        # Siglay
+        lay = [(lev[k]+lev[k+1])/2 for k in range(len(lev)-1)]
+
+        # Store
+        self.siglev = np.tile(lev, (len(self.x), 1))
+        self.siglay = np.tile(np.array(lay), (len(self.x), 1))
+
+    def _uniform_sigma(self, data):
+        '''
+        Used to set a sigma distribution where each layer is equally thick
+        '''
+        nlev = int(data[0,1])
+        lev = np.zeros(nlev)
+        for k in np.arange(1,nlev+1):
+            lev[k-1] = -((k - 1)/(nlev - 1))
+
+        # Siglay
+        lay = [(lev[k]+lev[k+1])/2 for k in range(len(lev)-1)]
+
+        # Store
+        self.siglev = np.tile(lev, (len(self.x), 1))
+        self.siglay = np.tile(np.array(lay), (len(self.x), 1))
+
+    def _geometric_sigma(self, data):
+        '''
+        Used to define a set z-resolution near the surface at depths greater than 
+        '''
+        # --> Not sure that this one is correct, so throw a "not implemented error"
+        raise ValueError('GEOMETRIC is implemented, but has not been tested. Double check that BuildCase.read_sigma is equivalent to FVCOM')
+        nlev = int(data[0,1])
+        lev = np.zeros(nlev)
+        p_sigma = np.double(data[2,1])
+        for k in range(1, int(np.floor((nlev+1)/2)+1)):
+            lev[k-1]=-((k-1)/((nlev+1)/2 - 1))**p_sigma/2
+        for k in range(int(np.floor((nlev+1)/2))+1,nlev+1):
+            lev[k-1]=((nlev-k)/((nlev+1)/2-1))**p_sigma/2-1
+
+        # Siglay
+        lay = [(lev[k]+lev[k+1])/2 for k in range(len(lev)-1)]
+        # Store
+        self.siglev = np.tile(lev, (len(self.x), 1))
+        self.siglay = np.tile(np.array(lay), (len(self.x), 1))
+        
+    def _souza_sigma(self, data):
+        '''
+        Same as Vstretching = 5 in ROMS
+        '''
+        # Number of levels
+        KB = int(data[0,1])
+        KBM1 = KB-1
+
+        # Transition depth, surface stretching parameter and bottom stretching parameter
+        TCLIN = float(data[2,1])
+        THETA_S = float(data[3,1])
+        THETA_B = float(data[4,1])
+
+        sig1 = []
+        for k in range(KB):
+            upper_f = -(k**2 - 2*k*KBM1 + k + KBM1**2 - KBM1)
+            lower_f = KBM1**2 - KBM1
+            upper_l = k**2 - k*KBM1
+            lower_l = 1 - KBM1
+            sig1.append(upper_f/lower_f - 1/100 * upper_l/lower_l)
+        
+        # Apply the surface refinement function
+        C = (1 - np.cosh(THETA_S * np.array(sig1))) / (np.cosh(THETA_S) - 1)
+        
+        # Apply the bottom refinement function
+        C = (np.exp(THETA_B * C) - 1) / (1 - np.exp(-THETA_B))
+
+        # Calculate the unstretched sigma
+        sig2 = []
+        for k in range(KB):
+            sig2.append((k-KBM1)/KBM1)
+        sig2 = np.array(sig2)
+
+        # Find the layer depth at each node
+        lev = (TCLIN *sig2[None,:] + self.h[:,None]*C) / (TCLIN + self.h[:, None])
+
+        # Siglay
+        lay = np.array([(lev[:,k]+lev[:,k+1])/2 for k in range(KBM1)]).T
+
+        # Flip them 
+
+        # Store
+        self.siglev = np.fliplr(lev)
+        self.siglay = np.fliplr(lay)
+
 class InputCoordinates:
     @property
     def tri(self):
@@ -1416,16 +1561,23 @@ class ExportGrid:
                     f.write(f'{i} {obc_node+1} 1\n')
         print(f'  - Wrote : {filename}')
 
-    def write_cor(self, filename = None):
+    def write_cor(self, filename = None, latlon = False):
         '''
-        - Generates an ascii FVCOM 5.x formatted coriolis file
+        Generates an ascii FVCOM 5.x formatted coriolis file
+        - filename: name of the output file
+        - latlon:   True if the model is configured in spherical mode with WGS84 coordinates
         '''
         if filename is None: 
             filename = f'input/{self.casename}_cor.dat'
 
+        if latlon:
+            x, y = self.lon, self.lat
+        else:
+            x, y = self.x, self.y
+
         with open(filename, 'w') as f:
             f.write(f'Node Number = {self.node_number}\n')
-            for x, y, lat in zip(self.x, self.y, self.lat):
+            for x, y, lat in zip(x, y, self.lat):
                 line = '{0:.6f}'.format(x) + ' ' + '{0:.6f}'.format(y) + ' ' + '{0:.6f}'.format(lat)+'\n'
                 f.write(line)
         print(f'  - Wrote : {filename}')
@@ -2011,14 +2163,28 @@ Extended features through the mesh-connectivity TGE (.T) class:
         self._project_xy()
 
     def __repr__(self):
-        return f'''{self.casename} FVCOM grid object
+        repr_start = f'''{self.casename} FVCOM grid object
 
-Grid read from:        {self.filepath}
-Number of nodes:       {len(self.x)}
-Number of triangles:   {len(self.xc)}
-Grid resolution:       min: {np.min(self.grid_res):.2f} m, max: {np.max(self.grid_res):.2f} m
-Grid angles (degrees): min: {np.min(self.grid_angles):.2f}, max: {np.max(self.grid_angles):.2f}
-Reference:             {self.reference}'''
+Grid read from:         {self.filepath}
+Number of nodes:        {len(self.x)}
+Number of triangles:    {len(self.xc)}
+'''
+        repr_end = f'''
+Grid resolution:   min: {np.min(self.grid_res):.2f} m, max: {np.max(self.grid_res):.2f} m
+Grid angles (deg): min: {np.min(self.grid_angles):.2f}, max: {np.max(self.grid_angles):.2f}
+Reference:              {self.reference}
+'''     
+        
+        try:
+            repr_sig = f'''
+Number of sigma layers: {self.siglay.shape[1]}
+Number of sigma levels: {self.siglev.shape[1]}
+'''
+            repr = repr_start + repr_sig + repr_end
+        except:
+            repr = repr_start + repr_end
+
+        return repr
 
     @property
     def casename(self):
@@ -2242,8 +2408,10 @@ class NEST_grid(LoadNest, NestROMS2FVCOM, Coordinates, PlotFVCOM, AnglesAndPhysi
         # Add information from full fvcom grid (M), vertical coords and OBC-nodes
         if M is not None:
             self.Proj   = M.Proj
-            self.siglay = M.siglay[:len(self.x), :]
-            self.siglev = M.siglev[:len(self.x), :]
+            # Can not do that
+            nodes = M.find_nearest(self.x, self.y, grid = 'node')
+            self.siglay = M.siglay[nodes, :]
+            self.siglev = M.siglev[nodes, :]
         else:
             try:
                 self.Proj = Proj(self.info['reference'])
