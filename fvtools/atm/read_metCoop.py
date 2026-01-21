@@ -123,10 +123,12 @@ def metcoop_make_fileList(start_time, stop_time, OldAROME = None, NewAROME = Non
 
         except NoAvailableData:
             missing+=1
-            if missing < 2:
-                print(f'  - {date} - reads forecast from {date-timedelta(days=missing)}')
-            else:
-                print(f'  - {date} - is unavailable')
+            continue
+
+        if missing == 1:
+            print(f'  - {date} - reads forecast from {date-timedelta(days=missing)}')
+        elif missing > 2:
+            print(f'  - {date} - is unavailable')
             continue
 
         # Just to check that the file is not empty
