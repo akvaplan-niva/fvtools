@@ -35,7 +35,7 @@ def extract2file_subset_cell_var(
     if isinstance(variables, str):
         variables = [variables]
 
-    supported_vars = ['u', 'v', 'ua', 'va']
+    supported_vars = ['u', 'v', 'ua', 'va','ww']
     if variables is None:
         raise ValueError("Please specify one or more variables to extract.")
     for v in variables:
