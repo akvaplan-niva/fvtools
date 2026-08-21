@@ -521,6 +521,7 @@ class Coordinates:
         '''Change reference system of this mesh to that of projection'''
         if projection != self.reference:
             self.reference = projection
+            self.info['reference'] = projection
             self.Proj = Proj(projection)
             self.x, self.y = self.Proj(self.lon, self.lat)
 
@@ -692,24 +693,49 @@ class PropertiesFromTGE:
         Does also include routines to compute gradients, vorticity and okubo weiss parameter.
         '''
         if not hasattr(self, '_T'):
-            try:
-                self._T = tge.TGE('tge.npy')
-                print('- read grid connectivity from tge.npy')
-            except:
-                self._T = tge.main(self, verbose = True)
+            print('- Computing triangle, grid, elements (TGE) - this may take some minutes for large grids')
+            self._T = tge.main(self, verbose = False)
             self._nbsn = self._T.NBSN
             self._ntsn = self._T.NTSN
             self._nbve = self._T.NBVE
             self._ntve = self._T.NTVE
             self._nbe = self._T.NBE
+            self._ISBCE = self._T.ISBCE
+            self._ISONB = self._T.ISONB
             self._nbse, self._nese = tge.get_NBSE_NESE(self.nbve, self.ntve, self.tri, len(self.xc))
         return self._T
 
     @property
+    def ISBCE(self):
+        if not hasattr(self, '_ISBCE'):
+            # Calculate it yourself otherwise
+            _T = tge.calculate_nbe_and_boundaries(self, verbose = False)
+            self._ISBCE = _T.ISBCE
+        return self._ISBCE
+
+    @ISBCE.setter
+    def ISBCE(self, var):
+        self._ISBCE = var
+
+    @property
+    def ISONB(self):
+        if not hasattr(self, '_ISONB'):
+            # Calculate it yourself otherwise
+            _T = tge.calculate_nbe_and_boundaries(self, verbose = False)
+            self._ISONB = _T.ISONB
+        return self._ISONB
+
+    @ISONB.setter
+    def ISONB(self, var):
+        self._ISBCE = var
+
+    @property
     def nbe(self):
         '''indices of elements sharing a wall with *this* element'''
-        if not hasattr(self, '_nbe'): 
-            self._nbe = self.T.NBE
+        if not hasattr(self, '_nbe'):
+            # Calculate it yourself otherwise
+            _T = tge.calculate_nbe_and_boundaries(self, verbose = False)
+            self._nbe = _T.NBE
         return self._nbe
 
     @nbe.setter
@@ -1673,7 +1699,7 @@ class ExportGrid:
         '''
         M = {}
         self.nv = self.tri
-        for var in ['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'nv', 'siglay', 'siglev', 'obc_nodes', 'nodestrings', 'info', 'ts']:
+        for var in ['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'nv', 'siglay', 'siglev', 'obc_nodes', 'nodestrings', 'reference', 'info', 'ts']:
             try:
                 M[var] = getattr(self, var)
             except:
