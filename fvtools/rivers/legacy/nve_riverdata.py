@@ -4,7 +4,6 @@ import numpy as np
 import geopandas as gp
 import datetime
 import matplotlib.pyplot as plt
-from numba import njit
 from functools import cached_property
 '''
 Download total-runoff (totalavrenning) from NVEs servers. The runoff is the freshwater (psu=0) draining from
@@ -44,8 +43,8 @@ def main(days = 8000,
          max_runoff = 4500):
    '''
    Download runoff from NVE servers.
-     Vassdrag is Norwegian for "Catchment area", here we are downloading runoff to "vassdragsområder",
-     which esentially is "catchment areas areas", hence runoff from a cluster of catchment areas.
+     Vassdrag is Norwegian for "Catchment area", here we are downloading runoff from "vassdragsområder",
+     which esentially is "catchment areas areas", runoff from a cluster of catchment areas.
 
    Input:
    ---
@@ -65,9 +64,7 @@ def main(days = 8000,
 
    # Download data from the NVE server
    # ----
-   Downloader = RunoffDownloader(days, 
-                                 vassdrag['arealLand'].to_numpy(), 
-                                 KystSerie)
+   Downloader = RunoffDownloader(days, vassdrag['arealLand'].to_numpy(), KystSerie)
 
    Downloader.download_all_kystseries(archives)
 
@@ -225,7 +222,7 @@ class RunoffDownloader:
 
    def _insert_runoff_to_corresponding_times_in_data_matrix(self, xml, segment_nr):
       if len(xml.datenum)>0:
-         corresponding_times, ind_self, ind_xml = np.intersect1d(self.datenum, np.array(xml.datenum), return_indices = True)
+         _, ind_self, ind_xml = np.intersect1d(self.datenum, np.array(xml.datenum), return_indices = True)
          assert (len(ind_xml) == len(xml.runoff)), f'Unexpected error, not all data could be dumped to riverdata'
 
          if len(self.weight[segment_nr]) == 1:
@@ -244,7 +241,7 @@ class RunoffDownloader:
          Archive: 2  has sort of good data
          Archive: 18 has raw data
       '''
-      return f'http://h-web01.nve.no/ChartServer/ShowData.aspx?req=getchart&ver=1.0&time=-{self.days-1};0&vfmt=xml&chd=ds=htsr,rt=1,da={archive},id=700.{from_vassdrag}.{to_vassdrag}.1001.0'
+      return f'https://chartserver.nve.no/ShowData.aspx?req=getchart&ver=1.0&time=-{self.days-1};0&vfmt=xml&chd=ds=htsr,rt=1,da={archive},id=700.{from_vassdrag}.{to_vassdrag}.1001.0'
 
 class XMLreader:
    '''

@@ -5,9 +5,7 @@
 BuildCase - Converts river runoff to vassdrag and river locations in these vassdrag to river runoff in FVCOM
 ------------------------------------------------------------------------------------------------------------
 """
-import sys
 import os
-import chardet
 import netCDF4
 import numpy as np
 import fvtools.grid.grid_metrics as gm
@@ -15,45 +13,27 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.tools import num2date, date2num
 from scipy.spatial import cKDTree as KDTree
-from scipy.io import loadmat
 from scipy import interpolate
-from scipy.signal import filtfilt
 from datetime import datetime, timedelta, timezone
 
-from fvtools.plot.geoplot import geoplot
+from fvtools.rivers.NVEforcing.hbv_runoff import HBVRunoff
 
 import warnings
 warnings.filterwarnings("ignore")
 
-global version
-version = 1.4
+#global version
+#version = 2.0
 
-def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
-    """
-    BuildRiver use data from the NVE and feeds all the mapped rivers leading to the ocean
+def main(start, stop, vassdrag, mesh_dict, info = None):
+    '''
+    BuildRiver use data from the NVE HBV model and feed all the mapped rivers leading to the ocean to FVCOM
 
     Parameters:
     ----
     start:     yyyy-mm-dd
     stop:      yyyy-mm-dd
     vassdrag:  [233, 234] etc, any array containing all ids (integers) will do.
-    temp:      Compile new temperatures.npy file, or use an existing one.
-               ----
-                Ideal use of this is to compile a new file (temp = 'compile') for mother-FVCOM models, and temp = 'PO10_temperatures.npy' for
-                the smaller models you later nest into the mother run.
-
-               temp = 'compile'
-                - If you are running a large scale (nested to eg. NorShelf), you should compile a new *_temperatures.npy file by setting temp = None.
-                  After this, it will return a "casename"_temperatures.npy file to the RiverTemperatures folder
-                  --> On Stokes: /data/FVCOM/Setup_Files/Rivers/Raw_Temperatures/
-                  --> On Betzy:  /cluster/shared/NS9067K/apn_backup/FVCOM/Setup_Files/Rivers/Raw_Temperatures/
-
-               temp = '/data/FVCOM/Setup_Files/Rivers/Raw_Temperatures/PO10_temperatures.npy'
-                - Giving the temperature string will let BuildRivers know that this is the pre-compiled
-                  river temperatures file you want to use.
-                  --> This option was included specifically for fvcom2fvcom nested runs.
 
     Optional:
     ----
@@ -64,90 +44,70 @@ def main(start, stop, vassdrag, mesh_dict = 'M.npy', info = None, temp = None):
                needed in the given experiment.
 
     hes@akvaplan.niva.no
-    """
-    if temp is None:
-        raise InputError('You must decide whether to compile a new *_temperatures.npy or use an existing one. See docstring for instructions.')
+    '''
+    # Convert time
+    start = datetime(*[int(t) for t in start.split('-')], tzinfo = timezone.utc)
+    stop  = datetime(*[int(t) for t in stop.split('-')], tzinfo = timezone.utc)
 
+    if info is None:
+        info = get_input()
+
+    # 1. Load the FVCOM grid, the national runoff data, the river outlet positions and the river
+    #    temperature data. 
+    #    Initialize the object that will move rivers to the mesh and ensure numerical stability
+    # -------------------------------------------------------------------------------
+    # - Read the mesh
     M = FVCOM_grid(mesh_dict)
+    grid_projection = M.reference
+    M.re_project(info['river_projection'])
+    M.get_cfl(verbose=False)
 
     print('----------------------------------------------------------------------------')
     print(f'                       BuildRivers: {M.casename}')
     print('----------------------------------------------------------------------------')
 
-    if info is None:
-        info = get_input()
+    # - Load the necessary data and data handlers
+    Forcing   = FVCOM_rivers(info, M, vassdrag, start, stop)
+    Runoff    = HBVRunoff(info['runoff'], start = start - timedelta(days = 1), stop = stop + timedelta(days=1))
+    Positions = RiverPositions(info['riverpositions'], vassdrag)
+    Temp      = RiverTemperatures('riverdata/', start = start - timedelta(days=1), stop = stop + timedelta(days=1))
 
-    if temp != 'compile':
-        info['rivertemp']     = temp
-        info['compile river'] = False
-
-    M.re_project(info['river_projection'])
-    M.get_cfl(verbose=False)
-
-    # Initialize the object that will move rivers to the mesh and ensure numerical stability
-    print('Identify FVCOM land:')
-    Forcing = FVCOM_rivers(info, M, vassdrag)
-
-    # Load river information
-    print('\nGet river positions')
-    Large   = LargeRivers(info)
-    Small   = SmallRivers(info)
-
-    print('\nRunoff data')
-    Runoff  = RiverRunoff(info)
-
-    if info['rivertemp'] != 'compile':
-        print(f'\nRiver temperature from {info["rivertemp"]}')
-    Temp    = RiverTemperatures(info, vassdrag, M.casename, start)
-
-    # Remove vassdrags that are not part of our domain
-    print('- Connect rivers to nedborfelt')
-    Large.connect_nedborsfelt(vassdrag)
-    Small.connect_nedborsfelt(vassdrag)
-
-    # Crop the large and small datasets to our vassdrag
-    print('- Crop rivers to the vassdrag')
-    Large.crop_to_vassdrag()
-    Small.crop_to_vassdrag()
-
-    # Remove the rivers that are too far away from land, and too close to the obc
+    # 2. Reduce the rivers to only load those that are relevant to this simulation
+    #    and prepare to force the model
+    # ------------------------------------------------------------------------------
+    # - Remove the rivers that are too far away from land and too close to the obc
     print('- Crop river to a distance from the obc')
-    Small = Forcing.crop_river_to_obc(Small)
-    Large = Forcing.crop_river_to_obc(Large)
+    Positions = Forcing.crop_rivers_far_from_land_close_to_OBC(Positions)
 
-    # Add temperatures to the small and large rivers
-    print('- Add temperatures to the rivers')
-    Small.add_temperature(Temp)
-    Large.add_temperature(Temp)
+    # - Re-distribute the runoff according to catchment area
+    print('- Determine runoff from rivers by the rivers catchment area')
+    Forcing.redistribute_runoff(Positions, Runoff)
 
-    # --> Any other tracer that is released via the river runoff can be added here.
+    # - Add temperatures to the rivers
+    print('\nAdd temperature profiles to the rivers')
+    print(f'- read temperature databases from {info["rivertemp"]}, calculate the river climatology for each watershed')
+    river_temp = Temp.make_individual_river_climatology(Positions)
 
-    # Re-distribute the runoff according to catchment area
-    print('- Adjust runoff over rivers according to catchment area')
-    Forcing.redistribute_runoff(Small, Large, Runoff)
+    print('- Add observed temperatures to the rivers where available')
+    river_temp =  Temp.insert_observed_temperature(river_temp, vassdrag)
 
-    # Combine small and large rivers to the same list
-    print('- Combine large and small rivers')
-    Forcing.combine_small_and_large(Large, Small)
+    print('- Set the runoff and temperauture for each river in the model, interpolate to model time')
+    Forcing.interpolate_forcing_to_model_time(Runoff, Temp, river_temp)
 
-    # Trim the forcing to fit the desired start and stop time
-    print('- Trim the forcing to fit with start and stop time')
-    Forcing.make_time(start, stop, Runoff, Temp)
+    # Now, reproject to the grids projection - leaving us with more control of how to plot the stuff
+    Forcing.connect_to_mesh(M, info['river_projection'], grid_projection)
 
-    # Find edge to connect outflow to. Distribute across rivers.
-    print('- Connect the rivers to the FVCOM mesh')
-    gp = geoplot(M.x, M.y, projection = M.reference)
-    Forcing.connect_to_mesh(gp)
-
-    # Show the variables
+    # 4. Do a simple quality control, and write the necessary forcing files
+    # ---------------------------------------------------------------------------
+    # - Show the rivers we'll use, and the values they will force FVCOM with
     print('\nFinished, plotting the forcing')
-    show_forcing(Forcing, gp, M)
+    show_forcing(Forcing, M)
 
-    # Write to netCDF, write RiverNamelist.nml
+    # - Write to netCDF, write RiverNamelist.nml
     Forcing.dump()
     Forcing.write_namelist()
 
-def get_input():
+def get_input(river_data_path = 'riverdata'):
     """
     Pre-defined paths are stored here. They are distributed to other parts of the code via main.
 
@@ -165,470 +125,144 @@ def get_input():
     minrcoef:    Tunable parameter to determine the maximum volume of a CV we will let a river fill over a timestep
     river_projection: Coordinate system the river positions are stored in (UTM33)
     """
-    # Betzy
-    if os.getcwd().split('/')[1] == 'cluster':
-        river_data_path = '/nird/projects/NS9067K/apn_backup/FVCOM/Setup_Files'
-
-    # Stokes
-    elif os.getcwd().split('/')[1] == 'work' or  os.getcwd().split('/')[1] == 'home':
-        river_data_path = '/data/FVCOM/Setup_Files'
-
-    else:
-        raise ValueError('Are you running BuildRivers on a new cluster? Could not find river_data_path.')
-
-    info = {'iloc': 'edge',
-            'whichrivers': 'all',
-            'dRmax': 5000,
-            'min_depth': 3,
-            'Isplit': 8,
-            'tideamp': 1,
-            'plot': True,
-            'compile river': True,
-            'rivertemp': f'{river_data_path}/Rivers/Raw_Temperatures/',
-            'vassdrag': f'{river_data_path}/Rivers/riverdata_2001013_20221207.dat',
-            'LargeRivers': f'{river_data_path}/Rivers/RiverData/LargeRivers_030221.mat',
-            'SmallRivers': f'{river_data_path}/Rivers/SmallRivers_wElvID',
-            'minrcoef': 0.3,
-            'river_projection': 'epsg:32633'}
+    info = {
+        'iloc': 'edge',
+        'dRmax': 5000,
+        'min_depth': 3,
+        'Isplit': 8,
+        'tideamp': 1,
+        'plot': True,
+        'compile river': True,
+        'rivertemp': f'{river_data_path}/',
+        'runoff': f'{river_data_path}/Niva_1990-2024_2018v20.05/',
+        'riverpositions': f'{river_data_path}/river_positions.csv',
+        'minrcoef': 0.3,
+        'river_projection': 'epsg:32633'
+    }
     return info
 
 # -----------------------------------------------------------------------------------------------------
 #                                        Input handling
 # -----------------------------------------------------------------------------------------------------
-class RiverTemperatures:
-    """
-    Scans the folder contatining river temperatures.
-    - Compiles a yearly "typical" river temperature file
-    - Looks for specific timesteps in specific vassdrag to get as in-situ temperatures as possible
-    - Most of the data-processing here can most likely be replaced using pandas
-    """
-    def __init__(self, info, vassdrag, casename, start_date):
-        """
-        What temperature should the rivers in the domain have?
-        """
-        self.casename = casename
-        self.info = info
-        self.model_vassdrag = vassdrag
-        self.vassdrag = []
-        _start      = start_date.split('-') # start date as numbers
-        _start_date = datetime(int(_start[0]), int(_start[1]), int(_start[2]), tzinfo = timezone.utc) - timedelta(days = 60)
-        self.min_date = date2num([_start_date])[0]
-        if info['compile river']:
-            self.compile_temperature() # For large models spanning many vassdrags
-        else:
-            self.read_temperature() # For small models nested FVCOM2FVCOM
+import os
+import netCDF4
+import numpy as np
+import fvtools.grid.grid_metrics as gm
+import matplotlib.pyplot as plt
+import pandas as pd
+import cartopy.crs as ccrs
 
-    def read_temperature(self):
-        """
-        Read pre-compiled temperature file
-        """
-        riverfile = self.info['rivertemp']
-        if riverfile.split('.')[-1] == 'npy':
-            data = np.load(riverfile, allow_pickle = True)
-            print(f'- {riverfile}')
+from fvtools.plot.geoplot import geoplot
+from fvtools.grid.fvcom_grd import FVCOM_grid
+from fvtools.rivers.NVEforcing.hbv_runoff import HBVRunoff
+from scipy.spatial import cKDTree as KDTree
+from datetime import datetime, timedelta, timezone
+from scipy import interpolate
 
-        else:
-            files     = os.listdir(self.info['rivertemp'])
-            riverfile = [f for f in files if f.split('.')[-1] == 'npy']
-            if len(riverfile) == 1:
-                data = np.load(self.info['rivertemp']+riverfile[0], allow_pickle = True)
-                print(f'- {self.info["rivertemp"]}{riverfile[0]}')
+global version
+version = 2.0
 
+class HBVRunoff:
+    def __init__(self, hbvfolder, start = None, stop = None):
+        '''
+        Read all hbv output files in the hbvfolder directory
+        - Assumes that all .var files in the hbv folder are runoff data.
+        - crop to time between start and stop
+        '''
+        # Load data for the full country
+        data = []
+        for i, file in enumerate(os.listdir(hbvfolder)):
+            # Figure out which number this vassdragsområde is
+            vassdragsomraade = int(file.split('.var')[0][-3:])
+        
+            # Load the data
+            _data = pd.read_csv(f'{hbvfolder}{file}', header = None, sep=r'\s+')
+        
+            # Load the dates, will have the same coverage in all files
+            if i == 0:
+                dates = [datetime(int(d[0:4]), int(d[4:6]), int(d[6:8]), int(d[9:11]), tzinfo = timezone.utc) for d in _data[0]]
+        
+            data.append(_data.rename(columns = {1: vassdragsomraade}).drop(columns=0))
+        
+        # Re-scale vassdragsområde 183 (python index 182), as suggested by James Sample at NIVA
+        data[182] = 6/16 * data[181]
+        self.transport = pd.concat(data, axis = 1).T
+        self.dates = np.array(dates)
+
+        assert any(self.dates <= start), f'the database does not cover dates prior to {self.dates[0]}'
+        assert any(self.dates >= stop),  f'the database does not cover dates after {self.dates[-1]}'
+            
+        
+        # Crop to requested time-span
+        crop = np.logical_and(self.dates > start, self.dates < stop)
+
+        self.transport = self.transport.loc[:, crop]
+        self.dates = self.dates[crop]
+
+class RiverPositions:
+    def __init__(self, path, vassdrag):
+        '''
+        Connect river outlets identified by fvtools.rivers.NVEforcing.elvis_riveroutlets to the FVCOM mesh
+        - path:     e.g. riverdata/river_positions.csv
+        - vassdrag: list of vassdrags covered by the model
+        
+        '''
+        # load all rivers
+        rivers = pd.read_csv(path).set_index('rivers')
+
+        # Remove those who are not in the requested vassdragsområde
+        self.rivers = rivers[[v in vassdrag for v in rivers.vassdragsomraade]]
+
+    @property
+    def x(self):
+        return self.rivers.x_outlet.values
+
+    @property
+    def y(self):
+        return self.rivers.y_outlet.values
+    
+    @property
+    def names(self):
+        '''
+        Large rivers have names (not necessarilly unique), small rivers just have their IDs
+        '''
+        names = []
+        for r in self.rivers.iterrows():
+            if type(r[1].elvenavn) == str:
+                names.append(f'{r[0]} - {r[1].elvenavn}')
             else:
-                raise ValueError(f"{self.info['rivertemp']} did not lead to a numpy file or to a folder with only one numpy file in it")
+                names.append(r[0])
+        return names
 
-        self.average_temp = data.item()['average temp']
-        self.river_temp = data.item()['temp']
-        self.river_time = data.item()['time']
-        self.vassdrag   = data.item()['vassdrag']
-
-    def compile_temperature(self):
-        """
-        This routine checks the rivertemperature folder, and compiles a new RiverTemperature file
-        """
-        # Find the csv files containing river temperatures
-        # ----
-        folder_files = os.listdir(self.info['rivertemp'])
-        all_files = [f for f in folder_files if f.split('.')[-1] == 'csv']
-
-        # Remove files that are not part of our vassdrag
-        # ----
-        self.files = [f for f in all_files if int(f.split('.')[0]) in self.model_vassdrag]
-        if not any(self.files):
-            raise ValueError('None of the river temperatures originate from measurements in the model domain!')
-
-        data, mintime, maxtime = self.read_river_files()
-        self.river_time = np.arange(np.ceil(mintime), np.floor(maxtime), 1/24) # interpolate to hourly values
-        self.raw_temp   = np.nan*np.ones((len(self.river_time),len(self.files)))
-        data = self.remove_jumps(data)
-        data = self.insert_yearly_statistics(data)
-        self.river_to_rivertime(data)
-        self.impose_lower_cutoff()
-        self.filter_river_temperatures()
-        self.river_temp = self.filtered_temp
-        dates = num2date(self.river_time)
-        self.set_average_temp(dates)
-
-        # Store river data to a .npy file and return to main
-        # ----
-        data = {}
-        data['average temp'] = self.average_temp
-        data['temp'] = self.river_temp
-        data['time'] = self.river_time
-        data['vassdrag'] = self.vassdrag
-        print(f" - Store compiled temperature file to: {self.info['rivertemp']}{self.casename}_temperatures.npy")
-        np.save(f"{self.info['rivertemp']}/{self.casename}_temperatures.npy", data)
-
-    def read_river_files(self):
+    def crop(self, indices):
         '''
-        Read data from the raw river temperature files
+        Remove rivers that are not requested from the rivers dataframe
         '''
-        # Define preliminary min- and max time for file
-        # ----
-        mintime = 10**9; maxtime = 0
-        data    = []
-        plt.figure()
-        for _file in self.files:
-            print(f'  - {_file}')
-            _data = self.read_vassdrag_temperatures(_file)
-            data.append(_data)
-            mintime = min(mintime, min(_data['time']))
-            maxtime = max(maxtime, max(_data['time']))
-            plt.plot(_data['datetime'], _data['temp'], label = _file)
-
-        plt.title('All raw temperatures')
-        plt.legend()
-        return data, mintime, maxtime
-
-    def read_vassdrag_temperatures(self, _file):
-        """
-        Read river temperature excel files (see if some of the other stuff can be done in pandas here...)
-        """
-        out = {}
-        out['id'] = _file.split('_')[0]
-
-        with open(self.info['rivertemp']+_file, 'rb') as _f:
-            result = chardet.detect(_f.read())
-
-        # read the file
-        data = pd.read_csv(self.info['rivertemp']+_file,
-                           skiprows = 1, delimiter = ';',encoding=result['encoding']).to_numpy()
-
-        # convert to datetime-format
-        time = data[:,0]
-        date = []
-        temp = data[:,1]
-        missing = np.where(temp < -100)
-        temp[missing] = np.nan
-        nan_ind = []
-        for i, tid in enumerate(time):
-            if tid is np.nan:
-                nan_ind.append(i)
-                continue
-            try:
-                year    = int(tid.split('-')[0])
-                month   = int(tid.split('-')[1])
-                day     = int(tid.split('-')[2].split(' ')[0])
-                hour    = int(tid.split(' ')[1].split(':')[0])
-                minutes = int(tid.split(' ')[1].split(':')[1])
-                date.append(datetime(year, month, day, hour, minutes, tzinfo = timezone.utc))
-            except:
-                day     = int(tid.split('.')[0])
-                month   = int(tid.split('.')[1])
-                year    = int(tid.split('.')[2].split(' ')[0])
-                hour    = int(tid.split(' ')[1].split(':')[0])
-                minutes = int(tid.split(' ')[1].split(':')[1])
-                date.append(datetime(year, month, day, hour, minutes, tzinfo = timezone.utc))
-
-        if any(nan_ind):
-            temp = np.delete(temp, nan_ind)
-
-        # Remove obvious spikes
-        temp         = np.array(temp, dtype = float)
-        tolerance_p  = np.nanmean(temp) + 2.25*np.nanstd(temp)
-        tolerance_m  = np.nanmean(temp) - 2.25*np.nanstd(temp)
-        inds_p       = np.where(temp>tolerance_p)[0]
-        inds_m       = np.where(temp<tolerance_m)[0]
-        temp[inds_p] = np.nan
-        temp[inds_m] = np.nan
-
-        # store temperatures, date and vassdrag
-        out['temp']  = temp
-        out['time']  = netCDF4.date2num(date, units = 'days since 1858-11-17 00:00:00')
-        out['datetime'] = date
-        out['Vdrag'] = int(out['id'].split('.')[0])
-        return out
-
-    def remove_jumps(self, data):
-        '''
-        The data can contain suddent jumps, that's indicative of bad data so we remove them.
-        '''
-        for _data in data:
-            diff = np.diff(_data['temp'])
-            std  = np.nanstd(diff)
-            threshold = 2.25*std # Basically assuming that large chunks of the data is noise
-            jump = False
-            for i in range(len(_data['temp'])-1):
-                if np.isnan(_data['temp'][i]):
-                    jump = False
-                    continue
-                if not jump:
-                    i_old = i
-                if np.abs(_data['temp'][i+1]-_data['temp'][i_old]) > threshold:
-                    _data['temp'][i+1] = np.nan
-                    jump = True
-                else:
-                    jump = False
-        return data
-
-    def insert_yearly_statistics(self, data):
-        '''
-        Much of the data is patchy, replace gaps with historical average of data for that day
-        '''
-        for _data in data:
-            # Get time as datetime object and daynumber of year for each timestamp
-            time      = num2date(_data['time'])
-            day_num   = np.array([t.timetuple().tm_yday for t in time])
-
-            # Create temperature statistics of given date
-            temp_stat = np.nan*np.ones((max(day_num),))
-            days      = np.arange(1,max(day_num)+1)
-            for day in days:
-                inds = np.where(day_num == day)[0]                 # find all measured years with this day
-                temp_stat[day-1] = np.nanmean(_data['temp'][inds]) # python index starts at 0, day index start at 1
-            temp_full = temp_stat[day_num-1] # Create an array of statistic temperature covering the model period
-
-            # replace missing temperatures with temp_full
-            nans      = np.isnan(_data['temp'])
-            _data['temp'][nans] = temp_full[nans]
-            zero_rivs = np.where(_data['temp']<0)[0]
-            _data['temp'][zero_rivs] = 0
-            _data['year_temp'] = temp_stat
-        return data
-
-    def river_to_rivertime(self, data):
-        '''
-        Interpolate raw river data to the time indices we will be forcing in FVCOM
-        '''
-        self.river_temp = np.nan*np.ones((len(self.river_time),len(self.files)))
-        river_dates     = num2date(self.river_time)
-        day_num         = np.array([t.timetuple().tm_yday for t in river_dates])
-        self.year_temp  = np.nan*np.ones((max(day_num),len(self.files)))
-
-        for i, _data in enumerate(data):
-            time = _data['time']
-            temp = _data['temp']
-            f    = interpolate.interp1d(time, temp, bounds_error = False)
-            self.river_temp[:,i] = f(self.river_time)
-            self.vassdrag.append(_data['Vdrag'])
-            nan_inds  = np.where(np.isnan(self.river_temp[:,i]))[0]
-            nan_dates = day_num[nan_inds]
-            _data['year_temp'] = np.append(_data['year_temp'], _data['year_temp'][-1])
-            self.river_temp[nan_inds,i] = _data['year_temp'][nan_dates-1]
-
-    def impose_lower_cutoff(self):
-        '''
-        Removes very old temperature now that we have done the yearly statistics
-        '''
-        too_early = np.where(self.river_time<self.min_date)[0][-1]
-        self.river_temp = self.river_temp[too_early:]
-        self.river_time = self.river_time[too_early:]
-
-    def filter_river_temperatures(self):
-        print(' - Filter temperature to reduce noise')
-        n = 80
-        b = [1.0/n] * n
-        a = 1
-        dates = num2date(self.river_time)
-
-        self.filtered_temp = np.nan*np.ones((len(self.river_time),len(self.files)))
-        inds  = np.arange(len(self.river_time))
-        for i, temp in enumerate(self.river_temp.T):
-            not_nans   = ~np.isnan(temp)
-            if any(np.isnan(temp)):
-                first      = min(inds[not_nans])
-                last       = max(inds[not_nans])
-                temp       = temp[first:last]
-                nans, x    = self.nan_helper(temp)
-                temp[nans] = np.interp(x(nans), x(~nans), temp[~nans])
-                yy = filtfilt(b,a,temp)
-                self.filtered_temp[first:last, i] = yy
-            else:
-                yy = filtfilt(b,a,temp)
-                self.filtered_temp[:, i] = yy
-
-            # Force user to do a quick QC of each river temperature csv
-            plt.figure()
-            plt.plot(dates, self.river_temp[:,i], c = 'r', label = 'no filter applied')
-            plt.plot(dates, self.filtered_temp[:,i], c = 'k', label = 'low pass filtered')
-            plt.title(f'River temperature at: {self.files[i].split(".csv")[0]}')
-            plt.legend()
-
-    def set_average_temp(self, dates):
-        '''
-        The average temperature will be used by rivers we don't have data from (typically small ones).
-
-        We just fit a curve that doesn't get as warm as the warmest rivers, but much warmer than the coldest ones.
-        '''
-        self.average_temp  = np.nanmean(self.river_temp, axis = 1)
-        std_pr_day         = np.nanstd(self.river_temp, axis = 1)
-
-        # Seasonal std
-        summer             = np.arange(100,250)
-        daynr = [date.timetuple().tm_yday for date in dates]
-        std   = [(std if day in summer else -std) for std, day in zip(std_pr_day, daynr)]
-
-        # Smooth transition
-        v     = np.ones((450,))
-        std   = np.convolve(std, v, 'same')/len(v)
-        self.average_temp += std
-
-        # Remove negative values for numerical stability
-        lt_zero = np.where(self.average_temp < 0)[0]
-        self.average_temp[lt_zero] = 0
-
-    def nan_helper(self,data):
-        return np.isnan(data), lambda z: z.nonzero()[0]
-
-class BaseRiver:
-    def add_parameters(self, names):
-        '''
-        Read grid attributes from mfile and add them to FVCOM_grid object
-        '''
-        rivers = loadmat(self.pathToRiver)
-        if type(names) is str:
-            names=[names]
-        for name in names:
-            setattr(self, name, rivers[name])
-
-    def crop_to_vassdrag(self):
-        """
-        Removes:
-        - Rivers outside of the chosen vassdrag
-        - Rivers too close to the OBC
-        """
-        self = crop_object(self, self.rivers_in_vassdrag)
-
-class LargeRivers(BaseRiver):
-    """
-    Loads river data, at the moment just from mat files, but in the future?
-    """
-    def __init__(self, info):
-        """
-        Import large rivers
-        """
-        self.pathToRiver = info['LargeRivers']
-        print('- '+self.pathToRiver)
-        if self.pathToRiver[-3:] == 'mat':
-            self.add_parameters(['areal','landareal','name','nedborfelt','totalareal','Vl','x','y'])
-        else:
-            raise NameError(f'.{self.pathToRiver.split(".")[-1]} files are not supported')
-
-    def connect_nedborsfelt(self, vassdrag_tuple):
-        """
-        Big rivers (nedbørsfelt til hav)
-        """
-        self.rivers_in_vassdrag  = np.array([ind for ind, i in enumerate(self.Vl) if i in vassdrag_tuple]).astype(int)
-
-    def add_temperature(self, Temp):
-        """
-        Connect specific rivres to vassdrag, and mean river to the rest of the domain
-
-        Future:
-        - Investigate whether rivers can obtain temperatures as a function of distance
-          from nearest temperature measurement
-        """
-        self.river_temp = np.zeros((len(Temp.average_temp), len(self.Vl)))
-        for i, vassdrag in enumerate(self.Vl):
-            if vassdrag in Temp.vassdrag:
-                river = np.where(np.array(Temp.vassdrag) == vassdrag)[0][0]
-                self.river_temp[:,i] = Temp.river_temp[:,river] # Ps. this method will be flawed if more than 1 temperature measurement in vassdrag
-            else:
-                self.river_temp[:,i] = Temp.average_temp
-        self.river_time = Temp.river_time
-
-    def get_area_fraction(self):
-        """
-        To get a reasonable estimate of the total runoff that goes through the main river
-        """
-        self.Vfrac = self.areal/self.landareal
-
-class SmallRivers(BaseRiver):
-    """
-    Handle data from small rivers
-    """
-    def __init__(self, info):
-        """
-        import small rivers
-        """
-        self.pathToRiver = info['SmallRivers']
-        print(f'- {self.pathToRiver}')
-        self.add_parameters(['riv_ids','Vs','x2','y2'])
-        self.x = self.__dict__.pop('x2')
-        self.y = self.__dict__.pop('y2')
-
-    def add_temperature(self, Temp):
-        """
-        Set all small rivers to equal the average-temperature.
-        We may look into finding better ways to connect small rivers to temperatures
-        in the future.
-        """
-        self.river_temp = np.zeros((len(Temp.average_temp), len(self.Vs)))
-        for i, vassdrag in enumerate(self.Vs):
-            self.river_temp[:,i] = Temp.average_temp
-        self.river_time = Temp.river_time
-
-    def connect_nedborsfelt(self, vassdrag_tuple):
-        """
-        Big rivers (nedbørsfelt til hav)
-        """
-        self.rivers_in_vassdrag = np.array([ind for ind, i in enumerate(self.Vs) if i in vassdrag_tuple]).astype(int)
-
-class RiverRunoff:
-    """
-    Load river runoff files, prepare to be used by the routine
-    """
-    def __init__(self, info):
-        """
-        riverdata.dat files contain all the necessary information about river runoff from "Vassdrag".
-        See atlas.nve.no for more information about the whats and wheres of Vassdrag.
-        """
-        self.info = info
-        self.pathToRiver = self.info['vassdrag']
-        print(f'- {self.pathToRiver}')
-        Q = self.load_data()
-        self.convert_dates(Q)
-        self.transport = Q[:, 3:] # load the transport pr. "vassdragsområde"
-
-    def load_data(self):
-        '''
-        get the time format as numbers
-        '''
-        Q = np.loadtxt(self.info['vassdrag'])
-        return Q
-
-    def convert_dates(self,Q):
-        self.dates = []
-        for i in range(Q.shape[0]):
-            self.dates.append(datetime(int(Q[i,0]), int(Q[i,1]), int(Q[i,2]), tzinfo = timezone.utc))
+        self.rivers = self.rivers.iloc[indices]
 
 class FVCOM_rivers:
     """
     Class storing data that eventually ends up as FVCOM forcing
     """
-    def __init__(self, info, M, vassdrag):
+    def __init__(self, info, M, vassdrag, start, stop):
         self.info, self.vassdrag, self.M = info, vassdrag, M
         self.nodes, self.cells = gm.get_nbe(self.M)
+        self.start, self.stop = start, stop
 
     @property
     def xy_land(self):
         if self.info['iloc'] == 'edge':
-            x_land  = self.M.xc[self.cells['boundary'][np.where(self.cells['id']==1)[0]]]
-            y_land  = self.M.yc[self.cells['boundary'][np.where(self.cells['id']==1)[0]]]
+            #x_land  = self.M.xc[self.cells['boundary'][np.where(self.cells['id']==1)[0]]]
+            #y_land  = self.M.yc[self.cells['boundary'][np.where(self.cells['id']==1)[0]]]
+            model_boundary = np.array(np.where(self.M.nbe.min(axis=1)==-1))
+            land = model_boundary[self.M.ISBCE[model_boundary] == 1]
+            x_land = self.M.xc[land]
+            y_land = self.M.yc[land]
 
         elif self.info['iloc'] == 'node':
             x_land  = self.M.x[self.nodes['boundary'][np.where(self.nodes['id']==1)[0]]]
             y_land  = self.M.y[self.nodes['boundary'][np.where(self.nodes['id']==1)[0]]]
+            
         return np.array([x_land, y_land]).T
 
     @property
@@ -642,8 +276,12 @@ class FVCOM_rivers:
     @property
     def xy_obc(self):
         if self.info['iloc'] == 'edge':
-            x_obc   = self.M.xc[self.cells['boundary'][np.where(self.cells['id']==2)[0]]]
-            y_obc   = self.M.yc[self.cells['boundary'][np.where(self.cells['id']==2)[0]]]
+            #x_obc   = self.M.xc[self.cells['boundary'][np.where(self.cells['id']==2)[0]]]
+            #y_obc   = self.M.yc[self.cells['boundary'][np.where(self.cells['id']==2)[0]]]
+            model_boundary = np.array(np.where(self.M.nbe.min(axis=1)==-1))
+            obc = model_boundary[self.M.ISBCE[model_boundary] == 2]
+            x_obc = self.M.xc[obc]
+            y_obc = self.M.yc[obc]
 
         elif self.info['iloc'] == 'node':
             x_obc   = self.M.x[self.nodes['boundary'][np.where(self.nodes['id']==2)[0]]]
@@ -674,102 +312,63 @@ class FVCOM_rivers:
             _mesh_tree = KDTree(np.array([self.M.x,  self.M.y]).transpose())
         return _mesh_tree
 
-    def redistribute_runoff(self, Small, Large, Runoff):
+    def redistribute_runoff(self, Rivers, Runoff):
         """
-        Figure out how much water each river should discharge
+        Assign fraction of total runoff to watershed to the individual river
         """
-        # Get the volume transport through big rivers
-        Fraction_Large       = Large.areal/Large.landareal
-        self.Large_Runoff    = Runoff.transport[:, Large.Vl[:,0]-1]*Fraction_Large[:,0]
-        self.Large_LongName  = [f'{nedbor.split(" ")[0]} - {name.split(" ")[0]}' for nedbor, name in zip(Large.nedborfelt, Large.name)]
-        self.Large_ShortName = [nedbor.split(' ')[0] for nedbor in Large.nedborfelt]
+        # Redistribute the total runoff in each watershed to all known rivers in the watershed
+        self.Runoff      = (Runoff.transport.loc[Rivers.rivers.vassdragsomraade] * Rivers.rivers.area_fraction.to_numpy()[:, None]).set_index(Rivers.rivers.index) # total runoff to the watershed is conserved in this operation
+        self.river_names = Rivers.names
+        self.short_names = Rivers.rivers.index.values
 
-        # Figure out how much area in each vassdrag is left for the small rivers, and return corresponding runoff
-        Small_Runoff = []
-        for vdrag in self.vassdrag:
-            Fraction_Small  = 1.0 - np.sum(Fraction_Large[np.where(Large.Vl[:,0]==vdrag)[0]])
-            Small_Runoff.append(Runoff.transport[:, vdrag-1]*Fraction_Small)
+        # Store positions in the forcing object as well
+        self.xriv, self.yriv = Rivers.x, Rivers.y
 
-        Small_Runoff = np.array(Small_Runoff).T
-
-        # Share the leftover the runoff among the small rivers
-        self.Small_Runoff = np.empty((len(Small_Runoff[:,0]),0))
-        for i, vdrag in enumerate(self.vassdrag):
-            num_small         = len(np.where(Small.Vs == vdrag)[0])
-            if num_small > 0:
-                runoff_each_small = Small_Runoff[:,i]/num_small
-                runoff_small_here = np.tile(runoff_each_small, (num_small,1)).T
-                self.Small_Runoff = np.append(self.Small_Runoff, runoff_small_here, axis = 1)
-
-        # Store the names
-        self.Small_LongName  = [f'{vassdrag[0]}.Z-small-{i+1}' for i, vassdrag in enumerate(Small.Vs)]
-        self.Small_ShortName = [f'{vassdrag[0]}.Z-s-{i+1}' for i, vassdrag in enumerate(Small.Vs)]
-
-    def combine_small_and_large(self, Large, Small):
+    def crop_rivers_far_from_land_close_to_OBC(self, Rivers):
         """
-        Prepare the vectors that will go to the output
+        Figure out which model point each river is closest too
         """
-        if self.info['whichrivers'] == 'all':
-            self.xriv = np.append(Large.x, Small.x)
-            self.yriv = np.append(Large.y, Small.y)
-            self.transport = np.append(self.Large_Runoff, self.Small_Runoff, axis = 1)
-            self.river_names = self.Large_LongName + self.Small_LongName
-            self.short_names = self.Large_ShortName + self.Small_ShortName
-            self.vassdrag = np.append(Large.Vl, Small.Vs)
-            self.river_temp  = np.append(Large.river_temp, Small.river_temp, axis = 1)
+        # Remove rivers too far away from land
+        d, land_ind  = self.land_tree.query(np.array([Rivers.x, Rivers.y]).transpose())
+        close_enough = np.where(d<=self.info['dRmax'])[0] # Remove rivers too far away from land
 
-        elif self.info['whichrivers'] == 'small':
-            self.xriv = Small.x
-            self.yriv = Small.y
-            self.transport   = self.Small_Runoff
-            self.river_names = self.Small_LongName
-            self.short_names = self.Small_ShortName
-            self.vassdrag = Small.Vs
-            self.river_temp = Small.river_temp
+        # Remove rivers that are too close to the OBC
+        d, _   = self.obc_tree.query(
+            np.array([self.x_land[land_ind[close_enough]], self.y_land[land_ind[close_enough]]]).transpose()
+            )
 
-        elif self.info['whichrivers'] == 'large':
-            self.xriv = Large.x
-            self.yriv = Large.y
-            self.transport   = self.Small_Runoff
-            self.river_names = self.Large_LongName
-            self.short_names = self.Large_ShortName
-            self.vassdrag    = Large.Vl
-            self.river_temp  = Large.river_temp
+        # Keep rivers that are far enough away from the OBC
+        far_enough  = np.where(d>=self.info['dRmax'])[0]
+        Rivers.rivers = Rivers.rivers.iloc[close_enough[far_enough]]
+        return Rivers
 
-        else:
-            raise NameError(f'{self.info["whichrivers"]}" is not a supported whichrives-option, try "large", "small" or "all"')
-
-    def make_time(self, start, stop, Runoff, Temp, dt = 3/24):
+    def interpolate_forcing_to_model_time(self, Runoff, Temp, river_temp, dt = 3/24):
         '''
         Create a time-vector for the forcing file
         '''
-        start_tuple = start.split('-')
-        stop_tuple  = stop.split('-')
-        self.start  = datetime(int(start_tuple[0]), int(start_tuple[1]), int(start_tuple[2]), tzinfo = timezone.utc)
-        self.stop   = datetime(int(stop_tuple[0]), int(stop_tuple[1]), int(stop_tuple[2]), tzinfo = timezone.utc)
-
         # Convert to easy-to-deal-with time
         runoff_dates = np.array(netCDF4.date2num(Runoff.dates, units = 'days since 1858-11-17 00:00:00'))
+        temp_time    = np.array(netCDF4.date2num(Temp.time, units = 'days since 1858-11-17 00:00:00'))
         start_num    = netCDF4.date2num(self.start, units = 'days since 1858-11-17 00:00:00')
         stop_num     = netCDF4.date2num(self.stop, units = 'days since 1858-11-17 00:00:00')
 
         # Check if the time covers the model period
         # transport
         if stop_num > runoff_dates[-1]:
-            raise ValueError(f'{self.info["vassdrag"]} does not extend to the stop date')
+            raise ValueError(f'{self.info["runoff"]} does not cover the stop date, {stop_num} was requested, but the latest runoff is {runoff_dates[-1]}')
 
         elif start_num < runoff_dates[0]:
-            raise ValueError(f'{self.info["vassdrag"]} starts after the start date')
+            raise ValueError(f'{self.info["runoff"]} does not cover the start date, {start_num} was requested, but the earliest runoff is {runoff_dates[0]}')
 
         # temperature
-        if start_num < Temp.river_time[0]:
-            raise ValueError(f'All file(s) in {self.info["rivertemp"]} starts after start date')
+        if start_num < temp_time[0]:
+            raise ValueError(f'{self.info["rivertemp"]} starts after start date, {start_num} was requested but the earliest temperatute available was {temp_time[0]}')
 
-        elif stop_num > Temp.river_time[-1]:
-            raise ValueError(f'All file(s) in {self.info["rivertemp"]} ends before end date')
+        elif stop_num > temp_time[-1]:
+            raise ValueError(f'{self.info["rivertemp"]} ends before end date, {stop_num} was requested but the earliest temperatute available was {temp_time[-1]}')
 
         # Prepare the output files
-        self.model_time = np.arange(start_num, stop_num+dt, dt)
+        self.model_time = np.arange(start_num, stop_num + dt, dt)
 
         # Interpolate to output structure
         self.RiverTransport = np.zeros((len(self.model_time), len(self.xriv)))
@@ -777,29 +376,12 @@ class FVCOM_rivers:
 
         # These fields will be dumped to the model forcing file
         for i in range(len(self.xriv)):
-            f_transport     = interpolate.interp1d(runoff_dates, self.transport[:,i])
-            f_temperature   = interpolate.interp1d(Temp.river_time, self.river_temp[:,i])
-            self.RiverTransport[:,i]  = f_transport(self.model_time)
-            self.RiverTemp[:,i]       = f_temperature(self.model_time)
+            f_transport   = interpolate.interp1d(runoff_dates, self.Runoff.to_numpy()[i, :])
+            f_temperature = interpolate.interp1d(temp_time, river_temp.to_numpy()[i, :])
+            self.RiverTransport[:, i] = f_transport(self.model_time)
+            self.RiverTemp[:, i]      = f_temperature(self.model_time)
 
-    def crop_river_to_obc(self, river_object):
-        """
-        Figure out which model point each river is closest too
-        """
-        # Remove rivers too far away from land
-        d, land_ind  = self.land_tree.query(np.array([river_object.x, river_object.y]).transpose())
-        close_enough = np.where(d<=self.info['dRmax'])[1] # Remove rivers too far away from land
-        river_object = crop_object(river_object, close_enough) # Crop the river object
-
-        # Remove rivers that are too close to the OBC
-        d, obc_ind   = self.obc_tree.query(np.array([self.x_land[land_ind[0,close_enough]], \
-                                                     self.y_land[land_ind[0,close_enough]]]).transpose())
-        far_enough   = np.where(d>=self.info['dRmax'])[0] # Remove rivers too far away from obc
-        river_object = crop_object(river_object, far_enough)
-
-        return river_object
-
-    def connect_to_mesh(self, gp):
+    def connect_to_mesh(self, M, river_projection, grid_projection):
         """
         Figure out which node/cell the flux should go to.
         """
@@ -807,10 +389,10 @@ class FVCOM_rivers:
         while True:
             _, land_loc = self.land_tree.query(np.array([self.xriv, self.yriv]).transpose())
             if first:
-                self.river_connection(land_loc, gp)
+                self.river_connection(land_loc, M, river_projection, grid_projection)
                 first = False
 
-            d, mesh_location = self.mesh_tree.query(np.array([self.x_land[land_loc], self.y_land[land_loc]]).transpose())
+            _, mesh_location = self.mesh_tree.query(np.array([self.x_land[land_loc], self.y_land[land_loc]]).transpose())
             self.mesh_location = mesh_location
 
             print('- merge rivers that go to the same mesh point')
@@ -826,10 +408,10 @@ class FVCOM_rivers:
                 break
 
         # Figure out where the nearest land point to this river is, and where in the mesh this land point is
-        d, land_loc      = self.land_tree.query(np.array([self.xriv, self.yriv]).transpose())
-        d, mesh_location = self.mesh_tree.query(np.array([self.x_land[land_loc], self.y_land[land_loc]]).transpose())
+        _, land_loc      = self.land_tree.query(np.array([self.xriv, self.yriv]).transpose())
+        _, mesh_location = self.mesh_tree.query(np.array([self.x_land[land_loc], self.y_land[land_loc]]).transpose())
         self.mesh_location = mesh_location
-        plt.scatter(self.xriv, self.yriv, s = 50, c = 'm', label = 'final river nodes')
+        plt.scatter(self.xriv, self.yriv, s = 50, c = 'm', label = 'final river nodes', transform = ccrs.epsg(int(river_projection.split(':')[-1])))
         plt.legend()
 
     def merge_rivers(self):
@@ -898,7 +480,7 @@ class FVCOM_rivers:
             n_newland     = int(np.ceil(rcoef[river]/self.info['minrcoef'])+1)
 
             # Find nearby FVCOM land that we can use
-            d, this_land  = self.land_tree.query(np.array([self.xriv[river], self.yriv[river]]).transpose(), k = n_newland)
+            _, this_land  = self.land_tree.query(np.array([self.xriv[river], self.yriv[river]]).transpose(), k = n_newland)
 
             # Update with new positions
             new_x         = np.copy(self.x_land[this_land])
@@ -918,8 +500,8 @@ class FVCOM_rivers:
 
             # Insert the split version in the new nodes
             for i in range(n_newland):
-                self.RiverTransport = np.append(self.RiverTransport, transport[:,None], axis = 1)
-                self.RiverTemp = np.append(self.RiverTemp, temp[:,None], axis = 1)
+                self.RiverTransport = np.append(self.RiverTransport, transport[:, None], axis = 1)
+                self.RiverTemp = np.append(self.RiverTemp, temp[:, None], axis = 1)
                 self.river_names.append(f'{long_name}-p{i}')
                 self.short_names.append(f'{short_name}-p{i}')
 
@@ -927,22 +509,27 @@ class FVCOM_rivers:
             self.xriv = np.append(self.xriv, new_x)
             self.yriv = np.append(self.yriv, new_y)
 
-    def river_connection(self, land_loc, gp):
+    def river_connection(self, land_loc, M, river_projection, grid_projection):
         """
         Show how far rivers have been moved from NVE location
         """
         plt.figure()
-        plt.imshow(gp.img, extent=gp.extent)
+        #plt.imshow(gp.img, extent=gp.extent)
+        M.re_project(grid_projection)
+        M.georeference()
+        M.re_project(river_projection)
+        transform = ccrs.epsg(int(river_projection.split(':')[-1]))
+        
         # Make lines connecting rivers to their FVCOM location
         xvec = np.array([self.x_land[land_loc], self.xriv]).transpose()
         yvec = np.array([self.y_land[land_loc], self.yriv]).transpose()
         xvec_nan = np.insert(xvec, 2, np.nan, axis = 1).ravel()
         yvec_nan = np.insert(yvec, 2, np.nan, axis = 1).ravel()
 
-        plt.plot(self.x_land, self.y_land, 'b.', label = 'land')
-        plt.plot(self.x_land[land_loc], self.y_land[land_loc], 'k.', label = 'land with river')
-        plt.plot(self.xriv, self.yriv, 'g.',     label = 'river location from NVE')
-        plt.plot(xvec_nan, yvec_nan, 'r',        label = 'vector from NVE location to FVCOM location')
+        plt.plot(self.x_land, self.y_land, 'b.', label = 'land', transform = transform)
+        plt.plot(self.x_land[land_loc], self.y_land[land_loc], 'k.', label = 'land with river', transform = transform)
+        plt.plot(self.xriv, self.yriv, 'g.', label = 'river location from NVE', transform = transform)
+        plt.plot(xvec_nan, yvec_nan, 'r', label = 'vector from NVE location to FVCOM location', transform = transform)
         plt.axis('equal')
 
     def dump(self):
@@ -950,90 +537,86 @@ class FVCOM_rivers:
         Write the riverdata.nc file for river forcing
         """
         # Initialize file
-        d = netCDF4.Dataset('riverdata.nc', 'w')
-
-        # Set dimensions
-        d.createDimension('time', None)
-        d.createDimension('rivers', len(self.xriv))
-        d.createDimension('DateStrLen', 26)
-        d.createDimension('namelen', 80)
-
-        # Add netcdf information
-        d.source      = 'Akvaplan-niva BuildRiver, version '+str(version)
-        d.history     = 'Created '+ datetime.now().strftime('%Y-%m-%d at %H:%M h')+' by '+os.getlogin()
-        d.description = 'River forcing (temperature and runoff) for FVCOM 4.x'
-
-        # Create variables:
-        # - time
-        time = d.createVariable('time', 'single', ('time',))
-        time.long_name   = 'time'
-        time.units       = 'days since '+str(datetime(1858, 11, 17, 0, 0, 0))
-        time.format      = 'modified julian day (MJD)'
-        time.time_zone   = 'UTC'
-
-        # - Itime
-        Itime = d.createVariable('Itime', 'int32', ('time',))
-        Itime.long_name   = 'integer days'
-        Itime.units       = 'days since '+str(datetime(1858, 11, 17, 0, 0, 0))
-        Itime.format      = 'modified julian day (MJD)'
-        Itime.time_zone   = 'UTC'
-
-        # - Itime2
-        Itime2           = d.createVariable('Itime2', 'int32', ('time',))
-        Itime2.long_name = 'integer milliseconds'
-        Itime2.units     = 'msec since 00:00:00'
-        Itime2.time_zone = 'UTC'
-
-        # - river_flux
-        flux             = d.createVariable('river_flux', 'single', ('time','rivers'))
-        flux.long_name   = 'river runoff volume flux, m**-3 s**-1'
-        flux.units       = 'm^3s^-1'
-
-        # - river_temp
-        temp             = d.createVariable('river_temp', 'single', ('time','rivers'))
-        temp.long_name   = 'river runoff temperature'
-        temp.units       = 'Celsius'
-
-        # - river_salt
-        salt             = d.createVariable('river_salt', 'single', ('time','rivers'))
-        salt.long_name   = 'river runoff salinity'
-        salt.units       = 'PSU'
-
-        # - river_names
-        names            = d.createVariable('river_names', 'S1', ('rivers', 'namelen'))
-
-        # Dump data:
-        salt[:]   = np.zeros(self.RiverTemp.shape)
-        temp[:]   = self.RiverTemp
-        flux[:]   = self.RiverTransport
-        time[:]   = self.model_time
-        Itime[:]  = np.floor(self.model_time)
-        Itime2[:] = np.round((self.model_time - np.floor(self.model_time)) * 60 * 60 * 1000, decimals = 0)*24
-
-        # Dump river names
-        # --> Make sure that each rivername has 80 character
-        _names = []
-        names._Encoding = 'ascii'
-        for i, name in enumerate(self.river_names):
-            if len(name) > 80:
-                this_name = name[:80]
-            else:
-                this_name  = name + (80-len(name))*' '
-            this_name = self.fix_nordic(this_name)
-            names[i,:] = np.array(this_name, dtype = 'S80')
-
-        d.close()
+        with netCDF4.Dataset('riverdata.nc', 'w') as d:
+            # Set dimensions
+            d.createDimension('time', None)
+            d.createDimension('rivers', len(self.xriv))
+            d.createDimension('DateStrLen', 26)
+            d.createDimension('namelen', 80)
+    
+            # Add netcdf information
+            d.source      = 'Akvaplan-niva BuildRiver, version '+str(version)
+            d.history     = 'Created '+ datetime.now().strftime('%Y-%m-%d at %H:%M h')+' by '+os.getlogin()
+            d.description = 'River forcing (temperature and runoff) for FVCOM 4.x'
+    
+            # Create variables:
+            # - time
+            time = d.createVariable('time', 'single', ('time',))
+            time.long_name   = 'time'
+            time.units       = 'days since ' + str(datetime(1858, 11, 17, 0, 0, 0))
+            time.format      = 'modified julian day (MJD)'
+            time.time_zone   = 'UTC'
+    
+            # - Itime
+            Itime = d.createVariable('Itime', 'int32', ('time',))
+            Itime.long_name   = 'integer days'
+            Itime.units       = 'days since ' + str(datetime(1858, 11, 17, 0, 0, 0))
+            Itime.format      = 'modified julian day (MJD)'
+            Itime.time_zone   = 'UTC'
+    
+            # - Itime2
+            Itime2           = d.createVariable('Itime2', 'int32', ('time',))
+            Itime2.long_name = 'integer milliseconds'
+            Itime2.units     = 'msec since 00:00:00'
+            Itime2.time_zone = 'UTC'
+    
+            # - river_flux
+            flux             = d.createVariable('river_flux', 'single', ('time','rivers'))
+            flux.long_name   = 'river runoff volume flux, m**-3 s**-1'
+            flux.units       = 'm^3s^-1'
+    
+            # - river_temp
+            temp             = d.createVariable('river_temp', 'single', ('time','rivers'))
+            temp.long_name   = 'river runoff temperature'
+            temp.units       = 'Celsius'
+    
+            # - river_salt
+            salt             = d.createVariable('river_salt', 'single', ('time','rivers'))
+            salt.long_name   = 'river runoff salinity'
+            salt.units       = 'PSU'
+    
+            # - river_names
+            names            = d.createVariable('river_names', 'S1', ('rivers', 'namelen'))
+    
+            # Dump data:
+            salt[:]   = np.zeros(self.RiverTemp.shape)
+            temp[:]   = self.RiverTemp
+            flux[:]   = self.RiverTransport
+            time[:]   = self.model_time
+            Itime[:]  = np.floor(self.model_time)
+            Itime2[:] = np.round((self.model_time - np.floor(self.model_time)) * 60 * 60 * 1000, decimals = 0)*24
+    
+            # Dump river names
+            # --> Make sure that each rivername has 80 character
+            names._Encoding = 'ascii'
+            for i, name in enumerate(self.river_names):
+                if len(name) > 80:
+                    this_name = name[:80]
+                else:
+                    this_name  = name + (80-len(name))*' '
+                this_name = self.fix_nordic(this_name)
+                names[i,:] = np.array(this_name, dtype = 'S80')
 
     def fix_nordic(self, this_name):
         '''
         FVCOM does not accept norwegian letters
         '''
-        this_name.replace('å','a')
-        this_name.replace('Å','A')
-        this_name.replace('ø','o')
-        this_name.replace('Ø','O')
-        this_name.replace('æ','e')
-        this_name.replace('Æ','E')
+        this_name = this_name.replace('å','a')
+        this_name = this_name.replace('Å','A')
+        this_name = this_name.replace('ø','o')
+        this_name = this_name.replace('Ø','O')
+        this_name = this_name.replace('æ','e')
+        this_name = this_name.replace('Æ','E')
         return this_name
 
     def write_namelist(self, namelist = 'RiverNamelist.nml', riverfile = 'riverdata.nc'):
@@ -1053,31 +636,103 @@ class FVCOM_rivers:
                 f.write(f' RIVER_VERTICAL_DISTRIBUTION = {vertical_dist}\n')
                 f.write('/\n')
 
+class RiverTemperatures:
+    '''
+    Prepares climatological temperature at each watershed area for the FVCOM experiment
+    - Also provides preliminary 
+    '''
+    def __init__(self, riverpath, start, stop):
+        '''
+        Read observed river temperatures and river climatologies
+        '''
+        self.start, self.stop = start, stop
+        self.climatology = pd.read_csv(f'{riverpath}/temperature_climatology.csv', index_col = 0)
+        self.climatology.columns = self.climatology.columns.astype(int)
+        self.observations = {}
+        observation_folder = f'{riverpath}/temperature_observations/'
+        
+        for f in os.listdir(observation_folder):
+            if '.csv' in f:
+                _tmp = pd.read_csv(f'{observation_folder}{f}')
+                _tmp['time'] = pd.to_datetime(_tmp.time)
+                self.observations[f.split('.csv')[0]] = _tmp
 
-# Crop the fields in an object to only cover indices
-# ----
-def crop_object(obj, indices):
-    keys = obj.__dict__.keys()
-    for key in keys:
-        var = getattr(obj,key)
-        if key == 'rivers_in_vassdrag':
-            continue
-        if type(var) == str:
-            continue
-        setattr(obj, key, var[indices])
-    return obj
+    @property
+    def time(self):
+        '''
+        Days we will force the model
+        '''
+        return [self.start + timedelta(days = n) for n in range((self.stop - self.start).days + 1)]
+
+    @property
+    def timestamp(self):
+        return pd.to_datetime([t.timestamp() for t in self.time])
+    
+    @property
+    def day_of_year(self):
+        '''
+        Which day of the year each time is
+        '''
+        return np.array([t.timetuple().tm_yday for t in self.time])
+
+    @property
+    def vassdrag_temperature_at_time(self):
+        '''
+        Temperatures on the day we force the model
+        '''
+        temp = self.climatology.T
+        return temp.loc[self.day_of_year].T
+
+    def make_individual_river_climatology(self, Rivers):
+        '''
+        Connect individual rivers to the climatoligical temperature on the days we need data to force FVCOM
+        '''
+        river_temp = self.vassdrag_temperature_at_time.loc[Rivers.rivers.vassdragsomraade]
+        river_temp['elv-ID'] = Rivers.rivers.index
+        return river_temp.set_index('elv-ID')
+
+    def insert_observed_temperature(self, river_temp, vassdrag):
+        '''
+        Use the observed temperature instead of the climatology where we have it
+        '''
+        # Identify which temperature observation are within the model domain
+        within_domain = [key for key in self.observations.keys() if int(key.split('-')[0]) in vassdrag]
+        
+        # Interpolate observations to the forcing time
+        print('\nChecking if we can replace some of the runoff climatologies with in-situ observations')
+        if any(within_domain):
+            for key in within_domain:
+                observation = self.observations[key]
+                
+                # Only use quality controlled data
+                observation = observation[observation.quality > 1]
+        
+                # Check if the observation covers the modelled period, crop the array is so
+                if observation.time.iloc[0] < self.time[0] and observation.time.iloc[-1] > self.time[-1]:
+                    observation = observation[np.logical_and(observation.time >= self.start - timedelta(days = 7), observation.time <= self.stop + timedelta(days = 7))]
+                else:
+                    print(f'- Station {key} did not cover the simulation period')
+                    continue
+        
+                # Require that the coverage of temperature data (daily) is at least 90% of the model period (to avoid making up too much data)
+                if len(observation)/len(self.time) < 0.9:
+                    print(f'- Station {key} had too many gaps in the simulation period')
+                    continue
+                    
+                # Interpolate the observed temperature to the forcing data
+                print(f'- Replacing climatology with observations at {key}')
+                f = interpolate.interp1d([t.timestamp() for t in observation.time], observation.filtered_temperature)
+                river_temp.loc[key] = f(self.timestamp)
+        return river_temp
 
 # Show what we will write to the riverdata forcing
 # ----
-def show_forcing(obj, gp, M):
+def show_forcing(obj, M):
     """
     Simple figures to see that the routine got the basics right
     """
     plt.figure()
-    try:
-        M.georeference()
-    except:
-        plt.imshow(gp.img, extent = gp.extent)
+    M.georeference()
     plt.plot(obj.x_land, obj.y_land, 'g.', label = 'land nodes', zorder = 1)
     plt.scatter(obj.xriv, obj.yriv, np.mean(obj.RiverTransport, axis = 0), c = np.mean(obj.RiverTransport, axis = 0), zorder = 5)
     plt.title('Average transport')
@@ -1086,10 +741,7 @@ def show_forcing(obj, gp, M):
     plt.show(block = False)
 
     plt.figure()
-    try:
-        M.gereference()
-    except:
-        plt.imshow(gp.img, extent = gp.extent)
+    M.georeference()
     plt.plot(obj.x_land, obj.y_land, 'g.', label = 'land nodes', zorder = 1)
     plt.scatter(obj.xriv, obj.yriv, obj.RiverTemp.max(axis = 0), c = obj.RiverTemp.max(axis = 0), cmap = 'inferno', zorder = 5)
     plt.title('Max temperature in model period')
@@ -1098,7 +750,6 @@ def show_forcing(obj, gp, M):
     plt.show(block = False)
 
 class InputError(Exception): pass
-
 
 # Development:
 # Create a river subsetting method

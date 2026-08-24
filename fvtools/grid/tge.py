@@ -37,7 +37,7 @@ versionnr = 0.7
 
 def main(M, verbose = False):
     '''
-    Calculate the grid metrics that FVCOM stores internally when computing gradients etc.
+    Calculate all grid metrics which FVCOM stores internally when computing gradients etc.
 
     Input:
     - M (object from FVCOM_grid in fvcom_grd) containing
@@ -118,9 +118,54 @@ def main(M, verbose = False):
     # Initialize output:
     out = TGE()
 
-    # ------------------------------------------------------------------------------------------------
-    #                                       Input handling
-    # ------------------------------------------------------------------------------------------------
+    # Input handling
+    out = _handle_input(out, M, verbose)
+
+    # Domain information that require some computing
+    out = _find_nearby_elements_and_identify_boundaries(out, M, verbose)
+
+    out = _find_node_connectivity(out, M, verbose)
+
+    out = _find_control_volume_metrics(out, verbose)
+
+    out = _find_shape_coefficients_for_gradient_calculations(out, verbose)
+
+    # Compute CV area
+    out.get_art1()
+    if verbose: print('- Computed control volume area (art1)')
+
+    if verbose: print('-------------------------------------------------------------------------------')
+    if verbose: print('                                   Fin')
+    if verbose: print('-------------------------------------------------------------------------------')
+
+    return out
+
+# The control volume calculations and node connectivity calculations slow down the process quite a lot,
+# so I'm splitting up the routine so that the FVCOM_grid object doesn't need to do all of the calculations
+# at once
+def calculate_nbe_and_boundaries(M, verbose = False):
+    # Initialize output:
+    out = TGE()
+
+    # Input handling
+    out = _handle_input(out, M, verbose)
+
+    # Domain information that require some computing
+    out = _find_nearby_elements_and_identify_boundaries(out, M, verbose)
+
+    return out
+
+def calculate_node_connectivity(M, verbose = False):
+    # Initialize output:
+    out = TGE()
+
+    # Input handling
+    out = _handle_input(out, M, verbose)
+    return out
+
+# ======================================================================================================
+
+def _handle_input(out, M, verbose):
     # Unpack obc nodes
     OBC_NODES  = get_obc(M)
     out.source = M.filepath
@@ -134,10 +179,9 @@ def main(M, verbose = False):
 
     # Unpack triangulation (+ see re-arange if needbe so that triangulation is clockwise)
     out.NV = check_nv(M.tri, out.VX, out.VY, verbose = verbose)
+    return out
 
-    # -----------------------------------------------------------------------------------------------
-    #                         Domain information that require some computing
-    # -----------------------------------------------------------------------------------------------
+def _find_nearby_elements_and_identify_boundaries(out, M, verbose):
     # Get nearby elements
     out.NBE                = get_NBE(out.NT, out.MT, out.NV)
     if verbose: print('- Found nearby elements')
@@ -146,6 +190,16 @@ def main(M, verbose = False):
     ISBCE, ISONB           = get_BOUNDARY(out.NT, out.MT, out.NBE, out.NV)
     if verbose: print('- Found and flagged boundary nodes and elements.')
 
+    # Set ISONB on open boundary nodes, determine if element on open boundary, on land or in the interior
+    OBC_NODES  = get_obc(M)
+    if len(OBC_NODES) < 1:
+        OBC_NODES = None
+    out.ISONB, out.ISBCE   = set_boundary(ISONB, ISBCE, out.NV, out.NBE, OBC_NODES, out.NT)
+    if verbose: print('- Nodes and cells on the edge of the grid identified and tagged')
+
+    return out
+
+def _find_node_connectivity(out, M, ISONB, verbose):
     # Get max number of surrounding elements
     #MAXNBR                 = np.max(get_MAXNBR(out.MT, out.NT, out.NV))
     #if verbose: print(f'- Found max number of surrounding elements: {MAXNBR}')
@@ -156,8 +210,7 @@ def main(M, verbose = False):
     if verbose: print('- Found number of elements surrounding nodes')
 
     # Find number of nodes surrounding nodes, and elements surrounding nodes
-    out.NTSN, out.NBSN, out.NBVE, out.NBVT, invalid_nodes = get_NTSN_NBSN(NBVE, out.NTVE, NBVT, out.NBE,
-                                                                          out.NV, ISONB, MAXNBR, out.MT)
+    out.NTSN, out.NBSN, out.NBVE, out.NBVT, invalid_nodes = get_NTSN_NBSN(NBVE, out.NTVE, NBVT, out.NBE, out.NV, ISONB, MAXNBR, out.MT)
     if verbose: print('- Reordered elements surrounding nodes, found NTSN and NBSN')
 
     # Check if any of the nodes are invalid, if so kill and indicate where we have a problem
@@ -167,7 +220,9 @@ def main(M, verbose = False):
         plt.scatter(M.x[invalid_nodes], M.y[invalid_nodes], c = 'r')
         plt.draw()
         raise Exception(f'{len(np.where(invalid_nodes)[0])} of the boundary nodes are invalid, see figure.')
+    return out
 
+def _find_control_volume_metrics(out, verbose):
     # Control volume grid metrics
     out.NE, out.IEC, out.IENODE, out.ISBC  = get_TRI_EDGE_PARAM(out.NT, out.NBE, out.NV)
     if verbose: print('- Found CV connectivity')
@@ -176,32 +231,16 @@ def main(M, verbose = False):
     out.DLTXC, out.DLTYC, out.XIJC, out.YIJC, out.DLTXYC, out.SITAC = get_element_edge_metrics(out.VX, out.VY, out.IENODE, out.NE)
     if verbose: print('- CV distances computed. ')
 
-    # Set ISONB on open boundary nodes, determine if element on open boundary, on land or in the interior
-    if len(OBC_NODES) < 1:
-        OBC_NODES = None
-    out.ISONB, out.ISBCE   = set_boundary(ISONB, ISBCE, out.NV, out.NBE, OBC_NODES, out.NT)
-    if verbose: print('- Nodes and cells on the edge of the grid identified and tagged')
-
     # Get more control volume wall positions, lengths and angles (return as dict)
     out.XIJE, out.YIJE, out.NTRG, out.NIEC, out.DLTXE, out.DLTYE, out.DLTXYE, out.SITAE, out.NCV = get_CV(out.XIJC, out.YIJC, out.XC, out.YC, \
                                                                                                           out.ISBC, out.IEC, out.IENODE, out.NE, out.NT, out.MT)
     if verbose: print('- Control volume walls (indices, lengths, angles) identified and calculated.')
+    return out
 
+def _find_shape_coefficients_for_gradient_calculations(out, verbose):
     # Get shape coefficients for gradient calculation
     out.A1U, out.A2U = shape_coefficients(out.NT, out.XC, out.YC, out.NBE, out.ISBCE)
     if verbose: print('- Found shape coefficients for gradient calculation')
-
-    # Add reference to M to object if needed later?
-    out.M = M
-
-    # Compute CV area
-    out.get_art1()
-    if verbose: print('- Computed control volume area (art1)')
-
-    if verbose: print('-------------------------------------------------------------------------------')
-    if verbose: print('                                   Fin')
-    if verbose: print('-------------------------------------------------------------------------------')
-
     return out
 
 @jit(nopython = True, parallel = True)
