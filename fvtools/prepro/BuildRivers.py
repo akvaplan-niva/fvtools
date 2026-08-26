@@ -388,7 +388,12 @@ class CropRivers:
 
             # Modify river positions in Rivers (will not change the database, just the rivers used in the model setup)
             river_positions = DraggablePoints(ax, x, y)
-            ax.legend()
+            hndl = ax.legend()
+            for h in hndl.legend_handles:
+                try:
+                    h.set_sizes([20.0])
+                except:
+                    pass
             plt.show(block = True)
 
             # Once the figure is closed, we look at all points and update the river position database
