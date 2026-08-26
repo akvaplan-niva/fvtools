@@ -42,7 +42,6 @@ def main(
 # ---------------------------------------------------------------------------------------------------------------------
 #                                          Load the relevant input files
 # ---------------------------------------------------------------------------------------------------------------------
-
 def load_osm_coast(osm_coastline):
     '''
     Identify where the river meets the ocean by where the river is closest to the OSM coastline.

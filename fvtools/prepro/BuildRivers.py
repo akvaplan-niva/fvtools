@@ -1,29 +1,28 @@
 """
-------------------------------------------------------------------------------------------------------------
-                            Development project - Status: Testing (beta)
-------------------------------------------------------------------------------------------------------------
-BuildCase - Converts river runoff to vassdrag and river locations in these vassdrag to river runoff in FVCOM
-------------------------------------------------------------------------------------------------------------
+BuildCase - Calculates river runoff from individual rivers based on their areal fraction of the watershed and the total runoff from each watershed
 """
 import os
 import netCDF4
 import numpy as np
-import fvtools.grid.grid_metrics as gm
-import matplotlib.pyplot as plt
 import pandas as pd
+import shapely as shp
+import cartopy.crs as ccrs
+import matplotlib.pyplot as plt
+import fvtools.grid.grid_metrics as gm
 
+from datetime import datetime, timedelta, timezone
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from scipy.spatial import cKDTree as KDTree
+from shapely.plotting import plot_polygon
+from functools import cached_property
 from scipy import interpolate
-from datetime import datetime, timedelta, timezone
-
-from fvtools.rivers.NVEforcing.hbv_runoff import HBVRunoff
+from pyproj import Proj
 
 import warnings
 warnings.filterwarnings("ignore")
 
-#global version
-#version = 2.0
+global version
+version = 2.0
 
 def main(start, stop, vassdrag, mesh_dict, info = None):
     '''
@@ -52,13 +51,12 @@ def main(start, stop, vassdrag, mesh_dict, info = None):
     if info is None:
         info = get_input()
 
-    # 1. Load the FVCOM grid, the national runoff data, the river outlet positions and the river
-    #    temperature data. 
+    # 1. Load the FVCOM grid, the national runoff data, the river outlet positions and the river temperature data. 
     #    Initialize the object that will move rivers to the mesh and ensure numerical stability
     # -------------------------------------------------------------------------------
     # - Read the mesh
     M = FVCOM_grid(mesh_dict)
-    grid_projection = M.reference
+    info['grid_projection'] = M.reference
     M.re_project(info['river_projection'])
     M.get_cfl(verbose=False)
 
@@ -67,17 +65,18 @@ def main(start, stop, vassdrag, mesh_dict, info = None):
     print('----------------------------------------------------------------------------')
 
     # - Load the necessary data and data handlers
+    print('Compute grid connectivity and identify landpoints')
     Forcing   = FVCOM_rivers(info, M, vassdrag, start, stop)
     Runoff    = HBVRunoff(info['runoff'], start = start - timedelta(days = 1), stop = stop + timedelta(days=1))
-    Positions = RiverPositions(info['riverpositions'], vassdrag)
+    Positions = RiverPositions(info['riverpositions'], vassdrag, info['river_projection'])
     Temp      = RiverTemperatures('riverdata/', start = start - timedelta(days=1), stop = stop + timedelta(days=1))
 
     # 2. Reduce the rivers to only load those that are relevant to this simulation
     #    and prepare to force the model
     # ------------------------------------------------------------------------------
     # - Remove the rivers that are too far away from land and too close to the obc
-    print('- Crop river to a distance from the obc')
-    Positions = Forcing.crop_rivers_far_from_land_close_to_OBC(Positions)
+    print('\nSubset the river database to cover the model domain')
+    Positions = Forcing.crop_rivers_far_from_land_and_close_to_OBC(Positions)
 
     # - Re-distribute the runoff according to catchment area
     print('- Determine runoff from rivers by the rivers catchment area')
@@ -94,14 +93,15 @@ def main(start, stop, vassdrag, mesh_dict, info = None):
     print('- Set the runoff and temperauture for each river in the model, interpolate to model time')
     Forcing.interpolate_forcing_to_model_time(Runoff, Temp, river_temp)
 
-    # Now, reproject to the grids projection - leaving us with more control of how to plot the stuff
-    Forcing.connect_to_mesh(M, info['river_projection'], grid_projection)
+    print('\nConnect rivers to the mesh')
+    Forcing.connect_to_mesh(M)
 
     # 4. Do a simple quality control, and write the necessary forcing files
-    # ---------------------------------------------------------------------------
     # - Show the rivers we'll use, and the values they will force FVCOM with
     print('\nFinished, plotting the forcing')
-    show_forcing(Forcing, M)
+    M.re_project(info['grid_projection'])
+    show_forcing(Forcing, M, Positions)
+    M.re_project(info['river_projection'])
 
     # - Write to netCDF, write RiverNamelist.nml
     Forcing.dump()
@@ -112,9 +112,9 @@ def get_input(river_data_path = 'riverdata'):
     Pre-defined paths are stored here. They are distributed to other parts of the code via main.
 
     iloc:        Determine if the input is given as a flux at edge or at the node
-    whichrivers: 'all', 'small' , 'large'
-    dRmax:       Distance from boundary without rivers
-    min_depth:        Minimum depth at rivers (since if h=0 (wetting/drying on), rivers would be infinitely wide to meet the stability criteria)
+    land buffer: For identifying rivers draining to the model domain, will include rivers within *land buffer* from the model coastline
+    obc buffer:  For masking rivers within *obc buffer* from the model open boundary
+    min_depth:   Minimum depth at rivers (since if h=0 (wetting/drying on), rivers would be infinitely wide to meet the stability criteria)
     Isplit:      Baroclinic split
     tideamp:     Tidal amplityde
     plot:        Show the results on a map
@@ -127,7 +127,9 @@ def get_input(river_data_path = 'riverdata'):
     """
     info = {
         'iloc': 'edge',
-        'dRmax': 5000,
+        'land buffer': 1500,
+        'buffer domain ratio': 0.1,
+        'obc buffer': 5000,
         'min_depth': 3,
         'Isplit': 8,
         'tideamp': 1,
@@ -140,27 +142,6 @@ def get_input(river_data_path = 'riverdata'):
         'river_projection': 'epsg:32633'
     }
     return info
-
-# -----------------------------------------------------------------------------------------------------
-#                                        Input handling
-# -----------------------------------------------------------------------------------------------------
-import os
-import netCDF4
-import numpy as np
-import fvtools.grid.grid_metrics as gm
-import matplotlib.pyplot as plt
-import pandas as pd
-import cartopy.crs as ccrs
-
-from fvtools.plot.geoplot import geoplot
-from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.rivers.NVEforcing.hbv_runoff import HBVRunoff
-from scipy.spatial import cKDTree as KDTree
-from datetime import datetime, timedelta, timezone
-from scipy import interpolate
-
-global version
-version = 2.0
 
 class HBVRunoff:
     def __init__(self, hbvfolder, start = None, stop = None):
@@ -200,27 +181,60 @@ class HBVRunoff:
         self.dates = self.dates[crop]
 
 class RiverPositions:
-    def __init__(self, path, vassdrag):
+    def __init__(self, path, vassdrag, epsg_code):
         '''
         Connect river outlets identified by fvtools.rivers.NVEforcing.elvis_riveroutlets to the FVCOM mesh
-        - path:     e.g. riverdata/river_positions.csv
-        - vassdrag: list of vassdrags covered by the model
-        
+        - path:      e.g. riverdata/river_positions.csv
+        - vassdrag:  list of vassdrags covered by the model
+        - epsg_code: EPSG code of the projection the river positions is stored in. Should always be in UTM33 (epsg:32633) in Norway.
         '''
+        # Set georeference, and prepare a Proj object for the river data
+        self.reference = epsg_code
+        self.Proj = Proj(epsg_code)
+
         # load all rivers
         rivers = pd.read_csv(path).set_index('rivers')
 
         # Remove those who are not in the requested vassdragsområde
         self.rivers = rivers[[v in vassdrag for v in rivers.vassdragsomraade]]
 
+        # Set initial x- and y-positions
+        self.x, self.y = self.rivers.x_outlet.values, self.rivers.y_outlet.values
+
+    @cached_property
+    def crs(self):
+        return ccrs.epsg(int(self.reference.split(':')[-1]))
+
     @property
     def x(self):
-        return self.rivers.x_outlet.values
+        return self.rivers.x_outlet.values 
+
+    @x.setter
+    def x(self, val):
+         self.rivers.x_outlet = val
 
     @property
     def y(self):
         return self.rivers.y_outlet.values
+
+    @y.setter
+    def y(self, val):
+        self.rivers.y_outlet = val
+
+    # Derive lon, lat from x,y
+    @property
+    def lonlat(self):
+        _lon, _lat = self.Proj(self.x, self.y, inverse = True)
+        return [_lon, _lat]
     
+    @property
+    def lon(self):
+        return self.lonlat[0]
+    
+    @property
+    def lat(self):
+        return self.lonlat[1]
+
     @property
     def names(self):
         '''
@@ -240,7 +254,175 @@ class RiverPositions:
         '''
         self.rivers = self.rivers.iloc[indices]
 
-class FVCOM_rivers:
+class DraggablePoints:
+    '''
+    Drag and drop solution suggested by Google AI (from the google search bar)
+    '''
+    def __init__(self, ax, x_data, y_data):
+        self.ax = ax
+        self.was_modified = False
+
+        # Plot the points and keep a reference to the Line2D artis
+        self.points, = ax.plot(x_data, y_data, 'ko', markersize=10)
+        
+        # Internal state tracking
+        self.selected_index = None
+        self.x_data = list(x_data)
+        self.y_data = list(y_data)
+        
+        # Connect to matplotlib mouse events
+        self.canvas = ax.figure.canvas
+        self.canvas.mpl_connect('button_press_event', self.on_press)
+        self.canvas.mpl_connect('motion_notify_event', self.on_motion)
+        self.canvas.mpl_connect('button_release_event', self.on_release)
+
+    def on_press(self, event):
+        # Ensure click occurs inside the axes plot area
+        if event.inaxes != self.ax: 
+            return
+        
+        # Transform data coordinates to display (pixel) coordinates
+        xy_pixels = self.ax.transData.transform(np.column_stack((self.x_data, self.y_data)))
+        click_pixel = np.array([event.x, event.y])
+        
+        # Calculate distance from click to all points
+        distances = np.linalg.norm(xy_pixels - click_pixel, axis=1)
+        
+        # If click is within 15 pixels of a point, select the closest one
+        if np.min(distances) < 15:
+            self.selected_index = np.argmin(distances)
+
+    def on_motion(self, event):
+        # Cancel if no point is selected or mouse leaves axes bounds
+        if self.selected_index is None or event.inaxes != self.ax: 
+            return
+
+        # Change state if any point was modified
+        self.was_modified = True
+
+        # Update point data with new cursor coordinates
+        self.x_data[self.selected_index] = event.xdata
+        self.y_data[self.selected_index] = event.ydata
+        
+        # Refresh the artist data and redraw canvas
+        # Could be interesting to add a line to the original position?
+        self.points.set_data(self.x_data, self.y_data)
+        self.canvas.draw_idle()
+
+    def on_release(self, event):
+        # Deselect point on mouse release
+        self.selected_index = None
+
+class CropRivers:
+    '''
+    Use FVCOM_rivers to crop the national river database to the FVCOM experiment
+    - Includes functions to move rivers in the domain to match with the mesh
+    '''
+    @property
+    def model_domain(self):
+        '''
+        The outermost solid boundary of the model domain
+        '''
+        return shp.geometry.Polygon(self.M.model_boundary)
+
+    @property
+    def buffered_domain(self):
+        '''
+        A concave hull of the solid boundary, used to filter out rivers in nearby fjords draining to areas outside of the model domain
+        '''
+        return shp.concave_hull(shp.geometry.Polygon(self.model_domain), ratio = self.info['buffer domain ratio']).buffer(self.info['land buffer'])
+
+    def crop_rivers_far_from_land_and_close_to_OBC(self, Rivers):
+        """
+        Remove rivers that run off to points outside of the model domain, and that run off very close to the open boundary
+        - note: I believe you have to run matplotlib with the tk backend for the draggable points to work out
+        """
+        # Filter rivers so that we only keep those within the model domain, and within a certain buffer of it
+        i = 0
+        print('- Adjust river positions and remove rivers that do not drain to the model domain')
+        while True:
+            i += 1
+            print(f' - iteration {i}')
+            # Identify which rivers are within the current coverage
+            in_model = self.buffered_domain.contains([shp.geometry.Point(x, y) for (x,y) in zip(Rivers.x, Rivers.y)])
+
+            plt.figure(figsize = [10,10])
+            # Reproject since Norgeskart WMS requires that the region we plot are within valid bounds of the UTM coordinate,
+            # and UTM33/32 -- which the river data is stored in -- is not in general valid.
+            self.M.re_project(self.info['grid_projection'])
+            self.M.georeference()
+            ax = plt.gca()
+
+            # Plot the model land
+            #plot_polygon(shp.geometry.Polygon(self.model_domain), ax = ax, facecolor='black', edgecolor='red', alpha=0.5)
+            ax.plot(self.x_land, self.y_land, 'b.', label = 'land nodes', zorder = 1)
+
+            # Plot the buffered domain
+            plot_polygon(self.buffered_domain, ax = ax, facecolor='lightblue', edgecolor='blue', alpha=0.5)
+        
+            self.M.re_project(Rivers.reference)
+
+            ax.set_title('Rivers near the domain scaled with their runoff. Black points are draggable, close figure to continue.')
+
+            # Plot rivers that will not be used in the model
+            ax.scatter(
+                Rivers.x[~in_model], Rivers.y[~in_model], 
+                s = Rivers.rivers.areal[~in_model], 
+                color = 'r', 
+                transform = Rivers.crs, 
+                label = 'Will not be used'
+                )
+
+            # Plot rivers that will be used in the model
+            ax.scatter(
+                Rivers.x[in_model], Rivers.y[in_model],
+                s = Rivers.rivers.areal[in_model], 
+                color = 'g', 
+                transform = Rivers.crs, 
+                label = 'Will be used'
+                )
+
+            # Go back to the map projection
+            self.M.re_project(self.info['grid_projection'])
+            x, y = self.M.Proj(Rivers.lon, Rivers.lat)
+
+            # Modify river positions in Rivers (will not change the database, just the rivers used in the model setup)
+            river_positions = DraggablePoints(ax, x, y)
+            ax.legend()
+            plt.show(block = True)
+
+            # Once the figure is closed, we look at all points and update the river position database
+            lon, lat = self.M.Proj(river_positions.x_data, river_positions.y_data, inverse = True)
+            self.M.re_project(Rivers.reference)
+            
+            # Check if rivers were adjusted. We continue
+            if river_positions.was_modified:
+                print('  - One or more river was modified, making a new river mask and illustrating.')
+                x, y = Rivers.Proj(lon, lat)
+                Rivers.x, Rivers.y = np.array(x), np.array(y)
+
+            else:
+                break
+
+        # Remove the unused rivers from the Rivers object
+        Rivers.crop(np.where(in_model)[0])
+
+        # Store the adjusted river database for later use
+        if i > 1:
+            path = self.M.filepath.split(self.M.filepath.split('/')[-1])[0]
+            new_name = f'{path}river_positions_{self.M.casename}.csv'
+            print(f'- The river database was adjusted for this experiment, storing it as {new_name}')
+            Rivers.rivers.to_csv(new_name)
+
+        # And then we can identify and remove rivers that are too close to the OBC
+        print(f'- Remove rivers that discharge within {self.info["obc buffer"]} m from the open boundary')
+        d, _ = self.obc_tree.query(np.array([Rivers.x, Rivers.y]).T)
+        too_close_to_obc_inds = np.where(d > self.info['obc buffer'])[0]
+        Rivers.crop(too_close_to_obc_inds)
+        
+        return Rivers
+
+class FVCOM_rivers(CropRivers):
     """
     Class storing data that eventually ends up as FVCOM forcing
     """
@@ -252,8 +434,6 @@ class FVCOM_rivers:
     @property
     def xy_land(self):
         if self.info['iloc'] == 'edge':
-            #x_land  = self.M.xc[self.cells['boundary'][np.where(self.cells['id']==1)[0]]]
-            #y_land  = self.M.yc[self.cells['boundary'][np.where(self.cells['id']==1)[0]]]
             model_boundary = np.array(np.where(self.M.nbe.min(axis=1)==-1))
             land = model_boundary[self.M.ISBCE[model_boundary] == 1]
             x_land = self.M.xc[land]
@@ -276,8 +456,6 @@ class FVCOM_rivers:
     @property
     def xy_obc(self):
         if self.info['iloc'] == 'edge':
-            #x_obc   = self.M.xc[self.cells['boundary'][np.where(self.cells['id']==2)[0]]]
-            #y_obc   = self.M.yc[self.cells['boundary'][np.where(self.cells['id']==2)[0]]]
             model_boundary = np.array(np.where(self.M.nbe.min(axis=1)==-1))
             obc = model_boundary[self.M.ISBCE[model_boundary] == 2]
             x_obc = self.M.xc[obc]
@@ -315,6 +493,10 @@ class FVCOM_rivers:
     def redistribute_runoff(self, Rivers, Runoff):
         """
         Assign fraction of total runoff to watershed to the individual river
+        - the area fraction of the vassdragsområde (catchment area) associated with each river is calculated 
+          in fvtools.rivers.NVEforcing.elvis_riveroutlets. So the runoff from each individual river is independent 
+          of the model domain, but you will loose runoff to the model domain if you exclude rivers that should 
+          fill your domain. This is different from the historic setup, where the total runoff from a vassdragsområde was conserved.
         """
         # Redistribute the total runoff in each watershed to all known rivers in the watershed
         self.Runoff      = (Runoff.transport.loc[Rivers.rivers.vassdragsomraade] * Rivers.rivers.area_fraction.to_numpy()[:, None]).set_index(Rivers.rivers.index) # total runoff to the watershed is conserved in this operation
@@ -323,24 +505,6 @@ class FVCOM_rivers:
 
         # Store positions in the forcing object as well
         self.xriv, self.yriv = Rivers.x, Rivers.y
-
-    def crop_rivers_far_from_land_close_to_OBC(self, Rivers):
-        """
-        Figure out which model point each river is closest too
-        """
-        # Remove rivers too far away from land
-        d, land_ind  = self.land_tree.query(np.array([Rivers.x, Rivers.y]).transpose())
-        close_enough = np.where(d<=self.info['dRmax'])[0] # Remove rivers too far away from land
-
-        # Remove rivers that are too close to the OBC
-        d, _   = self.obc_tree.query(
-            np.array([self.x_land[land_ind[close_enough]], self.y_land[land_ind[close_enough]]]).transpose()
-            )
-
-        # Keep rivers that are far enough away from the OBC
-        far_enough  = np.where(d>=self.info['dRmax'])[0]
-        Rivers.rivers = Rivers.rivers.iloc[close_enough[far_enough]]
-        return Rivers
 
     def interpolate_forcing_to_model_time(self, Runoff, Temp, river_temp, dt = 3/24):
         '''
@@ -381,7 +545,7 @@ class FVCOM_rivers:
             self.RiverTransport[:, i] = f_transport(self.model_time)
             self.RiverTemp[:, i]      = f_temperature(self.model_time)
 
-    def connect_to_mesh(self, M, river_projection, grid_projection):
+    def connect_to_mesh(self, M):
         """
         Figure out which node/cell the flux should go to.
         """
@@ -389,7 +553,7 @@ class FVCOM_rivers:
         while True:
             _, land_loc = self.land_tree.query(np.array([self.xriv, self.yriv]).transpose())
             if first:
-                self.river_connection(land_loc, M, river_projection, grid_projection)
+                self.river_connection(land_loc, M, self.info['river_projection'], self.info['grid_projection'])
                 first = False
 
             _, mesh_location = self.mesh_tree.query(np.array([self.x_land[land_loc], self.y_land[land_loc]]).transpose())
@@ -411,7 +575,14 @@ class FVCOM_rivers:
         _, land_loc      = self.land_tree.query(np.array([self.xriv, self.yriv]).transpose())
         _, mesh_location = self.mesh_tree.query(np.array([self.x_land[land_loc], self.y_land[land_loc]]).transpose())
         self.mesh_location = mesh_location
-        plt.scatter(self.xriv, self.yriv, s = 50, c = 'm', label = 'final river nodes', transform = ccrs.epsg(int(river_projection.split(':')[-1])))
+
+        # Show the final position of the river
+        plt.scatter(
+            self.xriv, self.yriv, s = 50, 
+            c = 'm', 
+            label = 'final river nodes', 
+            transform = ccrs.epsg(int(self.info['river_projection'].split(':')[-1]))
+            )
         plt.legend()
 
     def merge_rivers(self):
@@ -514,7 +685,6 @@ class FVCOM_rivers:
         Show how far rivers have been moved from NVE location
         """
         plt.figure()
-        #plt.imshow(gp.img, extent=gp.extent)
         M.re_project(grid_projection)
         M.georeference()
         M.re_project(river_projection)
@@ -699,7 +869,6 @@ class RiverTemperatures:
         within_domain = [key for key in self.observations.keys() if int(key.split('-')[0]) in vassdrag]
         
         # Interpolate observations to the forcing time
-        print('\nChecking if we can replace some of the runoff climatologies with in-situ observations')
         if any(within_domain):
             for key in within_domain:
                 observation = self.observations[key]
@@ -711,30 +880,30 @@ class RiverTemperatures:
                 if observation.time.iloc[0] < self.time[0] and observation.time.iloc[-1] > self.time[-1]:
                     observation = observation[np.logical_and(observation.time >= self.start - timedelta(days = 7), observation.time <= self.stop + timedelta(days = 7))]
                 else:
-                    print(f'- Station {key} did not cover the simulation period')
+                    print(f'  - Station {key} did not cover the simulation period')
                     continue
         
                 # Require that the coverage of temperature data (daily) is at least 90% of the model period (to avoid making up too much data)
                 if len(observation)/len(self.time) < 0.9:
-                    print(f'- Station {key} had too many gaps in the simulation period')
+                    print(f'  - Station {key} had too many gaps in the simulation period')
                     continue
                     
                 # Interpolate the observed temperature to the forcing data
-                print(f'- Replacing climatology with observations at {key}')
+                print(f'  - Replacing climatology with observations at {key}')
                 f = interpolate.interp1d([t.timestamp() for t in observation.time], observation.filtered_temperature)
                 river_temp.loc[key] = f(self.timestamp)
         return river_temp
 
 # Show what we will write to the riverdata forcing
 # ----
-def show_forcing(obj, M):
+def show_forcing(obj, M, Rivers):
     """
     Simple figures to see that the routine got the basics right
     """
     plt.figure()
     M.georeference()
     plt.plot(obj.x_land, obj.y_land, 'g.', label = 'land nodes', zorder = 1)
-    plt.scatter(obj.xriv, obj.yriv, np.mean(obj.RiverTransport, axis = 0), c = np.mean(obj.RiverTransport, axis = 0), zorder = 5)
+    plt.scatter(obj.xriv, obj.yriv, np.mean(obj.RiverTransport, axis = 0), c = np.mean(obj.RiverTransport, axis = 0), zorder = 5, transform = Rivers.crs)
     plt.title('Average transport')
     plt.axis('equal')
     plt.colorbar(label = r'm$^3$ s$^{-1}$')
@@ -742,48 +911,10 @@ def show_forcing(obj, M):
 
     plt.figure()
     M.georeference()
-    plt.plot(obj.x_land, obj.y_land, 'g.', label = 'land nodes', zorder = 1)
-    plt.scatter(obj.xriv, obj.yriv, obj.RiverTemp.max(axis = 0), c = obj.RiverTemp.max(axis = 0), cmap = 'inferno', zorder = 5)
+    plt.scatter(obj.xriv, obj.yriv, obj.RiverTemp.max(axis = 0), c = obj.RiverTemp.max(axis = 0), cmap = 'inferno', zorder = 5, transform = Rivers.crs)
     plt.title('Max temperature in model period')
     plt.axis('equal')
     plt.colorbar(label = 'degrees celcius')
     plt.show(block = False)
 
 class InputError(Exception): pass
-
-# Development:
-# Create a river subsetting method
-# -> Load mother model rivers as "raw data" that can be processed further using the existing fvtools scripts
-from netCDF4 import Dataset
-import f90nml
-
-class MotherRivers:
-    '''
-    Class that reads rivers that have been used to force a larger model domain
-    '''
-    def __init__(self, nmlfile, river_nc, mothergrid, river_inflow_location = 'edge', reference = 'epsg:32633'):
-        '''
-        Reads
-        - nmlfile:    River namelist for the mother rivers
-        - river_nc:   River forcing file for the mother domain rivers
-        - mothergrid: Grid file for the FVCOM mother domin
-        '''
-        # We do not support nodes input at the moment
-        if river_inflow_location != 'edge':
-            raise ValueError(f"Sorry, we only support river_inflow_location = 'edge' at the moment, {river_inflow_location} is not available at the moment.")
-
-        # Process input
-        nml     = f90nml.read(nmlfile)
-        rivernc = Dataset(river_nc)
-        M       = FVCOM_grid(mothergrid, reference = reference)
-
-        # Load river locations and names
-        self.river_locations = np.array([nml['river_grid_location'] - 1 for nml in nml['nml_river']])
-        self.x = M.xc[self.river_locations]
-        self.y = M.yc[self.river_locations]
-        self.river_names = np.array([nml['river_name'] for nml in nml['nml_river']])
-
-        # Load river transport and temperature for each of the rivers
-        # --> Can we naively assume that the rivers follow the same sequence?
-        self.transport  = []
-        self.river_temp = []
