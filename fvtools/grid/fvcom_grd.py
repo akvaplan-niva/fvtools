@@ -202,7 +202,7 @@ class GridLoader:
             self._souza_sigma(data)
 
         else:
-            raise ValueError(f'BuildCase supports tanh-, geometric- and uniform-coordinates at the moment. {data[1,1]} is invalid.')
+            raise ValueError(f'BuildCase supports tanh-, geometric-, uniform- and souza-coordinates at the moment. {data[1,1]} is invalid.')
     
     def _tanh_sigma(self, data):
         '''
@@ -1005,7 +1005,7 @@ class CoastLine:
             coastline_nodes = np.append(coastline_nodes, nodestring[[0,-1]])
         return coastline_nodes
 
-    @cached_property
+    @property
     def model_boundary(self):
         '''
         Outer boundary of this model domain (x,y)
@@ -1017,6 +1017,10 @@ class CoastLine:
         return _model_boundary
 
     @cached_property
+    def boundary_nodes(self):
+        return self._get_land_segments() 
+
+    @property
     def full_model_boundary(self):
         '''
         An array containing all nodes connected to the boundary (i.e. OBC and all coastline nodes)
@@ -1044,10 +1048,9 @@ class CoastLine:
         self._check_nv()
 
         # Get triangle wall (pairs of nodes) connected to land
-        boundary_nodes = self._get_land_segments() 
         polygons = list(polygonize(
-            (n1, n2) for n1, n2 in zip(np.array([self.x[boundary_nodes][:,0], self.y[boundary_nodes][:,0]]).T, 
-                                       np.array([self.x[boundary_nodes][:,1], self.y[boundary_nodes][:,1]]).T)
+            (n1, n2) for n1, n2 in zip(np.array([self.x[self.boundary_nodes][:,0], self.y[self.boundary_nodes][:,0]]).T, 
+                                       np.array([self.x[self.boundary_nodes][:,1], self.y[self.boundary_nodes][:,1]]).T)
                                   )
                         )
         return polygons
