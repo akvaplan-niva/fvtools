@@ -189,7 +189,7 @@ class GridLoader:
         
         # Read the input parameters from the casename_sigma.dat file
         data = np.loadtxt(sigmafile, delimiter = '=', dtype = str)
-        if data[1,1] == ' TANH ':
+        if 'TANH' in data[1,1]:
             self._tanh_sigma(data)
 
         elif data[1,1] == ' UNIFORM' or data[1,1] == 'UNIFORM':
@@ -1786,6 +1786,7 @@ class PlotFVCOM:
         - requires cartopy
         ---
         url:    defaults to grey norgeskart
+                - For international use, try e.g. url = 'https://ows.terrestris.de/osm/service?', layers = ['OSM-WMS-no-labels']
         layers: valid layer from the url, must be a tuple with string(s)
         wms:    overwrites other input if not None, current options: "raster" or "topo4"
         depth:  plot kartverket bathymetry
