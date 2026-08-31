@@ -192,13 +192,13 @@ class GridLoader:
         if 'TANH' in data[1,1]:
             self._tanh_sigma(data)
 
-        elif data[1,1] == ' UNIFORM' or data[1,1] == 'UNIFORM':
+        elif 'UNIFORM' in data[1,1]:
             self._uniform_sigma(data)
 
-        elif data[1,1] == ' GEOMETRIC':
+        elif 'GEOMETRIC' in data[1,1]:
             self._geometric_sigma(data)
 
-        elif data[1,1] == ' SOUZA':
+        elif 'SOUZA' in data[1,1]:
             self._souza_sigma(data)
 
         else:
