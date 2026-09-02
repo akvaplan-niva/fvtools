@@ -37,7 +37,7 @@ def main(ngrd        = 'ngrd.npy',
     #           You can re-project after interpolation to the nesting grid, but remember that vector data in one UTM
     #           frame of reference will need to be rotated (and possibly re-scaled?) in the new UTM reference.
 
-    # Check that positions match (get_fvcom_ngrd is now quite reliable, can be incorperated to this routine as well)
+    # Check that positions match
     check_grid(ngrd, fl)
 
     if vertical_interpolation:
@@ -171,7 +171,7 @@ def create_nestingfile(output_file, ngrd):
 
         # Write data to grid fields (h, lon, lat, x, y and z)
         # ----
-        nv[:]   = ngrd.tri.transpose()
+        nv[:]   = ngrd.tri.transpose() + 1
         lon[:]  = ngrd.lon
         lat[:]  = ngrd.lat
         x[:]    = ngrd.x
