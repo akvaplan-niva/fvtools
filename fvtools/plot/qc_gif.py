@@ -256,7 +256,10 @@ def section_movie(**kwargs):
     # Temporarilly store x_sec and y_sec
     print('- Subgrid to deal with smaller data amounts')
     C = M.subgrid(cells=np.unique(indices))
-    C.x_sec, C.y_sec = M.x_sec, M.y_sec
+    # C.x_sec, C.y_sec = M.x_sec, M.y_sec
+
+    # And re-prepare the section now that we have changed the grid
+    C.prepare_section(section_file = kwargs['section'], res = kwargs['section_res'], store_transect_img = False)
     section = C.get_section_data(C.h)
 
     # Create the movie maker
