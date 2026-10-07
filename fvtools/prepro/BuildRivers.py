@@ -88,7 +88,7 @@ def main(start, stop, vassdrag, mesh_dict, info = None):
     river_temp = Temp.make_individual_river_climatology(Positions)
 
     print('- Add observed temperatures to the rivers where available')
-    river_temp =  Temp.insert_observed_temperature(river_temp, vassdrag)
+    river_temp = Temp.insert_observed_temperature(river_temp, vassdrag)
 
     print('- Set the runoff and temperauture for each river in the model, interpolate to model time')
     Forcing.interpolate_forcing_to_model_time(Runoff, Temp, river_temp)
@@ -107,7 +107,7 @@ def main(start, stop, vassdrag, mesh_dict, info = None):
     Forcing.dump()
     Forcing.write_namelist()
 
-def get_input(river_data_path = 'riverdata'):
+def get_input(river_data_path = '/nird/datapeak/NS9067K/store/fvcom-setup/Rivers/'):
     """
     Pre-defined paths are stored here. They are distributed to other parts of the code via main.
 
@@ -133,11 +133,9 @@ def get_input(river_data_path = 'riverdata'):
         'min_depth': 3,
         'Isplit': 8,
         'tideamp': 1,
-        'plot': True,
-        'compile river': True,
-        'rivertemp': f'{river_data_path}/',
+        'rivertemp': f'{river_data_path}/Temperature/',
         'runoff': f'{river_data_path}/Niva_1990-2024_2018v20.05/',
-        'riverpositions': f'{river_data_path}/river_positions.csv',
+        'riverpositions': f'{river_data_path}/RiverPositions/river_positions.csv',
         'minrcoef': 0.3,
         'river_projection': 'epsg:32633'
     }
