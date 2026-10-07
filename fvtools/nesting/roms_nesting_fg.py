@@ -177,7 +177,7 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         '''
         if nprocs:
             print(f'  - Running in single mode')
-        widget = [f'  - Downloading, interpolating and dumping timesteps to nest: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
+        widget = [f'  - Interpolating and dumping timesteps to nest: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.path))
         bar.start()
         with netCDF4.Dataset(self.outfile, 'r+') as self.out:
@@ -243,7 +243,7 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         '''
         The listener has write access to the netCDF and is responsible for dumping
         '''
-        widget = [f'  - Downloading timesteps: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
+        widget = [f'  - Interpolating and dumping timesteps to nest: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.path))
         i=0
         bar.start()
@@ -286,112 +286,111 @@ def create_nc_forcing_file(name, NEST, mother, timesteps, latlon, epsg):
     '''
     Creates empty nc file formatted to fit FVCOM open boundary ocean forcing
     '''
-    nc = netCDF4.Dataset(name, 'w', format='NETCDF4')
+    with netCDF4.Dataset(name, 'w', format='NETCDF4') as nc:
 
-    # Write global attributes
-    # ----
-    nc.title        = 'FVCOM Nesting File'
-    nc.institution  = 'Akvaplan-niva AS'
-    nc.source       = 'FVCOM grid (unstructured) nesting file'
-    nc.created      = f'{strftime("%Y-%m-%d %H:%M:%S", gmtime())} using roms_nesting_fg.py'
-    nc.mother_model = f'Using data nested from {mother}'
+        # Write global attributes
+        # ----
+        nc.title        = 'FVCOM Nesting File'
+        nc.institution  = 'Akvaplan-niva AS'
+        nc.source       = 'FVCOM grid (unstructured) nesting file'
+        nc.created      = f'{strftime("%Y-%m-%d %H:%M:%S", gmtime())} using roms_nesting_fg.py'
+        nc.mother_model = f'Using data nested from {mother}'
 
-    if latlon:
-        nc.interpolation_projection = 'degrees'
-    else:
-        nc.interpolation_projection = epsg
+        if latlon:
+            nc.interpolation_projection = 'degrees'
+        else:
+            nc.interpolation_projection = epsg
 
-    # Create dimensions
-    # ----
-    nc.createDimension('time', 0)
-    nc.createDimension('node', len(NEST.xn))
-    nc.createDimension('nele', len(NEST.xc))
-    nc.createDimension('three', 3)
-    nc.createDimension('siglay', len(NEST.siglay[0,:]))
-    nc.createDimension('siglev', len(NEST.siglev[0,:]))
+        # Create dimensions
+        # ----
+        nc.createDimension('time', 0)
+        nc.createDimension('node', len(NEST.xn))
+        nc.createDimension('nele', len(NEST.xc))
+        nc.createDimension('three', 3)
+        nc.createDimension('siglay', len(NEST.siglay[0,:]))
+        nc.createDimension('siglev', len(NEST.siglev[0,:]))
 
-    # Create variables and variable attributes
-    # ----------------------------------------------------------
-    time               = nc.createVariable('time', 'single', ('time',))
-    time.units         = 'days since 1858-11-17 00:00:00'
-    time.format        = 'modified julian day (MJD)'
-    time.time_zone     = 'UTC'
+        # Create variables and variable attributes
+        # ----------------------------------------------------------
+        time               = nc.createVariable('time', 'single', ('time',))
+        time.units         = 'days since 1858-11-17 00:00:00'
+        time.format        = 'modified julian day (MJD)'
+        time.time_zone     = 'UTC'
 
-    Itime              = nc.createVariable('Itime', 'int32', ('time',))
-    Itime.units        = 'days since 1858-11-17 00:00:00'
-    Itime.format       = 'modified julian day (MJD)'
-    Itime.time_zone    = 'UTC'
+        Itime              = nc.createVariable('Itime', 'int32', ('time',))
+        Itime.units        = 'days since 1858-11-17 00:00:00'
+        Itime.format       = 'modified julian day (MJD)'
+        Itime.time_zone    = 'UTC'
 
-    Itime2             = nc.createVariable('Itime2', 'int32', ('time',))
-    Itime2.units       = 'msec since 00:00:00'
-    Itime2.time_zone   = 'UTC'
+        Itime2             = nc.createVariable('Itime2', 'int32', ('time',))
+        Itime2.units       = 'msec since 00:00:00'
+        Itime2.time_zone   = 'UTC'
 
-    # positions
-    # ----
-    # node
-    lon                = nc.createVariable('lon', 'single', ('node',))
-    lat                = nc.createVariable('lat', 'single', ('node',))
-    x                  = nc.createVariable('x', 'single', ('node',))
-    y                  = nc.createVariable('y', 'single', ('node',))
-    h                  = nc.createVariable('h', 'single', ('node',))
+        # positions
+        # ----
+        # node
+        lon                = nc.createVariable('lon', 'single', ('node',))
+        lat                = nc.createVariable('lat', 'single', ('node',))
+        x                  = nc.createVariable('x', 'single', ('node',))
+        y                  = nc.createVariable('y', 'single', ('node',))
+        h                  = nc.createVariable('h', 'single', ('node',))
 
-    # center
-    lonc               = nc.createVariable('lonc', 'single', ('nele',))
-    latc               = nc.createVariable('latc', 'single', ('nele',))
-    xc                 = nc.createVariable('xc', 'single', ('nele',))
-    yc                 = nc.createVariable('yc', 'single', ('nele',))
-    hc                 = nc.createVariable('h_center', 'single', ('nele',))
+        # center
+        lonc               = nc.createVariable('lonc', 'single', ('nele',))
+        latc               = nc.createVariable('latc', 'single', ('nele',))
+        xc                 = nc.createVariable('xc', 'single', ('nele',))
+        yc                 = nc.createVariable('yc', 'single', ('nele',))
+        hc                 = nc.createVariable('h_center', 'single', ('nele',))
 
-    # grid parameters
-    # ----
-    nv                 = nc.createVariable('nv', 'int32', ('three', 'nele',))
+        # grid parameters
+        # ----
+        nv                 = nc.createVariable('nv', 'int32', ('three', 'nele',))
 
-    # node
-    lay                = nc.createVariable('siglay','single',('siglay','node',))
-    lev                = nc.createVariable('siglev','single',('siglev','node',))
+        # node
+        lay                = nc.createVariable('siglay','single',('siglay','node',))
+        lev                = nc.createVariable('siglev','single',('siglev','node',))
 
-    # center
-    lay_center         = nc.createVariable('siglay_center','single',('siglay','nele',))
-    lev_center         = nc.createVariable('siglev_center','single',('siglev','nele',))
+        # center
+        lay_center         = nc.createVariable('siglay_center','single',('siglay','nele',))
+        lev_center         = nc.createVariable('siglev_center','single',('siglev','nele',))
 
-    # Weight coefficients (since we are nesting from ROMS)
-    # ----
-    wc                 = nc.createVariable('weight_cell','single',('time','nele',))
-    wn                 = nc.createVariable('weight_node','single',('time','node',))
+        # Weight coefficients (since we are nesting from ROMS)
+        # ----
+        wc                 = nc.createVariable('weight_cell','single',('time','nele',))
+        wn                 = nc.createVariable('weight_node','single',('time','node',))
 
-    # time dependent variables
-    # ----
-    zeta               = nc.createVariable('zeta', 'single', ('time', 'node',))
-    ua                 = nc.createVariable('ua', 'single', ('time', 'nele',))
-    va                 = nc.createVariable('va', 'single', ('time', 'nele',))
-    u                  = nc.createVariable('u', 'single', ('time', 'siglay', 'nele',))
-    v                  = nc.createVariable('v', 'single', ('time', 'siglay', 'nele',))
-    temp               = nc.createVariable('temp', 'single', ('time', 'siglay', 'node',))
-    salt               = nc.createVariable('salinity', 'single', ('time', 'siglay', 'node',))
-    hyw                = nc.createVariable('hyw', 'single', ('time', 'siglev', 'node',))
+        # time dependent variables
+        # ----
+        zeta               = nc.createVariable('zeta', 'single', ('time', 'node',))
+        ua                 = nc.createVariable('ua', 'single', ('time', 'nele',))
+        va                 = nc.createVariable('va', 'single', ('time', 'nele',))
+        u                  = nc.createVariable('u', 'single', ('time', 'siglay', 'nele',))
+        v                  = nc.createVariable('v', 'single', ('time', 'siglay', 'nele',))
+        temp               = nc.createVariable('temp', 'single', ('time', 'siglay', 'node',))
+        salt               = nc.createVariable('salinity', 'single', ('time', 'siglay', 'node',))
+        hyw                = nc.createVariable('hyw', 'single', ('time', 'siglev', 'node',))
 
-    # dump the grid metrics
-    # ----
-    nc.variables['lat'][:]           = NEST.lat
-    nc.variables['lon'][:]           = NEST.lon
-    nc.variables['latc'][:]          = NEST.latc
-    nc.variables['lonc'][:]          = NEST.lonc
-    nc.variables['x'][:]             = NEST.xn
-    nc.variables['y'][:]             = NEST.yn
-    nc.variables['xc'][:]            = NEST.xc
-    nc.variables['yc'][:]            = NEST.yc
-    nc.variables['h'][:]             = NEST.h
-    nc.variables['h_center'][:]      = NEST.hc
-    tris                             = NEST.nv+1
-    nc.variables['nv'][:]            = tris.transpose()
-    nc.variables['siglev'][:]        = NEST.siglev.transpose()
-    nc.variables['siglay'][:]        = NEST.siglay.transpose()
-    nc.variables['siglev_center'][:] = NEST.siglev_center.transpose()
-    nc.variables['siglay_center'][:] = NEST.siglay_center.transpose()
+        # dump the grid metrics
+        # ----
+        nc.variables['lat'][:]           = NEST.lat
+        nc.variables['lon'][:]           = NEST.lon
+        nc.variables['latc'][:]          = NEST.latc
+        nc.variables['lonc'][:]          = NEST.lonc
+        nc.variables['x'][:]             = NEST.xn
+        nc.variables['y'][:]             = NEST.yn
+        nc.variables['xc'][:]            = NEST.xc
+        nc.variables['yc'][:]            = NEST.yc
+        nc.variables['h'][:]             = NEST.h
+        nc.variables['h_center'][:]      = NEST.hc
+        tris                             = NEST.nv+1
+        nc.variables['nv'][:]            = tris.transpose()
+        nc.variables['siglev'][:]        = NEST.siglev.transpose()
+        nc.variables['siglay'][:]        = NEST.siglay.transpose()
+        nc.variables['siglev_center'][:] = NEST.siglev_center.transpose()
+        nc.variables['siglay_center'][:] = NEST.siglay_center.transpose()
 
-    # Initialize the time (so that we can multiprocess the download)
-    for counter, fvcom_time in enumerate(timesteps):
-        nc.variables['time'][counter] = fvcom_time
-        nc.variables['Itime'][counter] = np.floor(fvcom_time)
-        nc.variables['Itime2'][counter] = np.round((fvcom_time - np.floor(fvcom_time)) * 60 * 60 * 1000, decimals = 0)*24
-    nc.close()
+        # Initialize the time (so that we can multiprocess the download)
+        for counter, fvcom_time in enumerate(timesteps):
+            nc.variables['time'][counter] = fvcom_time
+            nc.variables['Itime'][counter] = np.floor(fvcom_time)
+            nc.variables['Itime2'][counter] = np.round((fvcom_time - np.floor(fvcom_time)) * 60 * 60 * 1000, decimals = 0)*24
