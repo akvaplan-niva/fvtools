@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 
 from .initial.empty_initial import make_initial_file
 
-def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother = None, uv = False, proj = 'epsg:32633', latlon = False):
+def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother = None, uv = False, latlon = False):
     '''
     Interpolate hydrographic properties from the ROMS mother model to be used as initial conditions for the FVCOM model.
     ---
