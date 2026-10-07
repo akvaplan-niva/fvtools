@@ -57,7 +57,9 @@ def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother =
         variables = ['salt', 'temp', 'zeta']
 
     # Load a part of the ROMS grid covering the FVCOM domain
-    ROMS.load_grid(M.x, M.y)
+    with netCDF4.Dataset(restartfile) as nc:
+        date = netCDF4.num2date(nc['time'][0], units = nc['time'].units, only_use_cftime_datetimes=False, only_use_python_datetimes=False)
+        ROMS.load_grid(M.x, M.y, date = date)
 
     # Interpolation coefficients
     print('\nCompute interpolation coefficients')
