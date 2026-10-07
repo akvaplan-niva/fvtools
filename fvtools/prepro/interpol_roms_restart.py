@@ -61,13 +61,7 @@ def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother =
 
     # Interpolation coefficients
     print('\nCompute interpolation coefficients')
-    N4 = N4ROMSRESTART(ROMS, 
-                        x = M.x, y = M.y,
-                        tri = M.tri,
-                        uv = uv,
-                        land_check = False,
-                        latlon = latlon,
-                       )
+    N4 = N4ROMSRESTART(ROMS, x = M.x, y = M.y, tri = M.tri, uv = uv, land_check = False, latlon = latlon)
     N4.nearest4()
 
     # Land correction (we can't use ROMS land points)
