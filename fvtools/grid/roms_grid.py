@@ -140,7 +140,7 @@ class ROMSbase(ROMSdepths, ROMSCropper):
     '''
     Containing methods we need when trying to couple a FVCOM and ROMS model
     '''
-    def load_grid(self, xbounds=None, ybounds=None, offset=7500):
+    def load_grid(self, xbounds=None, ybounds=None, offset=7500, date = None):
         '''
         Load grid from ROMS output file
         - xbounds: limit of the domain in x-direction
@@ -152,24 +152,18 @@ class ROMSbase(ROMSdepths, ROMSCropper):
         self.ybounds = ybounds
         self.offset  = offset
 
+        if date is not None:
+            try:
+                path = self.test_day(date)
+            except:
+                raise ValueError(f'Could not find a valid {self} file for {date}')
+
         # Load grid positions
-        self.load_grid_from_nc()
+        self.load_grid_from_nc(path)
         self.get_x_y_z()
 
-    @property
-    def path(self):
-        if not hasattr(self, '_path'):
-            try:
-                self._path = self.test_day(datetime(2024,1,1))
-            except:
-                self._path = self.test_day(datetime.now()-timedelta(days=1))
-        return self._path
-    
-    @path.setter
-    def path(self, var):
-        self._path = var
 
-    def load_grid_from_nc(self):
+    def load_grid_from_nc(self, path):
         '''
         Load the position data we need to get going
         - positions (of rho, u and v points)
@@ -187,7 +181,7 @@ class ROMSbase(ROMSdepths, ROMSCropper):
             'hc',
             'Vstretch'
             ]
-        with Dataset(self.path, 'r') as ncdata:
+        with Dataset(path, 'r') as ncdata:
             for load in load_position_fields:
                 try:
                     setattr(self, load, ncdata.variables.get(load)[:])
@@ -195,7 +189,7 @@ class ROMSbase(ROMSdepths, ROMSCropper):
                     if load == 'Vstretch':
                         setattr(self, load, ncdata.variables.get('Vstretching')[:])
                     else:
-                        raise TypeError(f'{load} is not available in {self.path}.')
+                        raise TypeError(f'{load} is not available in {path}.')
 
             self.h_rho = self.__dict__.pop('h')
 
@@ -225,7 +219,6 @@ class METNorKystV2(ROMSbase):
         '''
         file = self.get_norkyst_url(date)
         self.test_ncfile(file)
-        self.path = file
         return file
 
     def get_norkyst_url(self, date):
@@ -250,14 +243,13 @@ class METNorKystV3(ROMSbase):
     '''Routines to check if MET-NorKyst v3 data is available'''
     def __str__(self):
         return 'MET Norway NorKyst version 3'
-    
+
     def test_day(self, date):
         '''
         Check if the file exists that day, and that it has enough data
         '''
         file = self.get_norkyst_url(date)
         self.test_ncfile(file)
-        self.path = file
         return file
 
     def get_norkyst_url(self, date):
@@ -294,7 +286,6 @@ class NorShelf(ROMSbase):
         Access NorShelf grid data, will by default try to load hourly values. Set avg to True if you want daily averages.
         '''
         self.avg  = avg
-        self.path = 'https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_avg_an_20210531T00Z.nc'
         self.min_len = 24
         if self.avg:
             self.min_len = 1
@@ -376,7 +367,6 @@ class IMRNorFjords(ROMSbase):
         '''
         file = self.get_norkyst_local(date)
         self.test_ncfile(file)
-        self.path = file
         return file
 
     def test_ncfile(self, file):

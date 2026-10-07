@@ -52,6 +52,9 @@ def main(fvcom_grd,
     '''
     ROMS = get_roms_grid(mother)
 
+    start = datetime(int(start_time.split('-')[0]), int(start_time.split('-')[1]), int(start_time.split('-')[2]))
+    stop  = datetime(int(stop_time.split('-')[0]), int(stop_time.split('-')[1]), int(stop_time.split('-')[2]))
+
     print(f'\nInterpolate data from {ROMS} to {outfile}\n---')
     print('- Load mesh info')
     M    = FVCOM_grid(fvcom_grd)
@@ -59,13 +62,13 @@ def main(fvcom_grd,
 
     # Add a projection, load the part of the full ROMS grid which covers the FVCOM nesting zone
     ROMS.Proj = M.Proj
-    ROMS.load_grid(NEST.x, NEST.y, offset = NEST.R*6)
+    ROMS.load_grid(NEST.x, NEST.y, offset = NEST.R*6, date = start)
 
     print('- Compute FVCOM nesting nudging coefficients as function of distance from OBC')
     NEST.calcWeights(M, w1 = max(weights), w2 = min(weights))
     
     print('\nMake the filelist\n---')
-    time, path, index = make_fileList(start_time, stop_time, ROMS)
+    time, path, index = make_fileList(start, stop, ROMS)
 
     print('\nFind the nearest 4 interpolation coefficients for the nestingzone\n---')
     N4R = N4ROMSNESTING(ROMS, x = NEST.x, y = NEST.y, tri = NEST.tri, uv = True)
@@ -89,19 +92,17 @@ def main(fvcom_grd,
 # ===============================================================================================
 #                                        fileList
 # ===============================================================================================
-def make_fileList(start_time, stop_time, ROMS):
+def make_fileList(start, stop, ROMS):
     '''
     Link points in time to files.
-    input format: yyyy-mm-dd-hh
+    input format: datetime
 
     The filelist is used to decide what files to use when forecasts are available, and implicitly
     to "remember" what files are available in case of server downtime during the later interpolation step.
     '''
     # List of dates to look for files
     # ----
-    start = datetime(int(start_time.split('-')[0]), int(start_time.split('-')[1]), int(start_time.split('-')[2]))
-    stop  = datetime(int(stop_time.split('-')[0]), int(stop_time.split('-')[1]), int(stop_time.split('-')[2]))
-    dates = pd.date_range(start,stop)
+    dates = pd.date_range(start, stop)
 
     # Initialize some arrays we will be appending to
     # ----
