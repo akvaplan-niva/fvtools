@@ -3,6 +3,7 @@
 # =================================================================================================================
 import numpy as np
 import time as time_mod
+import os
 
 from datetime import datetime, timedelta
 from functools import cached_property
@@ -29,6 +30,9 @@ def get_roms_grid(mother, projection = None):
     
     elif mother == 'NKv3':
         ROMS = METNorKystV3()
+
+    elif mother == 'IMR-NF':
+        ROMS = IMRNorFjords()
 
     else:
         raise InputError(f'{mother=} is not a valid option. See docstring for more info.')
@@ -346,6 +350,98 @@ class NorShelf(ROMSbase):
         else:
             https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_an_"
         return https+ "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
+
+class IMRNorFjords(ROMSbase):
+    '''
+    Routines to check if IMR-NorFjords data is available, inherits grid-methods from ROMSbase
+    '''
+    def __str__(self):
+        return 'Havforskningsinstituttet NorKyst simulations'
+
+    @cached_property
+    def all_local_norkyst_files(self):
+        '''
+        property holding all local ncfiles
+        '''
+        oliviafolder = '/cluster/work/projects/nn9238k/norfjords'
+        print(f'- Assuming that norfjords data is available under {oliviafolder}')
+        self.folders = [oliviafolder]
+        self._bottom_folders()
+        return self._list_ncfiles()
+
+    def test_day(self, date):
+        '''
+        See if the local file exists that day, and has enough data
+        date: datetime object
+        '''
+        file = self.get_norkyst_local(date)
+        self.test_ncfile(file)
+        self.path = file
+        return file
+
+    def test_ncfile(self, file):
+        try:
+            with Dataset(file, 'r') as d:
+                if len(d.variables['ocean_time'][:])<24:
+                    raise NoAvailableData(f'{file} does not have a complete timeseries')
+        except:
+            raise NoAvailableData
+
+    def get_norkyst_local(self, date):
+        '''
+        Looks for NorKyst data in the predefined folders.
+        '''
+        return self._connect_date_to_file(self.all_local_norkyst_files, date)
+
+    def _connect_date_to_file(self, all_ncfiles, date):
+        '''
+        check which date to start with
+        '''
+        # Identify the files using their names (ie. not a filelist approach?)
+        year  = str(date.year)
+        month = '{:02d}'.format(date.month)
+        day   = '{:02d}'.format(date.day)
+
+        files = [files for files in all_ncfiles if year+month+day in files]
+
+        # I want the file that starts the same date as my date
+        for f in files:
+            if f'{year}{month}{day}' in f.split('_')[-1].split('-')[0]:
+                read_file = f
+                break
+
+        return read_file
+
+    def _bottom_folders(self):
+        '''
+        Returns the folders on the bottom of the pyramid (hence the name)
+        mandatory:
+        folders   - parent folder(s) to cycle through
+        '''
+        # ----
+        dirs = []
+        for folder in self.folders:
+            dirs.extend([x[0] for x in os.walk(folder)])
+
+        # remove folders that contain folders
+        leaf_branch = []
+        for dr in dirs:
+            if dr[-1]=='/':
+                continue
+            else:
+                # This string is at the end of the branch, thus this is where the data is stored
+                leaf_branch.append(dr)
+        self.subfolders = leaf_branch
+
+    def _list_ncfiles(self):
+        '''
+        returns list of all files in directories (or in one single directory)
+        '''
+        ncfiles = []
+        for dr in self.subfolders:
+            stuff   = os.listdir(dr)
+            ncfiles.extend([dr+'/'+fil for fil in stuff if '.nc' in fil])
+        return ncfiles
 
 # Methods for downloading data from a ROMS output file and preparing them to be interpolated to FVCOM
 class RomsDownloader:
