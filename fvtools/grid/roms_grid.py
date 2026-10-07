@@ -353,7 +353,7 @@ class IMRNorFjords(ROMSbase):
     Routines to check if IMR-NorFjords data is available, inherits grid-methods from ROMSbase
     '''
     def __str__(self):
-        return 'Havforskningsinstituttet NorKyst simulations'
+        return 'Havforskningsinstituttet Norfjords simulations'
 
     @cached_property
     def all_local_norkyst_files(self):
