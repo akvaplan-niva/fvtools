@@ -109,8 +109,9 @@ fvtools support two nesting types:
 import fvtools.nesting.get_ngrd as gn
 
 # ROMS-FVCOM nesting:
-# R is the nestingzone width (R measured in meters). This is typically approximately 4.5 times the mesh resolution at the OBC.
-gn.main('M.npy', R=4.5*800)
+# nrows is the number of "square" rows from the obc used for the nestingzone. We also normally remove land squares in the nestingzone on all rows except
+# the row that is in contact with the OBC.
+gn.main('M.npy', nrows = 4, remove_land_squares = True)
 
 # FVCOM-FVCOM nesting:
 gn.main('M.npy', mother='mother_fvcom.nc')
