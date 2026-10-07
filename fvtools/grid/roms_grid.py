@@ -363,7 +363,7 @@ class IMRNorFjords(ROMSbase):
         '''
         property holding all local ncfiles
         '''
-        oliviafolder = '/cluster/work/projects/nn9238k/norfjords'
+        oliviafolder = '/cluster/work/projects/nn9238k/norfjords/'
         print(f'- Assuming that norfjords data is available under {oliviafolder}')
         self.folders = [oliviafolder]
         self._bottom_folders()
@@ -403,6 +403,9 @@ class IMRNorFjords(ROMSbase):
         day   = '{:02d}'.format(date.day)
 
         files = [files for files in all_ncfiles if year+month+day in files]
+
+        if not any(files):
+            print(f'- did not find {date}')
 
         # I want the file that starts the same date as my date
         for f in files:
