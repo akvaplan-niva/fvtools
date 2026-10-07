@@ -6,12 +6,19 @@ import matplotlib.pyplot as plt
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from pykdtree.kdtree import KDTree
 
-def main(mesh, R = None):
+def main(mesh, nrows = 4, remove_land_squares = True):
     '''
     Create a "ngrd.npy" file to be read by the routines creating nesting files
 
     Parameters:
-    dm_file: 
+    mesh:   
+        a FVCOM grid with nodestrings, either stored as .npy or .2dm
+    nrows:  
+        the number of rows near the obc that make up the nestingzone
+    remove_land_squares: 
+        remove squares in the nest zone that connect to land (True by default)
+        we do this to avoid mass conservation issues near the boundary due to the
+        boundary conditions, but note that it is not clear that this is necessary.
     '''
     print('Computing nestzone metrics')
     # Store the stuff we need to create a nestingfile in this dict
@@ -24,10 +31,12 @@ def main(mesh, R = None):
     if len(M.nodestrings) == 1:
         if M.nodestrings[0][0] == M.nodestrings[0][-1]:
             print('-- this nest is circular')
-            circular = True
+            remove_land_squares = False
         
     print('- Cut nestzone out of mesh')
-    NEST = adjust_sides(M, circular, R)
+    cells = add_rows(M, nrows = nrows, remove_land_squares = remove_land_squares)
+
+    NEST = store_nest(M, cells)
     
     # Convert to get latlon
     print('- Projecting latlon')
@@ -37,79 +46,97 @@ def main(mesh, R = None):
     NEST['lonc'], NEST['latc'] = M.Proj(NEST['xc'], NEST['yc'], inverse = True)
 
     # Find corresponding indices (necessary for fvcom2fvcom)
-    print('- Find nearest mesh points:')
+    print('- Find nearest mesh points in the FVCOM model:')
     NEST['nid'] = M.find_nearest(NEST['xn'], NEST['yn'], grid = 'node')
     NEST['cid'] = M.find_nearest(NEST['xc'], NEST['yc'], grid = 'cell')
 
     # Save. (Creates a structure readable by roms_nesting and fvcom2fvcom nesting)
     NEST['oend1'] = 1; NEST['oend2'] = 1
-    NEST['R'] = R
+    NEST['R'] = M.grid_res[cells].mean() # since this number is used later on in roms_nesting_fg
     NEST['info'] = {}
     NEST['info']['reference'] = M.info['reference']
     np.save('ngrd.npy', NEST)
 
-    if R is not None:
-        plt.figure()
-        plt.triplot(NEST['xn'], NEST['yn'], NEST['nv'])
-        plt.axis('equal')
-        plt.show()
+    plt.figure()
+    M.plot_grid()
+    plt.triplot(NEST['xn'], NEST['yn'], NEST['nv'], c = 'r')
+    plt.axis('equal')
 
 # ------------------------------------------------------------------------------------------------------------
 #                                       Subroutines
 # ------------------------------------------------------------------------------------------------------------
-def adjust_sides(M, circular, R):
-    '''
-    Cut of the sides of the nestingzone
-    '''
-    nstrs = len(M.nodestrings)
+# Add new rows to the nesting grid
+def new_row(ids, triangles, open_boundary, nodes = None):
+    boundary_triangles = []
+    # note which nodes we already know connect to the OBC grid
+    if nodes is None:
+        nodes = np.unique(triangles)
 
-    print('  -> Cropping obc nodes')
-    x_obc = np.empty(0); 
-    y_obc = np.empty(0)
-    if circular:
-        x_obc = M.x[M.nodestrings[0]]
-        y_obc = M.y[M.nodestrings[0]]
+    for (n, nv) in zip(ids, triangles):
+        # Do not add existing cells to the list
+        if nodes is None:
+            if open_boundary[n] == 2:
+                continue
+            
+        if any([True for node in nv if node in nodes]):
+            # Add triangles that connect to existing open boundary nodes
+            boundary_triangles.append(n)
+    
+            # Mark open boundary triangles so we won't have to find them again
+            open_boundary[n] = 1
+            
+    return boundary_triangles, open_boundary
 
-    else:
-        for i in range(nstrs):
-            x_tmp = M.x[M.nodestrings[i]]
-            y_tmp = M.y[M.nodestrings[i]]
+def add_rows(M, nrows = 5, remove_land_squares = True):
+    '''
+    Loop over all open boundaries and add new rows
+    - nrows               = number of rows from the OBC to cut out of the mesh
+    - remove_land_squares = if True (defeault), we remove squares that connect to FVCOM land, other than the first row
+    '''
+    all_obcs = []
+    for obc_nodes in M.nodestrings:
+        # Dummy holder for boundary triangles
+        boundary_triangles = []
+    
+        # Copy of the open boundary identifiers
+        open_boundary = np.copy(M.ISBCE)
+    
+        # All nearby elements to the open boundary elements
+        nbse = M.nbse[open_boundary == 2]
+        elements = np.unique(nbse[nbse > -1])
+    
+        # Build the first row
+        first_row, open_boundary = new_row(elements, M.tri[elements], open_boundary, nodes = obc_nodes)
+
+        all_obcs.extend(first_row)
         
-            # Look at the sides one-by-one
-            x_tmp, y_tmp = crop_obc(x_tmp, y_tmp, x_tmp[0], y_tmp[0], R)
-            x_tmp, y_tmp = crop_obc(x_tmp, y_tmp, x_tmp[-1], y_tmp[-1], R)
+        for i in range(nrows-1):
+            if i == 0:
+                nbse = M.nbse[first_row]
+                elements = np.unique(nbse[nbse > -1])
+                boundary_triangles, open_boundary = new_row(elements, M.tri[elements], open_boundary)
+                
+            else:
+                nbse = M.nbse[boundary_triangles]
+                elements = np.unique(nbse[nbse > -1])
+                boundary_triangles, open_boundary = new_row(elements, M.tri[elements], open_boundary)
 
-            x_obc = np.append(x_obc, x_tmp)
-            y_obc = np.append(y_obc, y_tmp)
+            # remove row squares that have a boundary towards land
+            if remove_land_squares:
+                on_land = (M.ISONB[M.tri[boundary_triangles]] == 1).any(axis=1)
+                boundary_triangles = np.array(boundary_triangles)[on_land == False].tolist()
+                
+            # Add this open boundary
+            all_obcs.extend(boundary_triangles)
+    return np.unique(all_obcs)
 
-    # Find cells within R from x_obc and y_obc
-    NEST = crop_mesh(M, x_obc, y_obc, R)
-
-    return NEST
-
-def crop_obc(x_obc, y_obc, xcoast, ycoast, R):
+def store_nest(M, cells):
     '''
-    Make cropped nestingzone
-    '''
-    dist  = np.sqrt((x_obc-xcoast)**2+(y_obc-ycoast)**2)
-    inds  = np.where(dist >= 0.895*R)[0]
-
-    return x_obc[inds], y_obc[inds]
-
-def crop_mesh(M, x_obc, y_obc, R):
-    '''
-    Create a nestingzone mesh for the triangles in M that are with a distance R from the
-    open boundary nodes.
+    Store the nestingzone mesh
     '''
     print('  -> Find the necessary cells')
-    obc_tree = KDTree(np.array([x_obc, y_obc]).T)
-    dst, _ = obc_tree.query(np.array([M.xc, M.yc]).T, distance_upper_bound = R)
-
-    # Cells within search range
-    cells = np.where(dst <= R)[0]
-
     # Store the new nodes
-    inds  = np.unique(M.tri[cells,:].ravel())
+    inds  = np.unique(M.tri[cells, :].ravel())
     x_new = M.x[inds]
     y_new = M.y[inds]
 
@@ -132,10 +159,6 @@ def crop_mesh(M, x_obc, y_obc, R):
     dNEST['xn'] = x_new
     dNEST['yn'] = y_new
     dNEST['nv'] = new_nv.astype(int)
-    dNEST['xc'] = triangulate(dNEST,'xn')
-    dNEST['yc'] = triangulate(dNEST,'yn')
+    dNEST['xc'] = M.xc[cells]
+    dNEST['yc'] = M.yc[cells]
     return dNEST
-
-def triangulate(NEST, var):
-    c = (NEST[var][NEST['nv'][:,0]] + NEST[var][NEST['nv'][:,1]] + NEST[var][NEST['nv'][:,2]])/3.0
-    return c
