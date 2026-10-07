@@ -329,7 +329,7 @@ def distfunc_onepoint(
     gfunc  = gfunc - gfunc0
 
     # determine the resolution based on f as described on the smeshing git
-    return np.min(gfunc+grid['coast_res'])
+    return np.min([np.min(gfunc + grid['coast_res']), rmax])
 
 def smoothres(h, gridspacing, drelmax, ncount):
     ''' '''
