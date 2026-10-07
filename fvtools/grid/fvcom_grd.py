@@ -2410,57 +2410,32 @@ class NestROMS2FVCOM:
         w1  = 2.5e-4
         w2  = 2.5e-5
         '''
-        self.x_obc, self.y_obc = np.copy(M.x_obc), np.copy(M.y_obc)
-        self.crop_nest_grid_corners()
-        nest_width = self.find_max_width()
-        self._compute_weights(nest_width, w1, w2)
+        if len(M.nodestrings) == 1:
+            self.x_obc, self.y_obc = np.copy(M.x_obc), np.copy(M.y_obc)
+        else:
+            self.x_obc, self.y_obc = np.concat(M.x_obc), np.concat(M.y_obc)
+
+        dst_node = self._distance_to_nearest_obc(self.xn[:,0], self.yn[:,0])
+        dst_cell = self._distance_to_nearest_obc(self.xc, self.yc)
+        self._compute_weights(w1, w2, dst_node, dst_cell)
         self.get_obc_nodes(M)
         self.get_cube_connected_to_obc()
         self.set_weights_in_obc_cube_to_one()
 
-    def crop_nest_grid_corners(self):
+    def _distance_to_nearest_obc(self, x, y):
         '''
-        Crop the nest grid and remove parts of its corners (as suggested by Ole Anders and Qin, since it helps conserve mass near the boundary)
+        Compute the distance to the nearest obc node
         '''
-        # Find the max radius- and node distance vector
-        if self.oend1 == 1:
-            new_x_obc, new_y_obc = [], []
-            for n in range(self.x_obc.shape[0]):
-                dist = np.sqrt(((self.x_obc[n] - self.x_obc[n][0])**2 + (self.y_obc[n] - self.y_obc[n][0])**2).astype(float))
-                i    = np.where(dist>self.R)
-                new_x_obc.append(self.x_obc[n][i])
-                new_y_obc.append(self.y_obc[n][i])
-            self.x_obc, self.y_obc = np.array(new_x_obc), np.array(new_y_obc)
+        obc_tree = KDTree(np.array([self.x_obc, self.y_obc]).T)
+        dst, _ = obc_tree.query(np.array([x, y]).T)
+        return dst
 
-        if self.oend2 == 1:
-            new_x_obc, new_y_obc = [], []
-            for n in range(self.x_obc.shape[0]):
-                dist = np.sqrt(((self.x_obc[n] - self.x_obc[n][-1])**2 + (self.y_obc[n] - self.y_obc[n][-1])**2).astype(float))
-                i    = np.where(dist>self.R)
-                new_x_obc.append(self.x_obc[n][i])
-                new_y_obc.append(self.y_obc[n][i])
-            self.x_obc, self.y_obc = np.array(new_x_obc), np.array(new_y_obc)
-
-    def find_max_width(self):
-        '''Find the distance between the obc and outer perimiter of the nestingzone'''
-        self._xo = []; self._yo = []
-        for n in range(self.x_obc.shape[0]):
-            self._xo.extend(self.x_obc[n])
-            self._yo.extend(self.y_obc[n])
-
-        self.d_node = []
-        for n in range(len(self.xn)):
-            self.d_node.append(np.min(np.sqrt((self._xo-self.xn[n])**2+(self._yo-self.yn[n])**2)))
-        return max(self.d_node)
-
-    def _compute_weights(self, nest_width, w1, w2):
-        distance_range = [0, nest_width]
+    def _compute_weights(self, w1, w2, dst_node, dst_cell):
+        distance_range = [0, dst_node.max()]
         weight_range   = [w1, w2]
-        d_cell = []
-        for n in range(len(self.xc)):
-            d_cell.append(min(np.sqrt((self._xo-self.xc[n])**2+(self._yo-self.yc[n])**2)))
-        self.weight_node = np.interp(self.d_node, distance_range, weight_range)
-        self.weight_cell = np.interp(d_cell, distance_range, weight_range)
+
+        self.weight_node = np.interp(dst_node, distance_range, weight_range)
+        self.weight_cell = np.interp(dst_cell, distance_range, weight_range)
         if np.argwhere(self.weight_node<0).size != 0: 
             self.weight_node[self.weight_node < 0] = min(weight_range)
         if np.argwhere(self.weight_cell<0).size != 0: 
