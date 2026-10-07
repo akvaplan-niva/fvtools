@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 
 from .initial.empty_initial import make_initial_file
 
-def main(restartfile = None, restart_date = None, mother = None, uv = False, proj = 'epsg:32633', latlon = False):
+def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother = None, uv = False, proj = 'epsg:32633', latlon = False):
     '''
     Interpolate hydrographic properties from the ROMS mother model to be used as initial conditions for the FVCOM model.
     ---
@@ -35,6 +35,9 @@ def main(restartfile = None, restart_date = None, mother = None, uv = False, pro
     if restartfile is None and restart_date is None:
         raise ValueError('You need to spesify the restart file to overwrite, or the date you want to restart from (for making a new restartfile)')
 
+    print('Load the FVCOM grid and make an empty restartfile')
+    M = FVCOM_grid(fvcom_grid)
+
     if restart_date is not None:
         restartfile = make_initial_file(M, restart_date, obc_type = 3)
     
@@ -42,8 +45,6 @@ def main(restartfile = None, restart_date = None, mother = None, uv = False, pro
     ROMS = get_roms_grid(mother)
 
     print(f'\nInterpolate data from {ROMS} to {restartfile}\n---')
-    print('- Load FVCOM restart file')
-    M         = FVCOM_grid(restartfile, reference=proj)
     ROMS.Proj = M.Proj
 
     # Fields we will interpolate to the restart file
