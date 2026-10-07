@@ -1890,7 +1890,10 @@ class PlotFVCOM:
     def _plot_contour(x, y, tri, field, show = False, ax = None, *args, **kwargs):
         if not ax:
             ax = plt.gca()
-        cont = ax.tricontourf(x, y, tri, field, *args, **kwargs)
+        if 'mask' in kwargs:
+            triangulation = matplotlib.tri.Triangulation(x, y, tri, mask=kwargs['mask'])
+            kwargs.pop("mask", None)
+        cont = ax.tricontourf(triangulation, field, *args, **kwargs)
         ax.set_aspect('equal')
         if show: plt.show(block=False)
         return cont
