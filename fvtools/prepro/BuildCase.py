@@ -428,38 +428,38 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
 
     def __str__(self):
         str_grid = f'''
-                    ---
-                    Grid:
-                        # nodes:            {len(self.x)}
-                        # triangles:        {len(self.xc)}
-                        minimum angle:      {self.grid_angles.min():.2f}
-                        minimum resolution: {self.grid_res.min():.2f} m
-                        # triangles <35 degrees: {len(np.where(self.grid_angles.min(axis=1)<35)[0])}
-                    '''
+---
+Grid:
+    # nodes:            {len(self.x)}
+    # triangles:        {len(self.xc)}
+    minimum angle:      {self.grid_angles.min():.2f}
+    minimum resolution: {self.grid_res.min():.2f} m
+    # triangles <35 degrees: {len(np.where(self.grid_angles.min(axis=1)<35)[0])}
+'''
         str_end = f'''
-                    Settings:
-                        sponge radius: {self.sponge_radius}
-                        sponge factor: {self.sponge_factor}
-                        minimum depth: {self.min_depth}
-                        rx0 target:    {self.rx0max}
-                        laplacian smoothing factor: {self.SmoothFactor}
+Settings:
+    sponge radius: {self.sponge_radius}
+    sponge factor: {self.sponge_factor}
+    minimum depth: {self.min_depth}
+    rx0 target:    {self.rx0max}
+    laplacian smoothing factor: {self.SmoothFactor}
 
-                    Sources:
-                        2dm file:      {self.filepath}
-                        - projection: {self.dm_projection}
+Sources:
+    2dm file:      {self.filepath}
+    - projection: {self.dm_projection}
 
-                        depth file:    {self.depth_file}
-                        - projection: {self.depth_projection}
+    depth file:    {self.depth_file}
+    - projection: {self.depth_projection}
 
-                    Target projection: {self.target_projection}
-                    ----
-                    '''
+Target projection: {self.target_projection}
+----
+'''
         try: 
             str_sigma = f'''
-            Vertical layers
-                # sigma layers:     {self.siglay.shape[1]}
-                # sigma levels:     {self.siglev.shape[1]}
-            '''
+Vertical layers
+    # sigma layers:     {self.siglay.shape[1]}
+    # sigma levels:     {self.siglev.shape[1]}
+'''
             str_out = str_grid + str_sigma + str_end
         except:
             str_out = str_grid + str_end
