@@ -39,6 +39,9 @@ def main(grd_file, outfile, start_time, stop_time, latlon=False):
     M = FVCOM_grid(grd_file)
     startdate, stopdate = get_start_and_stop_as_datetime(start_time, stop_time)
 
+    if startdate < datetime(2017,9,7):
+        raise ValueError('We have not added support for AROME prior to 7. september 2017, when the MEPS domain was extended to include Finland and Estonia')
+
     print('- Load AROME grid')
     OldAROME, NewAROME = get_arome_grids(startdate, stopdate, M.Proj)
 
