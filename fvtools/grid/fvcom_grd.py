@@ -8,6 +8,7 @@ import geopandas as gpd
 import shapely as shp
 import networkx as nx
 import cartopy.crs as ccrs
+import cmocean as cmo
 
 from pyproj import Proj, Transformer
 from netCDF4 import Dataset
@@ -75,6 +76,12 @@ class GridLoader:
         for nstr in types:
             l.extend(nstr)
         self._direct_initialization(x=x, y=y, tri=tri, obc_nodes = l)
+
+        # Add nodestrings
+        nodestrings = []
+        for ns in types:
+            nodestrings.append(np.array(ns))
+        self.nodestrings = nodestrings
         self.casename = self.filepath.split('.2dm')[0]
 
     def _add_grid_parameters_mat(self):
@@ -707,6 +714,13 @@ class PropertiesFromTGE:
 
     @property
     def ISBCE(self):
+        '''
+        "is boundary control element"
+        = 0 in the interior computational domain
+        = 1 on the solid boundary
+        = 2 on the open boundary
+        = 3 element with 2 solid boundary edges
+        '''
         if not hasattr(self, '_ISBCE'):
             # Calculate it yourself otherwise
             _T = tge.calculate_nbe_and_boundaries(self, verbose = False)
@@ -719,6 +733,12 @@ class PropertiesFromTGE:
 
     @property
     def ISONB(self):
+        '''
+        "is on boundary"
+        = 0 in the interior computational domain
+        = 1 on the solid boundary
+        = 2 on the open boundary
+        '''
         if not hasattr(self, '_ISONB'):
             # Calculate it yourself otherwise
             _T = tge.calculate_nbe_and_boundaries(self, verbose = False)
@@ -1118,6 +1138,28 @@ class OBC:
     @nodestrings.setter
     def nodestrings(self, var):
         self._nodestrings = var
+
+    @cached_property
+    def cellstrings(self):
+        _cellstrings = []
+        for i in range(len(self.nodestrings)):
+            cells = []
+            for j in range(self.nodestrings[i].shape[0]-1):
+                try:
+                    cells.append(int(
+                        np.where(
+                            np.logical_and(
+                                (self.tri == self.nodestrings[i][j]).max(axis=1), 
+                                (self.tri == self.nodestrings[i][j+1]).max(axis=1)
+                            )
+                        )[0][0])
+                    )
+                except:
+                    # This will be single cells that do not face the boundary, we do not need to track them
+                    pass
+            _cellstrings.append(cells)
+        return _cellstrings
+
 
     @property
     def x_obc(self):
@@ -1867,6 +1909,35 @@ class PlotFVCOM:
         plt.title('Section')
         plt.savefig('Section_map.png')
 
+    def plot_section_3D(self, x, y, z, data, vmin = None, cmap = cmo.cm.balance):
+        '''
+        Plot data at scattered x,y,z points
+        - x and y are (N,) arrays
+        - z and data are (N, D) arrays
+
+        Optional
+        
+        '''
+        import matplotlib.colors as colors
+        import matplotlib.cm as cm
+
+        vmin = vmin if vmin is not None else data.min()
+
+        # Expand array
+        x = np.tile(x[:, None], [1, data.shape[1]])
+        y = np.tile(y[:, None], [1, data.shape[1]])
+
+        # Prepare the figure
+        fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+        norm = colors.Normalize(vmin = vmin, vmax = data.max())
+
+        # Plot the data
+        surf = ax.plot_surface(x, y, z, facecolors = cmap(norm(data)), cmap = cmap)
+        surf.set_clim(vmin = 0, vmax = data.max())
+        fig.colorbar(surf, label = 'm/s')
+        ax.set_zlabel('depth [m]')
+        return fig, ax
+
 class AnglesAndPhysics:
     '''
     Angles you need when rotating velocities from a UTM coordinate system to WGS84 (true north/east)
@@ -2412,7 +2483,7 @@ class NestROMS2FVCOM:
         self.weight_node[self.node_obc_to_one] = 1.0
         self.weight_cell[self.cell_obc_to_one] = 1.0
 
-class NEST_grid(LoadNest, NestROMS2FVCOM, Coordinates, PlotFVCOM, AnglesAndPhysics, LegacyPropertyAliases, LegacyNestPropertyAliases):
+class NEST_grid(LoadNest, GridProximity, NestROMS2FVCOM, Coordinates, PlotFVCOM, AnglesAndPhysics, LegacyPropertyAliases, LegacyNestPropertyAliases):
     '''
     Object containing information about the nestingzone grid
     '''
