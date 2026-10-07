@@ -158,6 +158,12 @@ class ROMSbase(ROMSdepths, ROMSCropper):
             except:
                 raise ValueError(f'Could not find a valid {self} file for {date}')
 
+        else:
+            try:
+                path = self.test_day(datetime.now())
+            except:
+                raise ValueError(f'Could not find a valid {self} file for {datetime.now()}')
+
         # Load grid positions
         self.load_grid_from_nc(path)
         self.get_x_y_z()
