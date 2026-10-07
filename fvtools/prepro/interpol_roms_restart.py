@@ -16,14 +16,28 @@ from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
 import warnings
 warnings.filterwarnings("ignore")
 
-def main(restartfile, mother, uv=False, proj='epsg:32633', latlon = False):
+from .initial.empty_initial import make_initial_file
+
+def main(restartfile = None, restart_date = None, mother = None, uv = False, proj = 'epsg:32633', latlon = False):
     '''
+    Interpolate hydrographic properties from the ROMS mother model to be used as initial conditions for the FVCOM model.
+    ---
+
     restartfile  - restart file formatted for FVCOM
+    _or_
+    restart_date - time (date string 'yyyy-mm-dd-hh') to create a new restart file
+
     mother       - 'NKv2' or 'NKv3' for NorKyst-800
                    'H-NS' for hourly- or 'D-NS' for daily averaged NorShelf 2.4km files
     uv           - set True if you want to interpolate velocity fields to the mesh
     proj         - set projection, default: epsg:32633 (UTM33)
     '''
+    if restartfile is None and restart_date is None:
+        raise ValueError('You need to spesify the restart file to overwrite, or the date you want to restart from (for making a new restartfile)')
+
+    if restart_date is not None:
+        restartfile = make_initial_file(M, restart_date, obc_type = 3)
+    
     # FVCOM and ROMS grid objects
     ROMS = get_roms_grid(mother)
 
@@ -63,6 +77,7 @@ def main(restartfile, mother, uv=False, proj='epsg:32633', latlon = False):
         M.x, M.y, 
         ROMS.Land_rho
         )
+    
     if uv:
         N4.u_index, N4.u_coef = N4.correct_land(
             N4.u_index, N4.u_coef, 
