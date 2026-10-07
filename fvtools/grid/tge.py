@@ -199,7 +199,7 @@ def _find_nearby_elements_and_identify_boundaries(out, M, verbose):
 
     return out
 
-def _find_node_connectivity(out, M, ISONB, verbose):
+def _find_node_connectivity(out, M, verbose):
     # Get max number of surrounding elements
     #MAXNBR                 = np.max(get_MAXNBR(out.MT, out.NT, out.NV))
     #if verbose: print(f'- Found max number of surrounding elements: {MAXNBR}')
@@ -210,7 +210,7 @@ def _find_node_connectivity(out, M, ISONB, verbose):
     if verbose: print('- Found number of elements surrounding nodes')
 
     # Find number of nodes surrounding nodes, and elements surrounding nodes
-    out.NTSN, out.NBSN, out.NBVE, out.NBVT, invalid_nodes = get_NTSN_NBSN(NBVE, out.NTVE, NBVT, out.NBE, out.NV, ISONB, MAXNBR, out.MT)
+    out.NTSN, out.NBSN, out.NBVE, out.NBVT, invalid_nodes = get_NTSN_NBSN(NBVE, out.NTVE, NBVT, out.NBE, out.NV, out.ISONB, MAXNBR, out.MT)
     if verbose: print('- Reordered elements surrounding nodes, found NTSN and NBSN')
 
     # Check if any of the nodes are invalid, if so kill and indicate where we have a problem
