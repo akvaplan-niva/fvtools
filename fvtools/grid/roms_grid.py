@@ -266,7 +266,7 @@ class METNorKystV3(ROMSbase):
         year        = str(date.year)
         month       = '{:02d}'.format(date.month)
         day         = '{:02d}'.format(date.day)
-        return f'{https}/{year}/{month}/{day}/norkyst800_his_sdepth_{year}{month}{day}T00Z_m00_AN.nc'
+        return f'{https}{year}/{month}/{day}/norkyst800_his_sdepth_{year}{month}{day}T00Z_m00_AN.nc'
     
     def test_ncfile(self, file):
         try:
