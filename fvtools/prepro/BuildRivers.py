@@ -69,7 +69,7 @@ def main(start, stop, vassdrag, mesh_dict, info = None):
     Forcing   = FVCOM_rivers(info, M, vassdrag, start, stop)
     Runoff    = HBVRunoff(info['runoff'], start = start - timedelta(days = 1), stop = stop + timedelta(days=1))
     Positions = RiverPositions(info['riverpositions'], vassdrag, info['river_projection'])
-    Temp      = RiverTemperatures('riverdata/', start = start - timedelta(days=1), stop = stop + timedelta(days=1))
+    Temp      = RiverTemperatures(info['rivertemp'], start = start - timedelta(days=1), stop = stop + timedelta(days=1))
 
     # 2. Reduce the rivers to only load those that are relevant to this simulation
     #    and prepare to force the model
@@ -107,7 +107,7 @@ def main(start, stop, vassdrag, mesh_dict, info = None):
     Forcing.dump()
     Forcing.write_namelist()
 
-def get_input(river_data_path = '/nird/datapeak/NS9067K/store/fvcom-setup/Rivers/'):
+def get_input(river_data_path = '/nird/datapeak/NS9067K/store/fvcom-setup/Rivers'):
     """
     Pre-defined paths are stored here. They are distributed to other parts of the code via main.
 

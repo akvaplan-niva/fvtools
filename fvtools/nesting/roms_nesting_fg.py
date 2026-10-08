@@ -26,7 +26,7 @@ def main(fvcom_grd,
          latlon  = True,
          mother  = None,
          weights = [2.5e-4, 2.5e-5],
-         nprocs = 20):
+         nprocs = 1):
     '''
     Nest from NorKyst-800 or NorShelf-2.4km
 
@@ -49,6 +49,8 @@ def main(fvcom_grd,
                  - 'IMR-NF'   for NorFjords-150 data from the IMR. Assu
     weights    - tuple giving the weight interval for the nest nodes and cells. By default, weights = [2.5e-4, 2.5e-5].
     nprocs     - Number of processes to use when downloading (set equal to None to use all available cores)
+                - set to 1 by default, since thredds should not be accessed by multiple workers. It can be helpfull to use
+                  more processes if the files you're accessing are stored locally
     '''
     ROMS = get_roms_grid(mother)
 
@@ -85,7 +87,10 @@ def main(fvcom_grd,
 
     print('\nInterpolate data from ROMS to the nesting zone\n---')
     R2F = Roms2FVCOMNest(outfile, path, index, N4R, latlon)
-    R2F.dump(nprocs = nprocs)
+    if nprocs == 1:
+        R2F.dump_single()
+    else:
+        R2F.dump(nprocs = nprocs)
 
     print('\n--> Fin.')
 
@@ -171,12 +176,11 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         self.N4 = N4.dump()
         self.latlon = latlon
 
-    def dump_single(self, nprocs = None):
+    def dump_single(self):
         '''
         Mostly for debug/illustration of the downloading/interpolation/writing process
         '''
-        if nprocs:
-            print(f'  - Running in single mode')
+        print(f'  - Running in single mode')
         widget = [f'  - Interpolating and dumping timesteps to nest: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.path))
         bar.start()
