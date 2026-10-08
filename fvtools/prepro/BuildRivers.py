@@ -18,6 +18,9 @@ from functools import cached_property
 from scipy import interpolate
 from pyproj import Proj
 
+from IPython.display import display
+import ipywidgets as widgets
+
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -253,63 +256,147 @@ class RiverPositions:
         self.rivers = self.rivers.iloc[indices]
 
 class DraggablePoints:
-    '''
-    Drag and drop solution suggested by Google AI (from the google search bar)
-    '''
+    """
+    Draggable points for use with %matplotlib widget in Jupyter.
+
+    The wait() method pauses execution until the user presses
+    the "Done" button.
+    """
+
     def __init__(self, ax, x_data, y_data):
         self.ax = ax
-        self.was_modified = False
+        self.canvas = ax.figure.canvas
 
-        # Plot the points and keep a reference to the Line2D artis
-        self.points, = ax.plot(x_data, y_data, 'ko', markersize=10)
-        
-        # Internal state tracking
+        self.was_modified = False
         self.selected_index = None
+
+        # Store data internally as lists
         self.x_data = list(x_data)
         self.y_data = list(y_data)
-        
-        # Connect to matplotlib mouse events
-        self.canvas = ax.figure.canvas
-        self.canvas.mpl_connect('button_press_event', self.on_press)
-        self.canvas.mpl_connect('motion_notify_event', self.on_motion)
-        self.canvas.mpl_connect('button_release_event', self.on_release)
+
+        # Plot points
+        self.points, = ax.plot(
+            self.x_data,
+            self.y_data,
+            'ko',
+            markersize=10,
+            picker=False
+        )
+
+        # Connect mouse events
+        self.cid_press = self.canvas.mpl_connect(
+            'button_press_event', self.on_press
+        )
+        self.cid_motion = self.canvas.mpl_connect(
+            'motion_notify_event', self.on_motion
+        )
+        self.cid_release = self.canvas.mpl_connect(
+            'button_release_event', self.on_release
+        )
+
+        # Used by wait()
+        self._done = False
+        self._wait_widget = None
 
     def on_press(self, event):
-        # Ensure click occurs inside the axes plot area
-        if event.inaxes != self.ax: 
+        if event.inaxes != self.ax:
             return
-        
-        # Transform data coordinates to display (pixel) coordinates
-        xy_pixels = self.ax.transData.transform(np.column_stack((self.x_data, self.y_data)))
+
+        # Point positions in pixel coordinates
+        xy_pixels = self.ax.transData.transform(
+            np.column_stack((self.x_data, self.y_data))
+        )
+
         click_pixel = np.array([event.x, event.y])
-        
-        # Calculate distance from click to all points
-        distances = np.linalg.norm(xy_pixels - click_pixel, axis=1)
-        
-        # If click is within 15 pixels of a point, select the closest one
+
+        distances = np.linalg.norm(
+            xy_pixels - click_pixel,
+            axis=1
+        )
+
+        # Select closest point if within 15 pixels
         if np.min(distances) < 15:
             self.selected_index = np.argmin(distances)
 
     def on_motion(self, event):
-        # Cancel if no point is selected or mouse leaves axes bounds
-        if self.selected_index is None or event.inaxes != self.ax: 
+        if self.selected_index is None:
             return
 
-        # Change state if any point was modified
+        # Only update while mouse is inside axes
+        if event.inaxes != self.ax:
+            return
+
+        # Ignore invalid coordinates
+        if event.xdata is None or event.ydata is None:
+            return
+
         self.was_modified = True
 
-        # Update point data with new cursor coordinates
+        # Update coordinates
         self.x_data[self.selected_index] = event.xdata
         self.y_data[self.selected_index] = event.ydata
-        
-        # Refresh the artist data and redraw canvas
-        # Could be interesting to add a line to the original position?
-        self.points.set_data(self.x_data, self.y_data)
+
+        # Update plot
+        self.points.set_data(
+            self.x_data,
+            self.y_data
+        )
+
         self.canvas.draw_idle()
 
     def on_release(self, event):
-        # Deselect point on mouse release
         self.selected_index = None
+
+    def get_data(self):
+        """Return the current point coordinates."""
+        return np.array(self.x_data), np.array(self.y_data)
+
+    def wait(self):
+        """
+        Pause execution until the user presses the Done button.
+
+        Returns
+        -------
+        x, y : numpy arrays
+            The final point coordinates.
+        """
+
+        self._done = False
+
+        button = widgets.Button(
+            description='Done',
+            button_style='success',
+            icon='check'
+        )
+
+        output = widgets.Output()
+
+        def done_callback(_):
+            self._done = True
+
+        button.on_click(done_callback)
+
+        self._wait_widget = widgets.VBox([
+            widgets.HTML("<b>Move the points, then press Done.</b>"),
+            button,
+            output
+        ])
+
+        display(self._wait_widget)
+
+        # Let the Jupyter event loop run while waiting
+        from IPython import get_ipython
+
+        while not self._done:
+            get_ipython().kernel.do_one_iteration()
+
+        return self.get_data()
+
+    def disconnect(self):
+        """Disconnect matplotlib event handlers."""
+        self.canvas.mpl_disconnect(self.cid_press)
+        self.canvas.mpl_disconnect(self.cid_motion)
+        self.canvas.mpl_disconnect(self.cid_release)
 
 class CropRivers:
     '''
