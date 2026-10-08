@@ -1893,6 +1893,8 @@ class PlotFVCOM:
         if 'mask' in kwargs:
             triangulation = matplotlib.tri.Triangulation(x, y, tri, mask=kwargs['mask'])
             kwargs.pop("mask", None)
+        else:
+            triangulation = matplotlib.tri.Triangulation(x, y, tri)
         cont = ax.tricontourf(triangulation, field, *args, **kwargs)
         ax.set_aspect('equal')
         if show: plt.show(block=False)
