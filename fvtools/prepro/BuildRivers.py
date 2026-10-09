@@ -20,14 +20,15 @@ from pyproj import Proj
 
 from IPython.display import display
 import ipywidgets as widgets
-
 import warnings
 warnings.filterwarnings("ignore")
+
+import asyncio
 
 global version
 version = 2.0
 
-def main(start, stop, vassdrag, mesh_dict, info = None):
+async def main(start, stop, vassdrag, mesh_dict, info = None):
     '''
     BuildRiver use data from the NVE HBV model and feed all the mapped rivers leading to the ocean to FVCOM
 
@@ -79,7 +80,7 @@ def main(start, stop, vassdrag, mesh_dict, info = None):
     # ------------------------------------------------------------------------------
     # - Remove the rivers that are too far away from land and too close to the obc
     print('\nSubset the river database to cover the model domain')
-    Positions = Forcing.crop_rivers_far_from_land_and_close_to_OBC(Positions)
+    Positions = await Forcing.crop_rivers_far_from_land_and_close_to_OBC(Positions)
 
     # - Re-distribute the runoff according to catchment area
     print('- Determine runoff from rivers by the rivers catchment area')
@@ -256,87 +257,99 @@ class RiverPositions:
         self.rivers = self.rivers.iloc[indices]
 
 class DraggablePoints:
-    """
-    Draggable points for use with %matplotlib widget in Jupyter.
-
-    The wait() method pauses execution until the user presses
-    the "Done" button.
-    """
 
     def __init__(self, ax, x_data, y_data):
+
         self.ax = ax
         self.canvas = ax.figure.canvas
 
-        self.was_modified = False
-        self.selected_index = None
-
-        # Store data internally as lists
         self.x_data = list(x_data)
         self.y_data = list(y_data)
 
-        # Plot points
+        self.selected_index = None
+        self.was_modified = False
+
         self.points, = ax.plot(
             self.x_data,
             self.y_data,
             'ko',
-            markersize=10,
-            picker=False
+            markersize=10
         )
 
-        # Connect mouse events
+        # Matplotlib events
         self.cid_press = self.canvas.mpl_connect(
-            'button_press_event', self.on_press
-        )
-        self.cid_motion = self.canvas.mpl_connect(
-            'motion_notify_event', self.on_motion
-        )
-        self.cid_release = self.canvas.mpl_connect(
-            'button_release_event', self.on_release
+            'button_press_event',
+            self.on_press
         )
 
-        # Used by wait()
-        self._done = False
-        self._wait_widget = None
+        self.cid_motion = self.canvas.mpl_connect(
+            'motion_notify_event',
+            self.on_motion
+        )
+
+        self.cid_release = self.canvas.mpl_connect(
+            'button_release_event',
+            self.on_release
+        )
+
+        # Jupyter widget
+        self.done_button = widgets.Button(
+            description='Done',
+            button_style='success',
+            icon='check'
+        )
+
+        self.done_button.on_click(
+            self.on_done
+        )
+
+        display(self.done_button)
+
+        # Will contain the asyncio Future while waiting
+        self._future = None
 
     def on_press(self, event):
+
         if event.inaxes != self.ax:
             return
 
-        # Point positions in pixel coordinates
         xy_pixels = self.ax.transData.transform(
-            np.column_stack((self.x_data, self.y_data))
+            np.column_stack(
+                (self.x_data, self.y_data)
+            )
         )
 
-        click_pixel = np.array([event.x, event.y])
+        click_pixel = np.array(
+            [event.x, event.y]
+        )
 
         distances = np.linalg.norm(
             xy_pixels - click_pixel,
             axis=1
         )
 
-        # Select closest point if within 15 pixels
         if np.min(distances) < 15:
-            self.selected_index = np.argmin(distances)
+
+            self.selected_index = np.argmin(
+                distances
+            )
 
     def on_motion(self, event):
+
         if self.selected_index is None:
             return
 
-        # Only update while mouse is inside axes
         if event.inaxes != self.ax:
             return
 
-        # Ignore invalid coordinates
         if event.xdata is None or event.ydata is None:
             return
 
         self.was_modified = True
 
-        # Update coordinates
         self.x_data[self.selected_index] = event.xdata
         self.y_data[self.selected_index] = event.ydata
 
-        # Update plot
         self.points.set_data(
             self.x_data,
             self.y_data
@@ -345,58 +358,58 @@ class DraggablePoints:
         self.canvas.draw_idle()
 
     def on_release(self, event):
+
         self.selected_index = None
 
+    def on_done(self, event):
+
+        # Prevent pressing the button twice
+        self.done_button.disabled = True
+        self.done_button.description = 'Done ✓'
+
+        if self._future is not None:
+            if not self._future.done():
+
+                self._future.set_result(
+                    self.get_data()
+                )
+
+    async def wait(self):
+
+        """
+        Wait until the user presses Done.
+
+        This does NOT block the Jupyter event loop.
+        """
+
+        loop = asyncio.get_running_loop()
+
+        self._future = loop.create_future()
+
+        x_data, y_data = await self._future
+
+        return x_data, y_data
+
     def get_data(self):
-        """Return the current point coordinates."""
-        return np.array(self.x_data), np.array(self.y_data)
 
-    def wait(self):
-        """
-        Pause execution until the user presses the Done button.
-
-        Returns
-        -------
-        x, y : numpy arrays
-            The final point coordinates.
-        """
-
-        self._done = False
-
-        button = widgets.Button(
-            description='Done',
-            button_style='success',
-            icon='check'
+        return (
+            np.asarray(self.x_data),
+            np.asarray(self.y_data)
         )
 
-        output = widgets.Output()
-
-        def done_callback(_):
-            self._done = True
-
-        button.on_click(done_callback)
-
-        self._wait_widget = widgets.VBox([
-            widgets.HTML("<b>Move the points, then press Done.</b>"),
-            button,
-            output
-        ])
-
-        display(self._wait_widget)
-
-        # Let the Jupyter event loop run while waiting
-        from IPython import get_ipython
-
-        while not self._done:
-            get_ipython().kernel.do_one_iteration()
-
-        return self.get_data()
-
     def disconnect(self):
-        """Disconnect matplotlib event handlers."""
-        self.canvas.mpl_disconnect(self.cid_press)
-        self.canvas.mpl_disconnect(self.cid_motion)
-        self.canvas.mpl_disconnect(self.cid_release)
+
+        self.canvas.mpl_disconnect(
+            self.cid_press
+        )
+
+        self.canvas.mpl_disconnect(
+            self.cid_motion
+        )
+
+        self.canvas.mpl_disconnect(
+            self.cid_release
+        )
 
 class CropRivers:
     '''
@@ -417,7 +430,7 @@ class CropRivers:
         '''
         return shp.concave_hull(shp.geometry.Polygon(self.model_domain), ratio = self.info['buffer domain ratio']).buffer(self.info['land buffer'])
 
-    def crop_rivers_far_from_land_and_close_to_OBC(self, Rivers):
+    async def crop_rivers_far_from_land_and_close_to_OBC(self, Rivers):
         """
         Remove rivers that run off to points outside of the model domain, and that run off very close to the open boundary
         - note: I believe you have to run matplotlib with the tk backend for the draggable points to work out
@@ -447,7 +460,7 @@ class CropRivers:
         
             self.M.re_project(Rivers.reference)
 
-            ax.set_title('Rivers near the domain scaled with their runoff. Black points are draggable, close figure to continue.')
+            ax.set_title('Rivers near the domain scaled with their runoff. Black points are draggable.')
 
             # Plot rivers that will not be used in the model
             ax.scatter(
@@ -479,10 +492,13 @@ class CropRivers:
                     h.set_sizes([20.0])
                 except:
                     pass
-            plt.show(block = True)
+            plt.show()
+
+            x_data, y_data = await river_positions.wait()
+
 
             # Once the figure is closed, we look at all points and update the river position database
-            lon, lat = self.M.Proj(river_positions.x_data, river_positions.y_data, inverse = True)
+            lon, lat = self.M.Proj(x_data, y_data, inverse = True)
             self.M.re_project(Rivers.reference)
             
             # Check if rivers were adjusted. We continue
