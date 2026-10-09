@@ -61,7 +61,8 @@ These scrips were developed to emulate the workflow from `fvcom_toolbox/fvtools`
 - Nest into existing `FVCOM` experiments using files stored on `Betzy` or on `Stokes`
 
 `We sometimes`:
-- Nest into larger domain ROMS models operated by the met office
+- Nest into larger domain ROMS models operated by the met office or the institute of marine research
+  - `NorFjords160` is a series of 160 m resolution ROMS models configured to model fjords.
   - `NorKyst800` is an 800 m ROMS model configured for near-coast modelling.
   - `NorShelf2.5km` is a 2500 m resolution data assimilated ROMS model configured for shelf modelling.
 
