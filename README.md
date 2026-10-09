@@ -1,6 +1,5 @@
-# On the workflow in this repository
-
-This repo has two main branches: `master` and `dev`. Master is protected (meaning you must open a merge request to get stuff in there). `dev` is for active development and is occasionally merged into `master`.
+# fvtools - tools to interact with FVCOM data
+a variety of scripts to interact with FVCOM data before, during and after a model run.
 
 # Setup
 Here, we demonstrate how to install `fvtools` on Olivia, and how to run the fvcom model setup scripts interactively from a compute node on that machine.
@@ -46,11 +45,7 @@ forward the 8080 port to the computer you're working on
 ```bash
 PS C:\Users\hes> ssh -L 8080:c1-78:8080 hes001@olivia.sigma2.no
 ```
-
 you should now be able to run `fvtools` from a jupyter lab running on the cluster remotely from the browser on your personal computer.
-
-# fvtools - tools to interact with FVCOM data
-a variety of scripts to interact with FVCOM data before, during and after a model run.
 
 # General idea
 These scrips were developed to emulate the workflow from `fvcom_toolbox/fvtools` in MATLAB
@@ -169,19 +164,10 @@ MET Norway does _not_ guarantee data is continuous in time. We must keep the tid
 Adding a ROMS reader to `fvtools.grid.roms_grd` can support other ROMS experiments.
 
 ### River runoff
-The river runoff is given for geographical catchment areas ids (vassdrag), and the ids are mapped at [nve atlas](https://atlas.nve.no/)
-- river temperatures are read from NVE text-files. 
-- a new "FVCOM-mother" grid requires you to compile a new rivertemp.npy file.
-
-Temperature files used to force the FVCOM-mother models are stored on the Stokes and Betzy; use these when nesting in a smaller model.
-  - Stokes: `/data/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
-  - Betzy:  `/cluster/shared/NS9067K/apn_backup/FVCOM/Setup_Files/Rivers/Raw_Temperatures/`
-
+The river runoff is given for geographical catchment areas ids (vassdrag), and the ids are mapped at [nve atlas](https://atlas.nve.no/).
 ```python
 import fvtools.pre_pro.BuildRivers as br
-br.main('2018-01-01-00', '2018-02-01-00', vassdrag, temp='compile')
-br.main('2018-01-01-00', '2018-02-01-00', vassdrag, temp='fvcom_mother_temperatures.npy')
-
+await br.main('2018-01-01-00', '2018-02-01-00', vassdrag, 'M.npy')
 ```
 The routine writes a file called `RiverNamelist.nml` and `riverdata.nc` to your working directory. Put these in the `input` folder.
 
