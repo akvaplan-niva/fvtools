@@ -2,7 +2,7 @@
 a variety of scripts to interact with FVCOM data before, during and after a model run.
 
 # Setup
-Here, we demonstrate how to install `fvtools` on Olivia, and how to run the fvcom model setup scripts interactively from a compute node on that machine.
+Here, we demonstrate how to install `fvtools` on Olivia and how to run the fvcom model setup scripts interactively from a compute node on that machine.
 
 First, we clone fvtools to your home directory
 ```bash
@@ -18,7 +18,7 @@ module load NRIS/CPU hpc-container-wrapper
 conda-containerize new --mamba --prefix . ~/fvtools/env.yml
 ```
 
-You now need to add the container to your PATH and add an alises to activate the container to your ~/.bashrc
+You now need to add the container to your PATH and add alises to activate the container to your ~/.bashrc
 ```bash
 alias vnode='salloc --ntasks=3 --cpus-per-task=1 --time=02:00:00 --mem-per-cpu=2G --qos=devel --account=NN9238K'
 alias pton='module load NRIS/CPU hpc-container-wrapper && export PATH="/cluster/home/${USER}/container/bin:$PATH" && export http_proxy=http://10.63.2.48:3128/ && export https_proxy=http://10.63.2.48:3128/'
