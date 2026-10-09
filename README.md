@@ -3,7 +3,7 @@
 This repo has two main branches: `master` and `dev`. Master is protected (meaning you must open a merge request to get stuff in there). `dev` is for active development and is occasionally merged into `master`.
 
 # Setup
-Here, we demonstrate how to install fvtools on Olivia, and how to run the fvcom model setup scripts interactively from a compute node on that machine.
+Here, we demonstrate how to install `fvtools` on Olivia, and how to run the fvcom model setup scripts interactively from a compute node on that machine.
 
 First, we clone fvtools to your home directory
 ```bash
@@ -24,42 +24,33 @@ alias vnode='salloc --ntasks=3 --cpus-per-task=1 --time=02:00:00 --mem-per-cpu=2
 alias pton='module load NRIS/CPU hpc-container-wrapper && export PATH="/cluster/home/hes001/prosjekter/Seaweed/bin:$PATH" && export http_proxy=http://10.63.2.48:3128/ && export https_proxy=http://10.63.2.48:3128/'
 ```
 
-- vnode will ask for a virtual node where you will use the container
-- pton will activate the container on the compute node and give the compute node access to the internet
+- `vnode` will ask for a virtual node where you will use the container
+- `pton` will activate the container on the compute node and give the compute node access to the internet
 
 Start a virtual session on a compute node
 ```bash
 vnode
 ```
-
 and note which node you are allocated.
 ```bash
 hes001@c1-78:~>
 ```
-
-Start a jupyter lab session and note the link to the jupyter notebook (not the one with the compute node id)
+Start a `jupyter lab` session and note the link to it (not the one with the compute node id)
 ```bash
 pton
 python -m jupyterlab --no-browser --port=8080 --ip=0.0.0.0
 -->http://127.0.0.1:8080/lab?token=c2d0b67cef8680e4ca44bad6e7ca8cdf054bfc2d5c145c0d
-
 ```
-
-
 
 forward the 8080 port to the computer you're working on
 ```bash
 PS C:\Users\hes> ssh -L 8080:c1-78:8080 hes001@olivia.sigma2.no
 ```
 
-you should now be able to run fvtools from a jupyter lab running on the cluster remotely from the browser on your personal computer.
-
+you should now be able to run `fvtools` from a jupyter lab running on the cluster remotely from the browser on your personal computer.
 
 # fvtools - tools to interact with FVCOM data
 a variety of scripts to interact with FVCOM data before, during and after a model run.
-
-[[_TOC_]]
-
 
 # General idea
 These scrips were developed to emulate the workflow from `fvcom_toolbox/fvtools` in MATLAB
