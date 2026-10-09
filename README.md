@@ -86,6 +86,7 @@ You can call most scripts via the `main` function, which will create input/forci
 Boundary forcing for ROMS and FVCOM nested models is prepared the following:
 - `fvtools.nesting.roms_nesting_fg.main`
 - `fvtools.nesting.fvcom2fvcom_nesting.main`
+
 they will produce `.nc` forcing files for the boundary and `.dat` depth files, where the depth near the open boundaries is set equal to that of the forcing model, with a relaxation zone connecting it to the bathymetry set by BuildCase.
 
 # Workflow:
