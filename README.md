@@ -38,7 +38,7 @@ hes001@c1-78:~>
 Start a `jupyter lab` session and note the link to it (not the one with the compute node id)
 ```bash
 pton
-python -m jupyterlab --no-browser --port=8080 --ip=0.0.0.0
+jupyter lab --no-browser --port=8080 --ip=0.0.0.0
 -->http://127.0.0.1:8080/lab?token=c2d0b67cef8680e4ca44bad6e7ca8cdf054bfc2d5c145c0d
 ```
 
