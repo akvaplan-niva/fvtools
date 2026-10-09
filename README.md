@@ -83,10 +83,10 @@ You can call most scripts via the `main` function, which will create input/forci
 - `atmospheric forcing: fvtools.atm.read_metCoop.main`
   - interpolates atmospheric forcing to your domain
 
-Nesting is for ROMS nested, and FVCOM nested models are done using the following:
+Boundary forcing for ROMS and FVCOM nested models is prepared the following:
 - `fvtools.nesting.roms_nesting_fg.main`
-  - will dump a `casename_bathymetry.dat` file to your `input` folder
 - `fvtools.nesting.fvcom2fvcom_nesting.main`
+they will produce `.nc` forcing files for the boundary and `.dat` depth files, where the depth near the open boundaries is set equal to that of the forcing model, with a relaxation zone connecting it to the bathymetry set by BuildCase.
 
 # Workflow:
 A typical Akvaplan FVCOM experiment is made following these steps:
