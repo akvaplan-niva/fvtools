@@ -822,7 +822,16 @@ class FVCOM_rivers(CropRivers):
     
             # Add netcdf information
             d.source      = 'Akvaplan-niva BuildRiver, version '+str(version)
-            d.history     = 'Created '+ datetime.now().strftime('%Y-%m-%d at %H:%M h')+' by '+os.getlogin()
+            try:
+                user = os.getlogin()
+            except:
+                try:
+                    user = os.getcwd().split('home/')[1].split('/')[0]
+                except:
+                    user = 'unknown user'
+
+            
+            d.history     = f'Created {datetime.now().strftime('%Y-%m-%d at %H:%M h')} by  {user}'
             d.description = 'River forcing (temperature and runoff) for FVCOM 4.x'
     
             # Create variables:
