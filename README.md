@@ -20,9 +20,8 @@ conda-containerize new --mamba --prefix . ~/fvtools/env.yml
 
 You now need to add the container to your PATH and add an alises to activate the container to your ~/.bashrc
 ```bash
-export PATH="/cluster/home/USERNAME/bin:$PATH"
 alias vnode='salloc --ntasks=3 --cpus-per-task=1 --time=02:00:00 --mem-per-cpu=2G --qos=devel --account=NN9238K'
-alias pton='module load NRIS/CPU hpc-container-wrapper && export PATH="/cluster/home/hes001/container/bin:$PATH" && export http_proxy=http://10.63.2.48:3128/ && export https_proxy=http://10.63.2.48:3128/'
+alias pton='module load NRIS/CPU hpc-container-wrapper && export PATH="/cluster/home/${USER}/container/bin:$PATH" && export http_proxy=http://10.63.2.48:3128/ && export https_proxy=http://10.63.2.48:3128/'
 ```
 
 - `vnode` will ask for a virtual node where you will use the container
