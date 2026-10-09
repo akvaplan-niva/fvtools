@@ -3,29 +3,57 @@
 This repo has two main branches: `master` and `dev`. Master is protected (meaning you must open a merge request to get stuff in there). `dev` is for active development and is occasionally merged into `master`.
 
 # Setup
-We recommend using a singularity container; a Singularity.def definitions file is provided. Create a singularity image from a Linux terminal on a machine where you have sudo privileges and type:
-```
-sudo singularity build python.sif Singularity.def
-```
-You will need Singularity.def and requirements.txt in the directory from where you build this image. Activate the image by calling;
-```
-singularity shell python.sif
+Here, we demonstrate how to install fvtools on Olivia, and how to run the fvcom model setup scripts interactively from a compute node on that machine.
+
+First, we clone fvtools to your home directory
+```bash
+cd
+git clone git@github.com:akvaplan-niva/fvtools.git
 ```
 
-Bind paths and mounts to the image, like this on sigma2 clusters:
-```
-singularity shell --bind /cluster python.sif
-```
-or like this on Stokes
-```
-singularity shell --bind "/work,/data" /home/hes/python.sif
+Sigma2 wants you to install python packages using the container wrapper on Olivia, here we'll assume that you will install it from your home catalog
+```bash
+module load NRIS/CPU hpc-container-wrapper
+conda-containerize new --mamba --prefix . ~/fvtools/env.yml
 ```
 
-Once you have activated the singularity shell, you're effectively running a Ubuntu machine with Python and all Python modules necessary to use fvtools interactively on the cluster. I like to work in ipython, and I just need to call it to get started;
-```singularity
-ipython
+You now need to add the container to your PATH and add an alises to activate the container to your ~/.bashrc
+```bash
+export PATH="/cluster/home/USERNAME/bin:$PATH"
+alias vnode='salloc --ntasks=3 --cpus-per-task=1 --time=02:00:00 --mem-per-cpu=2G --qos=devel --account=NN9238K'
+alias pton='module load NRIS/CPU hpc-container-wrapper && export PATH="/cluster/home/hes001/prosjekter/Seaweed/bin:$PATH" && export http_proxy=http://10.63.2.48:3128/ && export https_proxy=http://10.63.2.48:3128/'
 ```
-Add your `fvtools` folder to your path before following the examples.
+
+- vnode will ask for a virtual node where you will use the container
+- pton will activate the container on the compute node and give the compute node access to the internet
+
+Start a virtual session on a compute node
+```bash
+vnode
+```
+
+and note which node you are allocated.
+```bash
+hes001@c1-78:~>
+```
+
+Start a jupyter lab session and note the link to the jupyter notebook (not the one with the compute node id)
+```bash
+pton
+python -m jupyterlab --no-browser --port=8080 --ip=0.0.0.0
+-->http://127.0.0.1:8080/lab?token=c2d0b67cef8680e4ca44bad6e7ca8cdf054bfc2d5c145c0d
+
+```
+
+
+
+forward the 8080 port to the computer you're working on
+```bash
+PS C:\Users\hes> ssh -L 8080:c1-78:8080 hes001@olivia.sigma2.no
+```
+
+you should now be able to run fvtools from a jupyter lab running on the cluster remotely from the browser on your personal computer.
+
 
 # fvtools - tools to interact with FVCOM data
 a variety of scripts to interact with FVCOM data before, during and after a model run.
