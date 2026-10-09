@@ -8,9 +8,11 @@ First, we clone fvtools to your home directory
 ```bash
 cd
 git clone git@github.com:akvaplan-niva/fvtools.git
+mkdir container
+cd container
 ```
 
-Sigma2 wants you to install python packages using the container wrapper on Olivia, here we'll assume that you will install it from your home catalog
+Sigma2 wants you to install python packages using the container wrapper on Olivia, here we'll assume that you will install it from a container catalog
 ```bash
 module load NRIS/CPU hpc-container-wrapper
 conda-containerize new --mamba --prefix . ~/fvtools/env.yml
