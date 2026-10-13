@@ -913,9 +913,9 @@ class FVCOM_rivers(CropRivers):
             for i, river in enumerate(self.river_names):
                 river = self.fix_nordic(river)
                 f.write(' &NML_RIVER\n')
-                f.write(f" RIVER_NAME = '{river}'\n")
-                f.write(f" RIVER_FILE = '{riverfile}'\n")
-                f.write(f' RIVER_GRID_LOCATION = {self.mesh_location[i]+1}\n')
+                f.write(f" RIVER_NAME = '{river},'\n")
+                f.write(f" RIVER_FILE = '{riverfile},'\n")
+                f.write(f' RIVER_GRID_LOCATION = {self.mesh_location[i]+1},\n')
                 vertical_dist = np.array2string(np.round(VQDIST,6), separator = ' ', edgeitems = 6,
                                                 precision = 5, floatmode = 'fixed').replace('\n',' ')[1:-1]
                 f.write(f' RIVER_VERTICAL_DISTRIBUTION = {vertical_dist}\n')
