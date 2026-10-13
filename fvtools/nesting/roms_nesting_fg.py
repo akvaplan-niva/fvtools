@@ -88,6 +88,7 @@ def main(fvcom_grd,
     print('\nInterpolate data from ROMS to the nesting zone\n---')
     R2F = Roms2FVCOMNest(outfile, path, index, N4R, latlon)
     if nprocs == 1:
+        print(f'  - Running in single mode')
         R2F.dump_single()
     else:
         R2F.dump(nprocs = nprocs)
@@ -180,7 +181,6 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         '''
         Mostly for debug/illustration of the downloading/interpolation/writing process
         '''
-        print(f'  - Running in single mode')
         widget = [f'  - Interpolating and dumping timesteps to nest: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.path))
         bar.start()
