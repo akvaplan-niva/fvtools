@@ -322,91 +322,92 @@ class InputCoordinates:
     @property
     def tri(self):
         '''Triangulation (n, 3) connecting the nodes making up triangle n'''
-        return np.array(self._tri)
+        return self._tri
 
     @tri.setter
     def tri(self, var):
-        self._tri = var
+        self._tri = np.array(var)
 
     @property
     def x(self):
         '''Node x position'''
-        return np.array(self._x)
+        return self._x
 
     @x.setter
     def x(self, var):
-        self._x = var
+        self._x = np.array(var)
     
     @property
     def y(self):
         '''Node y-position'''
-        return np.array(self._y)
+        return self._y
 
     @y.setter
     def y(self, var):
-        self._y = var
+        self._y = np.array(var)
 
     @property
     def lat(self):
         '''Node lat-position'''
-        return np.array(self._lat)
+        return self._lat
     
     @lat.setter
     def lat(self, var):
-        self._lat = var
+        self._lat = np.array(var)
 
     @property
     def lon(self):
         '''Node lon-position'''
-        return np.array(self._lon)
+        return self._lon
     
     @lon.setter
     def lon(self, var):
-        self._lon = var
+        self._lon = np.array(var)
 
     @property
     def zeta(self):
         '''Sea surface elevation (must be set by user for each timestep)'''
         if not hasattr(self, '_zeta'): self._zeta = np.zeros(self.x.shape)
-        return np.array(self._zeta)
+        return self._zeta
     
     @zeta.setter
     def zeta(self, var):
-        self._zeta = var
+        self._zeta = np.array(var)
 
     @property
     def h(self):
         '''Bathymetric depth relative to mean sea level'''
-        return np.array(self._h)
+        return self._h
     
     @h.setter
     def h(self, var):
-        self._h = var
+        self._h = np.array(var)
 
     @property
     def siglev(self):
         '''Sigma levels - top and bottom interfaces of sigma layers'''
-        return np.array(self._siglev)
+        return self._siglev
 
     @siglev.setter
     def siglev(self, var):
-        self._siglev = var
+        self._siglev = np.array(var)
 
     @property
     def siglay(self):
         '''Sigma layer - centre position of sigma layer'''
-        return np.array(self._siglay)
+        return self._siglay
     
     @siglay.setter
     def siglay(self, var):
-        self._siglay = var
+        self._siglay = np.array(var)
 
 class Coordinates:
     '''Coordinates we can derive from input-coordinates'''
     @property
     def latc(self):
         '''Latitude of triangle centres (cells/elements)'''
-        if not hasattr(self, '_latc'): self._latc = np.mean(self.lat[self.tri], axis = 1)
+        if not hasattr(self, '_latc'): 
+            self._latc = np.mean(self.lat[self.tri], axis = 1)
         return self._latc
 
     @latc.setter 
@@ -416,7 +417,8 @@ class Coordinates:
     @property
     def lonc(self):
         '''Longitude of triangle centres (cells/elements)'''
-        if not hasattr(self, '_lonc'): self._lonc = np.mean(self.lon[self.tri], axis = 1)
+        if not hasattr(self, '_lonc'): 
+            self._lonc = np.mean(self.lon[self.tri], axis = 1)
         return self._lonc
 
     @lonc.setter 
@@ -752,7 +754,7 @@ class PropertiesFromTGE:
 
     @ISONB.setter
     def ISONB(self, var):
-        self._ISBCE = var
+        self._ISONB = var
 
     @property
     def nbe(self):
@@ -1187,42 +1189,82 @@ class OBC:
         return np.array([self.lon[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     def _get_nodestrings(self, obc_nodes):
-        '''
-        Connects nodestrings to distinguished lines based on triangulation connectivity.
-        - *should* guarantee that the nodes are sorted correctly, but still subject to testing
-        '''
-        node_tag = np.zeros((self.cell_number,), dtype = np.int32)
-        node_tag[self.full_model_boundary] = 1
-        cells = np.where(np.sum(node_tag[self.tri], axis=1) > 0)[0]
-        tri = self.tri[cells,:]
-        side1, side2, side3 = [tri[:, [i, (i+1)%3]] for i in range(3)]
-        _sides = []
-        for sides in [side1, side2, side3]:
-            _sides.extend([side.tolist() for side in sides if side[0] in obc_nodes and side[1] in obc_nodes])
+        """
+        Identify and order open boundary nodestrings.
 
-        G = nx.Graph() 
-        _ = [G.add_edge(*side) for side in _sides]
-        _nodestrings = sorted(map(sorted, nx.k_edge_components(nx.DiGraph(G), 1)))
-        nodestrings = [np.array(list(nodestring)) for nodestring in _nodestrings]
+        Only edges belonging to the outer boundary of the
+        triangulation are considered. Each nodestring is ordered
+        by following the actual mesh connectivity.
 
-        # Make sure that the endpoints of each nodestring are at the start and stop of the array (since the set can't be returned in an orderly fashion)
-        # - generalize to make a nice nodestring, won't need to know if it is circular or a line string
-        nodes, counts = np.unique(_sides, return_counts = True)
-        endpoints = nodes[np.where(counts==1)[0]]    
-        ordered_nodestrings = []
-        for nodestring in nodestrings:
-            start, stop = [node for node in nodestring if node in endpoints]
-            tmp = np.copy(nodestring)
-            if start != tmp[0]:
-                ind_start = np.where(tmp == start)
-                tmp[ind_start] = tmp[0]
-                tmp[0] = start
-            if stop != tmp[-1]:
-                ind_stop = np.where(tmp == stop)
-                tmp[ind_stop] = tmp[-1]
-                tmp[-1] = stop
-            ordered_nodestrings.append(np.array(tmp))
-        return ordered_nodestrings
+        Parameters
+        ----------
+        obc_nodes : array-like
+            Zero-based node indices belonging to open boundaries.
+
+        Returns
+        -------
+        nodestrings : list of np.ndarray
+            One ordered array per connected open boundary.
+
+        Raises
+        ------
+        ValueError
+            If a node is not connected to an OBC boundary edge,
+            or if the boundary contains branches or closed loops.
+        """
+        obc_nodes = np.unique(np.asarray(obc_nodes, dtype=np.int64))
+
+        if obc_nodes.size == 0:
+            return []
+
+        if np.any(obc_nodes < 0) or np.any(obc_nodes >= self.node_number):
+            raise ValueError("Invalid OBC node indices")
+
+        # Identify nodes belonging to the open boundary.
+        is_obc = np.zeros(self.node_number, dtype=bool)
+        is_obc[obc_nodes] = True
+
+        # Only consider edges on the actual mesh boundary.
+        boundary_edges = self.boundary_nodes
+        obc_edges = boundary_edges[np.all(is_obc[boundary_edges], axis=1)]
+
+        # Verify that every OBC node belongs to a selected edge.
+        missing = np.setdiff1d(obc_nodes, np.unique(obc_edges))
+
+        if missing.size:
+            raise ValueError(f"OBC nodes without a connected boundary edge: {missing.tolist()}")
+
+        # Create a graph containing only OBC boundary edges.
+        G = nx.Graph()
+        G.add_edges_from(map(tuple, obc_edges))
+        nodestrings = []
+
+        # Each connected component represents a separate boundary.
+        for component in nx.connected_components(G):
+            subgraph = G.subgraph(component)
+            degrees = dict(subgraph.degree())
+
+            # An unbranched boundary cannot have more than two neighbours at any node.
+            branches = [node for node, degree in degrees.items() if degree > 2]
+
+            if branches:
+                raise ValueError(f"Branched OBC at nodes {branches}")
+
+            # An open boundary has exactly two endpoints.
+            endpoints = sorted(node for node, degree in degrees.items() if degree == 1)
+
+            if len(endpoints) != 2:
+                raise ValueError("Expected an open boundary with two endpoints. Closed OBC loops are not supported.")
+
+            # Follow the mesh connectivity from one endpoint
+            # to the other, preserving the actual node order.
+            path = nx.shortest_path(subgraph, source=endpoints[0], target=endpoints[1])
+            nodestrings.append(np.asarray(path, dtype=np.int64))
+
+        # Sort boundary segments deterministically.
+        nodestrings.sort(key=lambda path: int(path[0]))
+
+        return nodestrings
 
 class ControlVolumePlotter:
     @property
@@ -1494,14 +1536,22 @@ class SectionMaker:
         -------
         x, y : np.ndarray
             Coordinates of the selected transect vertices.
+
+        Example use in jupyterlab:
+        %matplotlib widget
+        points = await M.prepare_section_interactive()
+
+        - will also write .x_sec, .y_sec to the grid object
         """
         points = []
         future = asyncio.get_running_loop().create_future()
 
         # Create the map without automatically displaying the figure
         with plt.ioff():
-            self.plot_contour(self.h, levels = np.linspace(self.h.min(), self.h.max(), 30))
-            self.plot_grid(rasterized=True)
+            plt.figure()
+            self.georeference()
+            self.plot_contour(self.h, levels = np.linspace(self.h.min(), self.h.max(), 30), show = False)
+            self.plot_grid(rasterized=True, show = False)
 
             fig = plt.gcf()
             ax = plt.gca()
