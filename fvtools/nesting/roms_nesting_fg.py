@@ -43,8 +43,8 @@ def main(fvcom_grd,
     ----
     mother     - ROMS model to nest into
                  - 'HI-NK'    for NorKyst-800 version 1
-                 - 'MET-NKv2' for NorKyst-800 version 2, with data from 2017-02-20 to 2025-10-17
-                 - 'MET-NKv3' for NorKyst-800 version 3, with data from 2023-05-07 to present
+                 - 'NKv2' for NorKyst-800 version 2, with data from 2017-02-20 to 2025-10-17
+                 - 'NKv3' for NorKyst-800 version 3, with data from 2023-05-07 to present
                  - 'H-NS' or 'D-NS' for hourly values or daily averages from NorShelf-2.4km
                  - 'IMR-NF'   for NorFjords-150 data from the IMR. Assu
     weights    - tuple giving the weight interval for the nest nodes and cells. By default, weights = [2.5e-4, 2.5e-5].
