@@ -1696,13 +1696,40 @@ class SectionMaker:
         return self.Proj(lon, lat)
 
     def _assemble_section(self, x_section, y_section, res):
-        '''Create an evenly spaced section'''
-        self.x_sec, self.y_sec = np.empty(0), np.empty(0)
-        for x_now, y_now, x_next, y_next in zip(x_section[:-1], y_section[:-1], x_section[1:], y_section[1:]):
-            dst        = np.sqrt((x_next-x_now)**2+(y_next-y_now)**2)
-            npoints    = np.ceil(dst/res).astype(int)
-            self.x_sec = np.append(self.x_sec, np.linspace(x_now, x_next, npoints))
-            self.y_sec = np.append(self.y_sec, np.linspace(y_now, y_next, npoints))
+        """Create equally spaced transect points along each segment."""
+
+        points = np.column_stack((x_section, y_section))
+
+        if len(points) < 2:
+            raise ValueError("A section requires at least two points")
+
+        if not np.isfinite(res) or res <= 0:
+            raise ValueError("res must be positive")
+
+        segments = []
+
+        for start, stop in zip(points[:-1], points[1:]):
+            distance = np.linalg.norm(stop - start)
+
+            if distance == 0:
+                continue
+
+            n = max(1, int(np.ceil(distance / res)))
+            t = np.linspace(0, 1, n + 1)
+
+            # Avoid duplicate points at segment junctions.
+            if segments:
+                t = t[1:]
+
+            segments.append(
+                start + t[:, None] * (stop - start)
+            )
+
+        if not segments:
+            raise ValueError("Section has zero length")
+
+        xy = np.concatenate(segments, axis=0)
+        self.x_sec, self.y_sec = xy.T
 
     def get_section_data(self, data,
                          section_file = None, res = None,
