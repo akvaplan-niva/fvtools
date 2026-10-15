@@ -1465,14 +1465,43 @@ class SectionMaker:
 
     @property
     def dpt_sec(self):
-        '''The depths along the section'''
-        if self._transect_grid == '':
-            z = matplotlib.tri.LinearTriInterpolator(self.trs, self.zeta).__call__(self.x_sec,  self.y_sec)[:, None] * (-1)*self._min_sigma
-            _dpt_sec = matplotlib.tri.LinearTriInterpolator(self.trs, self.d).__call__(self.x_sec,  self.y_sec)[:, None]*getattr(self, self._transect_sigma)[0,:] + z
+        """
+        Calculate physical vertical coordinates along the transect.
+        Supports node- and cell-based data, sigma layers andsigma levels, including horizontally varying sigma distributions.
+
+        Returns
+        -------
+        np.ndarray
+            Vertical coordinates in meters, with shape (n_section_points, n_vertical_levels).
+            Coordinates are relative to mean sea level, positive upwards.
+        """
+        # Select horizontal grid and vertical coordinates
+        if self._transect_grid == "":
+            sigma = getattr(self, self._transect_sigma)
+            h = self.h
+            zeta = self.zeta
+
+        elif self._transect_grid == "c":
+            sigma = getattr(self, f"{self._transect_sigma}_c")
+            h = self.hc
+            zeta = np.mean(self.zeta[self.tri], axis=1)
+
         else:
-            z = matplotlib.tri.LinearTriInterpolator(self.trs, np.mean(self.zeta[self.tri], axis = 1)).__call__(self.x_sec,  self.y_sec)[:, None]  * (-1) * self._min_sigma
-            _dpt_sec = matplotlib.tri.LinearTriInterpolator(self.trs, self.dc).__call__(self.x_sec, self.y_sec)[:, None]*getattr(self, self._transect_sigma)[0,:] + z
-        return _dpt_sec
+            raise ValueError("Invalid transect grid type")
+
+        # Physical vertical coordinates at every grid point
+        z_grid = (zeta[:, None] + (h + zeta)[:, None] * sigma)
+
+        # Visualization adjustment:
+        # - Keep the deepest sigma-layer midpoint stationary when the sea surface elevation changes.
+        z_grid -= zeta[:, None] * (1.0 + sigma[:, [-1]])
+
+        # - Stick the upper level to the sea surface, not to the uppermost siglay point
+        z_grid[:,0] = zeta[:,None]
+
+        # Interpolate each vertical level to the transect
+        return self._interpolate_3D(z_grid)
+
 
     @property
     def _min_sigma(self):
@@ -1481,8 +1510,7 @@ class SectionMaker:
         if self._static_depth: _min_sigma = self.siglay[-1, -1]
         return _min_sigma
 
-    def prepare_section(self, section_file=None, res=None,
-                        store_transect_img=False, section_points=None):
+    def prepare_section(self, section_file=None, res=None, store_transect_img=False, section_points=None):
         """
         Prepare coordinates along a transect for section analysis.
 
@@ -1691,7 +1719,7 @@ class SectionMaker:
           - transect: field you gave the routine at x, y
         '''
         out = {}
-        if data.shape[0] != self.node_number or data.shape[0] != self.cell_number:
+        if data.shape[0] not in (self.node_number, self.cell_number):
             data = data.T
 
         sigma = self._check_if_siglay_or_siglev(data)
@@ -1742,10 +1770,39 @@ class SectionMaker:
         return out_field
 
     def _interpolate_3D(self, field):
-        out_field = np.zeros((len(self.x_sec), field.shape[1]))
-        for sigma in range(field.shape[1]):
-            out_field[:, sigma] = matplotlib.tri.LinearTriInterpolator(self.trs, field[:, sigma]).__call__(self.x_sec, self.y_sec)
-        return out_field
+        """
+        Horizontally interpolate a 3D field to the transect.
+
+        Parameters
+        ----------
+        field : np.ndarray
+            Array with shape (n_grid_points, n_vertical_levels).
+
+        Returns
+        -------
+        np.ndarray
+            Interpolated values with shape
+            (n_section_points, n_vertical_levels).
+            Points outside the triangulation are set to NaN.
+        """
+
+        npoints = len(self.x_sec)
+        nlevels = field.shape[1]
+
+        out = np.full((npoints, nlevels), np.nan)
+
+        for k in range(nlevels):
+            interpolator = matplotlib.tri.LinearTriInterpolator(
+                self.trs, field[:, k]
+            )
+
+            values = interpolator(
+                self.x_sec, self.y_sec
+            )
+
+            out[:, k] = np.ma.filled(values, np.nan)
+
+        return out
 
 class ExportGrid:
     '''
