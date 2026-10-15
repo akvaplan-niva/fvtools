@@ -1,4 +1,3 @@
-
 """FVCOM sigma coordinates from MOD_SETUP (including the modified Souza method).
 
 All output arrays are surface-first. The nodal coordinates ``z`` are
@@ -209,7 +208,6 @@ def setup_sigma(
     ``n_layers`` is FVCOM KBM1, with KB = n_layers + 1.
     ``stype`` may be 'uniform', 'geometric', 'tanh', 'generalized', or 'souza'.
     ``nv`` is optional triangle connectivity, one-based unless
-    ``nv_one_based=False``. Method-specific settings have the same names as
     in the Fortran source; for generalized, ``zku``/``zkl`` are physical
     top/bottom layer thicknesses in meters.
 
@@ -234,7 +232,7 @@ def setup_sigma(
     elif method == "generalized":
         z = _generalized_profile(h, n, dt, hmin1, duu, dll, ku, kl, zku, zkl)
     elif method == "souza":
-        z, _, s = _souza_profile(h, n, dt, theta_s, theta_b, tcline)
+        z, sigma_w, cs_w = _souza_profile(h, n, dt, theta_s, theta_b, tcline)
     else:
         raise ValueError("Unknown stype. Choose uniform, geometric, tanh, generalized, or souza")
 
@@ -245,5 +243,8 @@ def setup_sigma(
         dz1, zz1, dzz1 = _fvcom_derivatives(z1)
 
     return {
-        "z": z, "z1": z1, "s": s
+        "z": z, "z1": z1,
+        "dz": dz, "zz": zz, "dzz": dzz,
+        "dz1": dz1, "zz1": zz1, "dzz1": dzz1,
+        "sigma_w": sigma_w, "cs_w": cs_w,
     }
