@@ -200,6 +200,8 @@ class AROMEDownloader:
         widget = [f'  Downloading arome timesteps: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.indices))
         bar.start()
+
+        # Dump to the outfile
         with netCDF4.Dataset(self.outfile, 'r+') as self.out:
             for counter, (path, path_acc, path_rad, index) in enumerate(zip(self.normal_paths, self.accumulation_paths, self.radiation_paths, self.indices)):
                 bar.update(counter)
@@ -207,12 +209,23 @@ class AROMEDownloader:
                     N4 = self.N4new
                 else:
                     N4 = self.N4old
-                timestep = self.read_data(N4, path, path_acc, path_rad, index)
-                timestep.counter = counter 
-                timestep = self.interpolate_arome_data(timestep, N4)
-                if not self.latlon:
-                    timestep = self.rotate_arome_vectors(timestep, N4)
-                self.write_timestep(timestep)
+                thredds_unavailable = True
+                while thredds_unavailable:
+                    try:
+                        timestep = self.read_data(N4, path, path_acc, path_rad, index)
+                        timestep.counter = counter 
+                        timestep = self.interpolate_arome_data(timestep, N4)
+                        if not self.latlon:
+                            timestep = self.rotate_arome_vectors(timestep, N4)
+                        self.write_timestep(timestep)
+                        thredds_unavailable = False
+
+                    # We will try to catch all outages here, since we already know that the file and the timestep exists on thredds
+                    except:
+                        print('\n---------------------------------------------------------------------------------\n '+\
+                                '   The data is unavailable at the moment. We wait thirty seconds and try again.'+\
+                            '\n---------------------------------------------------------------------------------\n')
+                        time_mod.sleep(30)
         bar.finish()
 
     def dump(self, nprocs = None): 
