@@ -25,7 +25,7 @@ from IPython.display import display
 import warnings
 warnings.filterwarnings("ignore")
 
-from fvtools.grid.depth.setup import setup_sigma
+from fvtools.grid.depth import setup_sigma
 
 class GridLoader:
     '''
