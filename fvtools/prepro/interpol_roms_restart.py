@@ -35,12 +35,13 @@ def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother =
     if restartfile is None and restart_date is None:
         raise ValueError('You need to spesify the restart file to overwrite, or the date you want to restart from (for making a new restartfile)')
 
-    print('Load the FVCOM grid and make an empty restartfile')
+    print('Load the FVCOM grid ')
     M = FVCOM_grid(fvcom_grid)
 
     if restart_date is not None:
+        print('  - make an empty restart file')
         restartfile = make_initial_file(M, restart_date, obc_type = 3)
-    
+
     # FVCOM and ROMS grid objects
     ROMS = get_roms_grid(mother)
 

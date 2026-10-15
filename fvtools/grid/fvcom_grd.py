@@ -18,8 +18,14 @@ from scipy.spatial import cKDTree as KDTree
 from numba import njit
 from functools import cached_property
 
+import asyncio
+import ipywidgets as widgets
+from IPython.display import display
+
 import warnings
 warnings.filterwarnings("ignore")
+
+from fvtools.grid.depth.setup import setup_sigma
 
 class GridLoader:
     '''
@@ -168,150 +174,149 @@ class GridLoader:
             tri     = np.loadtxt(f, delimiter = ' ', max_rows = trinum, dtype=int)
         self._direct_initialization(x = points[:,0], y = points[:,1], tri = tri)
 
-    def _check_that_sigmafile_is_valid(self, sigmafile):
-        data = np.loadtxt(sigmafile, delimiter = '=', dtype = str)
-        if data[1,1] in [' TANH', ' UNIFORM', ' SOUZA']:
-            pass
-        elif data[1,1] in [' GEOMETRIC']:
-            raise ValueError('GEOMETRIC is implemented, but has not been tested. Double check that BuildCase.read_sigma is equivalent to FVCOM')
-        else:
-            raise ValueError(f'Invalid sigma layer method')
+    def read_sigma(self, sigmafile=None, **sigma_kwargs):
+        """
+        Read FVCOM sigma settings and calculate nodal sigma coordinates.
 
-    def read_sigma(self, sigmafile = None):
-        '''
-        Generate a sigma coordinate distribution based on the input file to FVCOM
+        Parameters
+        ----------
+        sigmafile : str or pathlib.Path, optional
+            Path to a *_sigma.dat file.
+        **sigma_kwargs
+            Optional overrides passed to depth.setup_sigma.
 
-        Parameters:
-        ----
-        sigmafile:   A casename_sigma.dat file
+        Notes
+        -----
+        KB is the number of vertical interfaces.
+        KBM1 = KB - 1 is the number of layers.
+        Both siglev and siglay run from surface to bottom.
+        """
+        if sigmafile is None:
+            sigmafile = f"input/{self.casename}_sigma.dat"
 
-        Returns:
-        ----
-        lev, lay:    Sigma coordinate lev and lay (valid for the entire domain)
-        '''
-        if not sigmafile:
-            sigmafile = f'input/{self.casename}_sigma.dat'
-            
-        self._check_that_sigmafile_is_valid(sigmafile)
-        
-        # Read the input parameters from the casename_sigma.dat file
-        data = np.loadtxt(sigmafile, delimiter = '=', dtype = str)
-        if 'TANH' in data[1,1]:
-            self._tanh_sigma(data)
+        kb, stype, parameters = self._read_sigma_configuration(sigmafile)
+        options = self._sigma_options(stype, parameters)
+        options.update(sigma_kwargs)
 
-        elif 'UNIFORM' in data[1,1]:
-            self._uniform_sigma(data)
+        # Only Souza and generalized coordinates depend on bathymetry.
+        depth = getattr(self, "_h", None)
 
-        elif 'GEOMETRIC' in data[1,1]:
-            self._geometric_sigma(data)
+        if depth is None:
+            if stype in ("souza", "generalized"):
+                raise ValueError(f"{stype.upper()} sigma coordinates require nodal bathymetry (h)")
+            depth = np.ones(len(self.x))
 
-        elif 'SOUZA' in data[1,1]:
-            self._souza_sigma(data)
+        depth = np.atleast_1d(np.asarray(depth))
 
-        else:
-            raise ValueError(f'BuildCase supports tanh-, geometric-, uniform- and souza-coordinates at the moment. {data[1,1]} is invalid.')
-    
-    def _tanh_sigma(self, data):
-        '''
-        Used to define a sigma distribution with better resolution near the surface
-        '''
-        nlev = int(data[0,1])
-        du   = float(data[2,1])
-        dl   = float(data[3,1])
-        lev  = np.zeros((nlev))
-        for k in np.arange(nlev-1):
-            x1 = np.tanh((dl + du) * (nlev - 2 - k) / (nlev - 1) - dl)
-            x2 = np.tanh(dl)
-            x3 = x2 + np.tanh(du)
-            lev[k+1] = (x1 + x2) / x3 - 1.0
+        if depth.size != len(self.x):
+            raise ValueError("The number of depth values must match the number of grid nodes")
 
-        # Siglay
-        lay = [(lev[k]+lev[k+1])/2 for k in range(len(lev)-1)]
+        # setup_sigma expects KBM1, not KB.
+        result = setup_sigma(depth=depth, n_layers=kb - 1,stype=stype,**options)
 
-        # Store
-        self.siglev = np.tile(lev, (len(self.x), 1))
-        self.siglay = np.tile(np.array(lay), (len(self.x), 1))
+        self.siglev = result["z"]
+        self.siglay = result["zz"][:, :kb - 1]
 
-    def _uniform_sigma(self, data):
-        '''
-        Used to set a sigma distribution where each layer is equally thick
-        '''
-        nlev = int(data[0,1])
-        lev = np.zeros(nlev)
-        for k in np.arange(1,nlev+1):
-            lev[k-1] = -((k - 1)/(nlev - 1))
+    @staticmethod
+    def _read_sigma_configuration(sigmafile):
+        """
+        Parse an FVCOM sigma configuration file.
+        """
+        import re
 
-        # Siglay
-        lay = [(lev[k]+lev[k+1])/2 for k in range(len(lev)-1)]
+        parameters = {}
+        values = []
 
-        # Store
-        self.siglev = np.tile(lev, (len(self.x), 1))
-        self.siglay = np.tile(np.array(lay), (len(self.x), 1))
+        with open(sigmafile, encoding="utf-8") as file:
+            for line in file:
+                line = line.split("!", 1)[0].split("#", 1)[0].strip()
 
-    def _geometric_sigma(self, data):
-        '''
-        Used to define a set z-resolution near the surface at depths greater than 
-        '''
-        # --> Not sure that this one is correct, so throw a "not implemented error"
-        raise ValueError('GEOMETRIC is implemented, but has not been tested. Double check that BuildCase.read_sigma is equivalent to FVCOM')
-        nlev = int(data[0,1])
-        lev = np.zeros(nlev)
-        p_sigma = np.double(data[2,1])
-        for k in range(1, int(np.floor((nlev+1)/2)+1)):
-            lev[k-1]=-((k-1)/((nlev+1)/2 - 1))**p_sigma/2
-        for k in range(int(np.floor((nlev+1)/2))+1,nlev+1):
-            lev[k-1]=((nlev-k)/((nlev+1)/2-1))**p_sigma/2-1
+                if not line or "=" not in line:
+                    continue
 
-        # Siglay
-        lay = [(lev[k]+lev[k+1])/2 for k in range(len(lev)-1)]
-        # Store
-        self.siglev = np.tile(lev, (len(self.x), 1))
-        self.siglay = np.tile(np.array(lay), (len(self.x), 1))
-        
-    def _souza_sigma(self, data):
-        '''
-        Same as Vstretching = 5 in ROMS
-        '''
-        # Number of levels
-        KB = int(data[0,1])
-        KBM1 = KB-1
+                name, value = line.split("=", 1)
+                name = re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")
+                value = value.strip().strip("\"'")
 
-        # Transition depth, surface stretching parameter and bottom stretching parameter
-        TCLIN = float(data[2,1])
-        THETA_S = float(data[3,1])
-        THETA_B = float(data[4,1])
+                parameters[name] = value
+                values.append(value)
 
-        sig1 = []
-        for k in range(KB):
-            upper_f = -(k**2 - 2*k*KBM1 + k + KBM1**2 - KBM1)
-            lower_f = KBM1**2 - KBM1
-            upper_l = k**2 - k*KBM1
-            lower_l = 1 - KBM1
-            sig1.append(upper_f/lower_f - 1/100 * upper_l/lower_l)
-        
-        # Apply the surface refinement function
-        C = (1 - np.cosh(THETA_S * np.array(sig1))) / (np.cosh(THETA_S) - 1)
-        
-        # Apply the bottom refinement function
-        C = (np.exp(THETA_B * C) - 1) / (1 - np.exp(-THETA_B))
+        if len(values) < 2:
+            raise ValueError(f"Invalid FVCOM sigma file: {sigmafile}")
 
-        # Calculate the unstretched sigma
-        sig2 = []
-        for k in range(KB):
-            sig2.append((k-KBM1)/KBM1)
-        sig2 = np.array(sig2)
+        # Support positional parameters from older sigma files.
+        parameters["_ORDERED_VALUES"] = values
 
-        # Find the layer depth at each node
-        lev = (TCLIN *sig2[None,:] + self.h[:,None]*C) / (TCLIN + self.h[:, None])
+        kb_value = parameters.get("NUMBER_OF_SIGMA_LEVELS", parameters.get("KB", values[0]))
 
-        # Siglay
-        lay = np.array([(lev[:,k]+lev[:,k+1])/2 for k in range(KBM1)]).T
+        stype = parameters.get("SIGMA_COORDINATE_TYPE", parameters.get("STYPE", values[1])).strip().lower()
 
-        # Flip them 
+        try:
+            kb = int(kb_value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid number of sigma levels (KB): {kb_value}") from exc
 
-        # Store
-        self.siglev = np.fliplr(lev)
-        self.siglay = np.fliplr(lay)
+        if kb < 3:
+            raise ValueError("KB must be at least 3")
+
+        return kb, stype, parameters
+
+    @staticmethod
+    def _sigma_options(stype, parameters):
+        """Translate FVCOM sigma parameters to setup_sigma arguments."""
+
+        def value(*names, position=None, required=True, default=None):
+            for name in names:
+                if name in parameters:
+                    return float(parameters[name])
+
+            values = parameters.get("_ORDERED_VALUES", [])
+
+            if position is not None and len(values) > position:
+                return float(values[position])
+
+            if required:
+                raise ValueError(f"{stype.upper()} sigma requires one of: {', '.join(names)}")
+
+            return default
+
+        if stype == "uniform":
+            return {"p_sigma": value("P_SIGMA", position=2, required=False, default=1.0)}
+
+        if stype == "geometric":
+            return {"p_sigma": value("P_SIGMA", position=2)}
+
+        if stype == "tanh":
+            return {"du2": value("DU", "DU2", position=2), "dl2": value("DL", "DL2", position=3)}
+
+        if stype == "souza":
+            return {
+                "tcline": value("TCLINE", "TCLIN", position=2),
+                "theta_s": value("THETA_S", "THETAS", position=3),
+                "theta_b": value("THETA_B", "THETAB", position=4)
+            }
+
+        if stype == "generalized":
+            options = {}
+
+            for field in ("hmin1", "duu", "dll", "ku", "kl"):
+                if field.upper() in parameters:
+                    options[field] = value(field.upper())
+
+            for field in ("ku", "kl"):
+                if field in options:
+                    options[field] = int(options[field])
+
+            for field in ("zku", "zkl"):
+                if field.upper() in parameters:
+                    raw = parameters[field.upper()].replace(",", " ")
+                    options[field] = [
+                        float(x) for x in raw.split()
+                    ]
+
+            return options
+
+        raise ValueError(f"Unsupported sigma coordinate type: {stype!r}")
 
 class InputCoordinates:
     @property
@@ -1431,24 +1436,42 @@ class SectionMaker:
         if self._static_depth: _min_sigma = self.siglay[-1, -1]
         return _min_sigma
 
-    def prepare_section(self, section_file = None, res = None, store_transect_img = False):
-        '''
-        Returns x, y points along a section for use in section-analysis
-        '''
-        if section_file is None: 
-            x_section, y_section = self._graphical_section()
-        if section_file is not None: 
+    def prepare_section(self, section_file=None, res=None,
+                        store_transect_img=False, section_points=None):
+        """
+        Prepare coordinates along a transect for section analysis.
+
+        The transect can be defined using a section file, interactively,
+        or by providing section points directly.
+        """
+        if section_points is not None:
+            x_section, y_section = section_points
+
+        elif section_file is not None:
             x_section, y_section = self._load_section_file(section_file)
-        if res is None: 
-            res = np.sum(np.sqrt(np.diff(x_section)**2 + np.diff(y_section)**2))/60
+
+        else:
+            x_section, y_section = self._graphical_section()
+
+        if res is None:
+            res = np.sum(
+                np.hypot(np.diff(x_section), np.diff(y_section))
+            ) / 60
+
         self._assemble_section(x_section, y_section, res)
-        if section_file is None: 
+
+        if section_file is None:
             self.write_section()
-        if hasattr(self, 'trs'): 
+
+        if hasattr(self, 'trs'):
             delattr(self, 'trs')
-        if store_transect_img: 
+
+        if store_transect_img:
             self._plot_section_line()
-        plt.close('all')
+
+        # Do not close the interactive figure in JupyterLab
+        if section_points is None:
+            plt.close('all')
 
     # Rotuines that define where the section goes (ie. defining nodes on the section line)
     def _graphical_section(self):
@@ -1458,6 +1481,127 @@ class SectionMaker:
         plt.title('Click where you want the section to go (minimum two points). Hit "Enter" to continue.')
         places = plt.ginput(timeout = -1, n = -1)
         return np.array([p[0] for p in places]), np.array([p[1] for p in places])
+
+    async def prepare_section_interactive(self, res=None, store_transect_img=False):
+        """
+        Interactively define a transect in JupyterLab.
+
+        Left click: Add point
+        Backspace/Delete: Remove last point
+        Enter or Finish button: Complete the selection
+
+        Returns
+        -------
+        x, y : np.ndarray
+            Coordinates of the selected transect vertices.
+        """
+        points = []
+        future = asyncio.get_running_loop().create_future()
+
+        # Create the map without automatically displaying the figure
+        with plt.ioff():
+            self.plot_contour(self.h, levels = np.linspace(self.h.min(), self.h.max(), 30))
+            self.plot_grid(rasterized=True)
+
+            fig = plt.gcf()
+            ax = plt.gca()
+
+            line, = ax.plot([], [], "ro-", markersize=5, linewidth=1.5, zorder=100)
+
+            ax.set_title("Click to define transect. Press Enter to finish.")
+
+        # Create controls
+        finish_button = widgets.Button(description="Finish", button_style="success")
+        undo_button = widgets.Button(description="Undo")
+        status = widgets.Label(value="Select at least two points.")
+
+        def redraw():
+            """Update the transect line and status."""
+            line.set_data([p[0] for p in points], [p[1] for p in points])
+            status.value = f"{len(points)} points selected"
+            fig.canvas.draw_idle()
+
+        def on_click(event):
+            """Register a new point from a left mouse click."""
+            if future.done():
+                return
+
+            if event.inaxes != ax or event.button != 1:
+                return
+
+            # Ignore clicks while the toolbar is in pan/zoom mode
+            toolbar = getattr(fig.canvas, "toolbar", None)
+            if toolbar is not None and toolbar.mode:
+                return
+
+            if event.xdata is not None and event.ydata is not None:
+                points.append((event.xdata, event.ydata))
+                redraw()
+
+        def on_undo(_=None):
+            """Remove the most recently selected point."""
+            if points and not future.done():
+                points.pop()
+                redraw()
+
+        def on_finish(_=None):
+            """Finish selecting the transect."""
+            if future.done():
+                return
+
+            if len(points) < 2:
+                status.value = "At least two points are required."
+                return
+
+            future.set_result(np.asarray(points, dtype=float))
+
+        def on_key(event):
+            """Handle keyboard shortcuts."""
+            if event.key == "enter":
+                on_finish()
+            elif event.key in ("backspace", "delete"):
+                on_undo()
+
+        # Connect Matplotlib events
+        click_id = fig.canvas.mpl_connect(
+            "button_press_event", on_click
+        )
+        key_id = fig.canvas.mpl_connect(
+            "key_press_event", on_key
+        )
+
+        finish_button.on_click(on_finish)
+        undo_button.on_click(on_undo)
+
+        # Display the interactive map and controls
+        display(widgets.VBox([
+            fig.canvas,
+            widgets.HBox([finish_button, undo_button]),
+            status
+        ]))
+
+        try:
+            # Yield control to Jupyter while waiting for user input
+            xy = await future
+
+        finally:
+            # Disconnect event handlers
+            fig.canvas.mpl_disconnect(click_id)
+            fig.canvas.mpl_disconnect(key_id)
+            finish_button.disabled = True
+            undo_button.disabled = True
+
+        x_section = xy[:, 0]
+        y_section = xy[:, 1]
+
+        # Use the existing section preparation routine
+        self.prepare_section(
+            res=res,
+            store_transect_img=store_transect_img,
+            section_points=(x_section, y_section)
+        )
+
+        return x_section, y_section
 
     def _load_section_file(self, file):
         '''
@@ -1494,8 +1638,9 @@ class SectionMaker:
           - transect: field you gave the routine at x, y
         '''
         out = {}
-        if data.shape[0] != self.node_number or data.shape[0] != self.cell_number: 
+        if data.shape[0] != self.node_number or data.shape[0] != self.cell_number:
             data = data.T
+
         sigma = self._check_if_siglay_or_siglev(data)
         grid = self._check_if_cell_or_node(data)
         self._initialize_section(section_file, res, store_transect_img, sigma, grid) # TBD: in here, find way to remove points outside of the domain?
