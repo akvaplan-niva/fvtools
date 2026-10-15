@@ -469,9 +469,6 @@ Vertical layers
         '''
         Interpolate bathymetry to mesh, smooth it, write .dat input files
         '''
-        print('- Reading the sigma file to check if it contains valid information')
-        self._check_that_sigmafile_is_valid(self.sigmafile)
-
         print('- Compute nbsn, ntsn')
         self.setup_metrics()
         
