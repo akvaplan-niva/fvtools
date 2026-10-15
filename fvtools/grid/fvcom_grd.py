@@ -1134,12 +1134,15 @@ class OBC:
 
     @property
     def nodestrings(self):
-        '''Each OBC nodestring stored as numpy arrays in a list [np.array(nodestring1), np.array(nodestring2), ...]'''
-        if not hasattr(self, '_nodestrings'):
-            if any(self.obc_nodes):
-                self._nodestrings = self._get_nodestrings(self.obc_nodes)
-            else:
-                self._nodestrings = []
+        """
+        Ordered open boundary node sequences.
+        """
+        if not hasattr(self, "_nodestrings"):
+            self._nodestrings = (
+                self._get_nodestrings(self.obc_nodes)
+                if len(self.obc_nodes) > 0
+                else []
+            )
         return self._nodestrings
 
     @nodestrings.setter
