@@ -1497,7 +1497,7 @@ class SectionMaker:
         z_grid -= zeta[:, None] * (1.0 + sigma[:, [-1]])
 
         # - Stick the upper level to the sea surface, not to the uppermost siglay point
-        z_grid[:, 0] = zeta[:, None]
+        z_grid[:, 0] = zeta
 
         # Interpolate each vertical level to the transect
         return self._interpolate_3D(z_grid)
