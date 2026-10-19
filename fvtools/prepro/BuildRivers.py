@@ -917,7 +917,7 @@ class FVCOM_rivers(CropRivers):
                 f.write(f' RIVER_GRID_LOCATION = {self.mesh_location[i]+1},\n')
                 vertical_dist = np.array2string(
                         np.round(
-                            -np.diff(self.M.siglevc[self.mesh_location[i],:]),
+                            -np.diff(self.M.siglev_c[self.mesh_location[i],:]),
                             6
                             ), 
                             separator = ' ', 
