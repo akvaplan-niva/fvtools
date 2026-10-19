@@ -2683,6 +2683,7 @@ class LoadNest:
             except:
                 pass
         else:
+            self.info = {}
             self.casename = 'FVCOM experiment'
 
 class NestROMS2FVCOM:
