@@ -1026,7 +1026,7 @@ def show_forcing(obj, M, Rivers):
     plt.figure()
     M.georeference()
     plt.plot(obj.x_land, obj.y_land, 'g.', label = 'land nodes', zorder = 1)
-    plt.scatter(obj.xriv, obj.yriv, np.mean(obj.RiverTransport, axis = 0), c = np.mean(obj.RiverTransport, axis = 0), zorder = 5, transform = Rivers.crs)
+    plt.scatter(obj.xriv, obj.yriv, s = np.mean(obj.RiverTransport, axis = 0), c = np.mean(obj.RiverTransport, axis = 0), zorder = 5, transform = Rivers.crs)
     plt.title('Average transport')
     plt.axis('equal')
     plt.colorbar(label = r'm$^3$ s$^{-1}$')
