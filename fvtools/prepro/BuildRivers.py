@@ -101,7 +101,7 @@ async def main(start, stop, vassdrag, mesh_dict, info = None):
     Forcing.connect_to_mesh(M)
 
     # - Write to netCDF, write RiverNamelist.nml
-    print('\n- Write forcing to file')
+    print('\nWrite forcing to file')
     Forcing.dump()
     Forcing.write_namelist()
 
@@ -815,6 +815,7 @@ class FVCOM_rivers(CropRivers):
         Write the riverdata.nc file for river forcing
         """
         # Initialize file
+        print(f'Writing input/riverdata.nc')
         with netCDF4.Dataset('input/riverdata.nc', 'w') as d:
             # Set dimensions
             d.createDimension('time', None)
@@ -913,11 +914,13 @@ class FVCOM_rivers(CropRivers):
         with open(namelist, 'w+') as f:
             print(f'  - Writing namelist for {len(self.river_names)} rivers')
             for i, river in enumerate(self.river_names):
+                print(i)
                 river = self.fix_nordic(river)
                 f.write(' &NML_RIVER\n')
                 f.write(f" RIVER_NAME = '{river}',\n")
                 f.write(f" RIVER_FILE = '{riverfile}',\n")
                 f.write(f' RIVER_GRID_LOCATION = {self.mesh_location[i]+1},\n')
+                print('vert')
                 vertical_dist = np.array2string(
                         np.round(
                             -np.diff(self.M.siglev_c[self.mesh_location[i],:]),
@@ -928,6 +931,7 @@ class FVCOM_rivers(CropRivers):
                             precision = 5, 
                             floatmode = 'fixed'
                     ).replace('\n',' ')[1:-1]
+                print('done vert')
                 f.write(f' RIVER_VERTICAL_DISTRIBUTION = {vertical_dist}\n')
                 f.write('/\n')
 
