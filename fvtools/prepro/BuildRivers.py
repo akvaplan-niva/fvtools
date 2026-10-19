@@ -911,27 +911,22 @@ class FVCOM_rivers(CropRivers):
         """
         Write a namelist to accompany the netCDF file
         """
+        difference = np.round(-np.diff(self.M.siglev_c, axis = 1), 6)
         with open(namelist, 'w+') as f:
             print(f'  - Writing namelist for {len(self.river_names)} rivers')
             for i, river in enumerate(self.river_names):
-                print(i)
                 river = self.fix_nordic(river)
                 f.write(' &NML_RIVER\n')
                 f.write(f" RIVER_NAME = '{river}',\n")
                 f.write(f" RIVER_FILE = '{riverfile}',\n")
                 f.write(f' RIVER_GRID_LOCATION = {self.mesh_location[i]+1},\n')
-                print('vert')
                 vertical_dist = np.array2string(
-                        np.round(
-                            -np.diff(self.M.siglev_c[self.mesh_location[i],:]),
-                            6
-                            ), 
-                            separator = ' ', 
-                            edgeitems = 6,
-                            precision = 5, 
-                            floatmode = 'fixed'
-                    ).replace('\n',' ')[1:-1]
-                print('done vert')
+                        difference[self.mesh_location[i],:], 
+                        separator = ' ', 
+                        edgeitems = 6,
+                        precision = 5, 
+                        floatmode = 'fixed'
+                    ).replace('\n','')[1:-1]
                 f.write(f' RIVER_VERTICAL_DISTRIBUTION = {vertical_dist}\n')
                 f.write('/\n')
 
