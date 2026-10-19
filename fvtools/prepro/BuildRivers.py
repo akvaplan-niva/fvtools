@@ -691,7 +691,7 @@ class FVCOM_rivers(CropRivers):
             transform = ccrs.epsg(int(self.info['river_projection'].split(':')[-1]))
             )
         plt.legend()
-        #plt.show(block = False)
+        plt.show(block = False)
 
     def merge_rivers(self):
         """
