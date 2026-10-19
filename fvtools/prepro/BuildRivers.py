@@ -100,16 +100,16 @@ async def main(start, stop, vassdrag, mesh_dict, info = None):
     print('\nConnect rivers to the mesh')
     Forcing.connect_to_mesh(M)
 
-    # 4. Do a simple quality control, and write the necessary forcing files
+    # - Write to netCDF, write RiverNamelist.nml
+    Forcing.dump()
+    Forcing.write_namelist()
+
+    # Do a simple quality control, and write the necessary forcing files
     # - Show the rivers we'll use, and the values they will force FVCOM with
     print('\nFinished, plotting the forcing')
     M.re_project(info['grid_projection'])
     show_forcing(Forcing, M, Positions)
     M.re_project(info['river_projection'])
-
-    # - Write to netCDF, write RiverNamelist.nml
-    Forcing.dump()
-    Forcing.write_namelist()
 
 def get_input(river_data_path = '/nird/datapeak/NS9067K/store/fvcom-setup/Rivers'):
     """
