@@ -139,7 +139,7 @@ def get_input(river_data_path = '/nird/datapeak/NS9067K/store/fvcom-setup/Rivers
         'Isplit': 8,
         'tideamp': 1,
         'rivertemp': f'{river_data_path}/Temperature/',
-        'runoff': f'{river_data_path}/Niva_1990-2024_2018v20.05/',
+        'runoff': f'{river_data_path}/Niva_2025_2018v20.05/',
         'riverpositions': f'{river_data_path}/RiverPositions/river_positions.csv',
         'minrcoef': 0.3,
         'river_projection': 'epsg:32633'
