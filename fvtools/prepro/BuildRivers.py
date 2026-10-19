@@ -101,6 +101,7 @@ async def main(start, stop, vassdrag, mesh_dict, info = None):
     Forcing.connect_to_mesh(M)
 
     # - Write to netCDF, write RiverNamelist.nml
+    print('\n- Write forcing to file')
     Forcing.dump()
     Forcing.write_namelist()
 
@@ -910,6 +911,7 @@ class FVCOM_rivers(CropRivers):
         Write a namelist to accompany the netCDF file
         """
         with open(namelist, 'w+') as f:
+            print(f'  - Writing namelist for {len(self.river_names)} rivers')
             for i, river in enumerate(self.river_names):
                 river = self.fix_nordic(river)
                 f.write(' &NML_RIVER\n')
