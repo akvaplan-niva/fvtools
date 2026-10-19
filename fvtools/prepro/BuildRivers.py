@@ -814,7 +814,7 @@ class FVCOM_rivers(CropRivers):
         Write the riverdata.nc file for river forcing
         """
         # Initialize file
-        with netCDF4.Dataset('riverdata.nc', 'w') as d:
+        with netCDF4.Dataset('input/riverdata.nc', 'w') as d:
             # Set dimensions
             d.createDimension('time', None)
             d.createDimension('rivers', len(self.xriv))
@@ -905,7 +905,7 @@ class FVCOM_rivers(CropRivers):
         this_name = this_name.replace('Æ','E')
         return this_name
 
-    def write_namelist(self, namelist = 'RiverNamelist.nml', riverfile = 'riverdata.nc'):
+    def write_namelist(self, namelist = 'input/RiverNamelist.nml', riverfile = 'riverdata.nc'):
         """
         Write a namelist to accompany the netCDF file
         """
@@ -1025,8 +1025,14 @@ def show_forcing(obj, M, Rivers):
     """
     plt.figure()
     M.georeference()
-    plt.plot(obj.x_land, obj.y_land, 'g.', label = 'land nodes', zorder = 1)
-    plt.scatter(obj.xriv, obj.yriv, s = np.mean(obj.RiverTransport, axis = 0), c = np.mean(obj.RiverTransport, axis = 0), zorder = 5, transform = Rivers.crs)
+    plt.plot(obj.x_land, obj.y_land, 'k.', label = 'land nodes', zorder = 1)
+    plt.scatter(
+        obj.xriv, obj.yriv, 
+        s = np.mean(obj.RiverTransport, axis = 0), 
+        c = np.mean(obj.RiverTransport, axis = 0), 
+        zorder = 5, 
+        transform = Rivers.crs
+        )
     plt.title('Average transport')
     plt.axis('equal')
     plt.colorbar(label = r'm$^3$ s$^{-1}$')

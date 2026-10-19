@@ -2162,7 +2162,6 @@ class PlotFVCOM:
         '''
         Automatically draw a geo-grid over the extent (lonmin, lonmax, latmin, latmax)
         '''
-        import cartopy.crs as ccrs
         ax = plt.gca()
         ax.set_extent(extent, crs=ccrs.PlateCarree(globe=ccrs.Mercator().globe))
         gl = ax.gridlines(ccrs.PlateCarree(globe=ccrs.Mercator().globe), draw_labels=True)         
@@ -2206,7 +2205,6 @@ class PlotFVCOM:
         
         '''
         import matplotlib.colors as colors
-        import matplotlib.cm as cm
 
         vmin = vmin if vmin is not None else data.min()
 
