@@ -212,7 +212,7 @@ class GridLoader:
             raise ValueError("The number of depth values must match the number of grid nodes")
 
         # setup_sigma expects KBM1, not KB.
-        result = setup_sigma(depth=depth, n_layers=kb - 1,stype=stype,**options)
+        result = setup_sigma(depth=depth, n_layers=kb - 1, stype=stype, **options)
 
         self.siglev = result["z"]
         self.siglay = result["zz"][:, :kb - 1]
