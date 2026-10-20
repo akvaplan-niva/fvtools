@@ -118,7 +118,7 @@ def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother =
     Restarter = Roms2FVCOMRestart(restartfile, N4, M.tri, variables, latlon, verbose=True) 
     timestep = Restarter.download(variables = variables)
     Restarter.dump(timestep, variables = variables)
-    print('\n- Fin.')
+    print('\nFin.')
 
 class N4DEPTH:
     '''
