@@ -145,7 +145,7 @@ class MatchTopo:
         # Make copy of FVCOM bathymetry, set depth in the "to change range" equal to ROMS bathy
         h_coarse = np.copy(self.M.h)
         h_coarse[np.isnan(h_coarse)] = self.M.h[np.isnan(h_coarse)]
-        h_coarse[self.nodes_to_change] = np.sum(self.COARSE.h_rho[self.COARSE.fv_rho_mask][N4B.rho_index] * N4B.rho_coef, axis=1)
+        h_coarse[self.nodes_to_change] = np.sum(self.COARSE.h_rho[self.COARSE.fv_rho_mask][N4B.rho_index] * N4B.rho_coef, axis = 1)
 
         # Update the nodes by to their distance from the obc
         self.M.h  = h_coarse*self.weight + self.M.h*(1 - self.weight)
@@ -169,6 +169,7 @@ class MatchTopo:
         '''
         First to FVCOM readable input file, then update the M.npy file with the correct bathymetry
         '''
+        # Dump bathymetry to forcing and to the M object
         self.M.write_bath(filename = f"./input/{self.M.info['casename']}_dep.dat", latlon = self.latlon)
         print('- Updating M.npy with the new bathymetry')
         self.M.info['true if updated by roms_nesting_fg'] = True # for later
