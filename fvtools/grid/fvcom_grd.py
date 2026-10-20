@@ -2696,7 +2696,7 @@ class NestROMS2FVCOM:
         w1  = 2.5e-4
         w2  = 2.5e-5
         '''
-        self.x_obc, self.y_obc = np.concat(M.x_obc), np.concat(M.y_obc)
+        self.x_obc, self.y_obc = np.concatenate(M.x_obc), np.concatenate(M.y_obc)
         dst_node = self._distance_to_nearest_obc(self.xn[:,0], self.yn[:,0])
         dst_cell = self._distance_to_nearest_obc(self.xc, self.yc)
         self._compute_weights(w1, w2, dst_node, dst_cell)

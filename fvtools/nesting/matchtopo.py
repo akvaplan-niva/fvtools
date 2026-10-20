@@ -112,6 +112,9 @@ class MatchTopo:
 
         # Update the nodes by to their distance from the obc
         self.M.h  = h_coarse*self.weight + self.M.h*(1 - self.weight)
+
+        # Re-calculate the sigma distribution from the input file, as it can (when using the SOUZA option) be depth dependent
+        self.M.read_sigma()
         self.match_depth_in_nest_and_model()
 
         # Store the smoothed bathymetry to the mesh (ends up in casename_dep.dat)
@@ -149,10 +152,10 @@ class MatchTopo:
 
         # Update the nodes by to their distance from the obc
         self.M.h  = h_coarse*self.weight + self.M.h*(1 - self.weight)
-        self.match_depth_in_nest_and_model()
 
         # Re-calculate the sigma distribution from the input file, as it can (when using the SOUZA option) be depth dependent
         self.M.read_sigma()
+        self.match_depth_in_nest_and_model()
 
         # Store the smoothed bathymetry to the mesh (ends up in casename_dep.dat)
         self.store_bathymetry()
@@ -160,10 +163,13 @@ class MatchTopo:
 
     def match_depth_in_nest_and_model(self):
         '''
-        Ensures that the nest and the mother model has the same bathymetry
+        Ensures that the nest and the mother model has the same bathymetry, and the same sigma levels
+        (the nest copied them from M before the depth changed, and SOUZA levels depend on depth)
         '''
         ind = self.M.find_nearest(self.NEST.x, self.NEST.y)
         self.NEST.h = self.M.h[ind]
+        self.NEST.siglev = self.M.siglev[ind, :]
+        self.NEST.siglay = self.M.siglay[ind, :]
 
     def store_bathymetry(self):
         '''

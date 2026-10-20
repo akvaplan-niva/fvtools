@@ -177,6 +177,22 @@ class ROMSbase(ROMSdepths, ROMSCropper):
         - stretching functions (for rho and w points)
         - angle between XI-axis and east
         '''
+        # Thredds can refuse a request for a while (e.g. HTTP 429), retry before giving up
+        retries, wait = 5, 30
+        for attempt in range(retries):
+            try:
+                self._read_grid_fields(path)
+                return
+            except (RuntimeError, OSError) as error:
+                if attempt == retries - 1:
+                    raise
+                print(f'  - could not read the grid from {path} ({error!r}), trying again in {wait*(attempt+1)} s')
+                time_mod.sleep(wait*(attempt+1))
+
+    def _read_grid_fields(self, path):
+        '''
+        Read the grid fields listed in load_grid_from_nc
+        '''
         load_position_fields = [
             'lon_rho', 'lat_rho', 
             'lat_u', 'lat_v', 
@@ -189,19 +205,40 @@ class ROMSbase(ROMSdepths, ROMSCropper):
             ]
         with Dataset(path, 'r') as ncdata:
             for load in load_position_fields:
-                try:
-                    setattr(self, load, ncdata.variables.get(load)[:])
-                except:
-                    if load == 'Vstretch':
-                        setattr(self, load, ncdata.variables.get('Vstretching')[:])
-                    else:
-                        raise TypeError(f'{load} is not available in {path}.')
+                var = ncdata.variables.get(load)
+                if var is None and load == 'Vstretch':
+                    var = ncdata.variables.get('Vstretching')
+                if var is None:
+                    raise TypeError(f'{load} is not available in {path}.')
+                setattr(self, load, var[:])
 
             self.h_rho = self.__dict__.pop('h')
 
+            # True on land. Round first: files written with lossy compression (e.g. MET's NorKyst v3, ncks --ppc)
+            # can store water as 1.0000038 rather than 1
             load_mask = ['u', 'v', 'rho']
             for load in load_mask:
-                setattr(self, f'{load}_mask', ((ncdata.variables.get(f'mask_{load}')[:]-1)*(-1)).astype(bool))
+                setattr(self, f'{load}_mask', np.round(np.asarray(ncdata.variables.get(f'mask_{load}')[:])) == 0)
+
+    def test_ncfile(self, file, min_steps = 24, retries = 4, wait = 15):
+        '''
+        Check that the file opens and holds a complete day. Errors when opening it (e.g. HTTP 429 from thredds)
+        are retried before the date is declared missing.
+        '''
+        for attempt in range(retries):
+            try:
+                with Dataset(file, 'r') as d:
+                    n_steps = len(d.variables['ocean_time'][:])
+                break
+            except FileNotFoundError as error:
+                raise NoAvailableData(f'{file} does not exist') from error
+            except Exception as error:
+                if attempt == retries - 1:
+                    raise NoAvailableData(f'could not open {file} ({error!r})') from error
+                time_mod.sleep(wait*(attempt+1))
+
+        if n_steps < min_steps:
+            raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
 
     def get_x_y_z(self):
         '''
@@ -237,14 +274,6 @@ class METNorKystV2(ROMSbase):
         day         = '{:02d}'.format(date.day)
         return f'{https}{year}{month}{day}.nc'
 
-    def test_ncfile(self, file):
-        try:
-            with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
-                    raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
-        except:
-            raise NoAvailableData
-
 class METNorKystV3(ROMSbase):
     '''Routines to check if MET-NorKyst v3 data is available'''
     def __str__(self):
@@ -268,14 +297,6 @@ class METNorKystV3(ROMSbase):
         day         = '{:02d}'.format(date.day)
         return f'{https}{year}/{month}/{day}/norkyst800_his_sdepth_{year}{month}{day}T00Z_m00_AN.nc'
     
-    def test_ncfile(self, file):
-        try:
-            with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
-                    raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
-        except:
-            raise NoAvailableData
-
 class NorShelf(ROMSbase):
     '''
     for accessing NorShelf data
@@ -374,14 +395,6 @@ class IMRNorFjords(ROMSbase):
         file = self.get_norkyst_local(date)
         self.test_ncfile(file)
         return file
-
-    def test_ncfile(self, file):
-        try:
-            with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
-                    raise NoAvailableData(f'{file} does not have a complete timeseries')
-        except:
-            raise NoAvailableData
 
     def get_norkyst_local(self, date):
         '''
