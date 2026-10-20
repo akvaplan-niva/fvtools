@@ -124,8 +124,10 @@ class FillGaps:
     
     @cached_property
     def original_time(self):
+        # From Itime/Itime2, like new_time. The single precision 'time' is only good to a few minutes, which made
+        # the time interpolation change temperature and salinity even where no data was missing
         with Dataset(self.original_file, 'r') as d:
-            time = d['time'][:]
+            time = date2num(num2date(Itime=d['Itime'][:], Itime2=d['Itime2'][:]))
         return time
 
     @cached_property
