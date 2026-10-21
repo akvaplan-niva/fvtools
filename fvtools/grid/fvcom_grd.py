@@ -2527,7 +2527,7 @@ Extended features through the mesh-connectivity TGE (.T) class:
         self.verbose        = verbose
         self._static_depth  = static_depth
         self.info = {}
-        self.info['reference'] = {reference}
+        self.info['reference'] = reference
 
         if pathToFile is None:
             self._direct_initialization(x=x, y=y, lon = lon, lat = lat, tri = tri, h = h, siglay = siglay, siglev = siglev, 
