@@ -113,7 +113,7 @@ def get_animator():
         codec      = 'gif'
 
     elif 'imagemagick' in avail:
-        FuncAnimation = manimation.writers['imagemagic']
+        FuncAnimation = manimation.writers['imagemagick']
         codec      = 'gif'
 
     elif 'html' in avail:
@@ -244,8 +244,11 @@ class UVmov:
         else:
             self.ufv = self.M.load_netCDF(self.fl.path[i], 'u', self.fl.index[i], sig = self.sig)
             self.vfv = self.M.load_netCDF(self.fl.path[i], 'v', self.fl.index[i], sig = self.sig)
+
+            if self.z is not None:
+                self.interpolate_to_z()
         
-        # fvcom_streamlines should not be given nans, hence we set to zero
+        # fvcom_streamlines should not be given nans, so we stop the streamlines at nans (velocity = 0)
         if np.isnan(self.ufv).any():
             naninds = np.where(np.isnan(self.ufv))[0]
             self.ufv[naninds] = 0
@@ -344,7 +347,7 @@ def allFiles(folder):
     rawlist = os.listdir(folder)
     ncfiles = [file for file in rawlist if file[-3:] == '.nc' and 'restart' not in file]
     ncfiles.sort()
-    ncfiles = [folder + file for file in ncfiles]
+    ncfiles = [os.path.join(folder, file) for file in ncfiles]
     return ncfiles
 
 def elements(array):

@@ -84,15 +84,15 @@ def main(folder = None,
     kwargs['time'], kwargs['dates'], kwargs['List'], kwargs['index'], kwargs['cb'] = parse_input(**kwargs)
 
     # Plot surface fields
-    if kwargs['sigma']:
+    if kwargs['sigma'] is not None:
         surface_movie(**kwargs)
 
     # Plot fields interpolated to constant z-levels
-    if kwargs['z']:
+    if kwargs['z'] is not None:
         zlevel_movie(**kwargs)
 
     # Plot section fields
-    if kwargs['section']:
+    if kwargs['section'] is not None and kwargs['section'] is not False:
         section_movie(**kwargs)
 
     print('--> Done.')
@@ -168,7 +168,7 @@ def surface_movie(**kwargs):
     MovieWriter, codec = get_animator()
 
     if not kwargs['mname']:
-        mname = mmaker.M.casename
+        kwargs['mname'] = mmaker.M.casename
 
     for field in kwargs['var']:
         mmaker.var    = field
@@ -192,7 +192,7 @@ def surface_movie(**kwargs):
         writer = MovieWriter(fps = kwargs['fps'])
 
         # Set framerate, write the movie
-        write_movie(mmaker, anim, f'{mname}_sigma_{kwargs["sigma"]}', field, codec, writer)
+        write_movie(mmaker, anim, f'{kwargs["mname"]}_sigma_{kwargs["sigma"]}', field, codec, writer)
 
 def zlevel_movie(**kwargs):
     '''
@@ -204,7 +204,7 @@ def zlevel_movie(**kwargs):
     mmaker.sigma = None
 
     if not kwargs['mname']:
-        mname = mmaker.M.casename
+        kwargs['mname'] = mmaker.M.casename
 
     MovieWriter, codec = get_animator()
 
@@ -227,7 +227,7 @@ def zlevel_movie(**kwargs):
             cache_frame_data = False
             )
         writer = MovieWriter(fps = kwargs['fps'])
-        write_movie(mmaker, anim, f'{mname}_{kwargs["z"]}m_depth', field, codec, writer)
+        write_movie(mmaker, anim, f'{kwargs["mname"]}_{kwargs["z"]}m_depth', field, codec, writer)
 
 def section_movie(**kwargs):
     '''
@@ -240,10 +240,10 @@ def section_movie(**kwargs):
     print('- Get grid info, section points and triangulation')
     M = FVCOM_grid(kwargs['List'][0], verbose = False, reference = kwargs['reference'], static_depth = True)
     if kwargs['section'] is True:
-        section = None
+        kwargs['section'] = None
 
     if not kwargs['mname']:
-        mname = M.casename
+        kwargs['mname'] = M.casename
 
     print('- Prepare the section')
     M.prepare_section(section_file = kwargs['section'], res = kwargs['section_res'], store_transect_img = True)
@@ -292,7 +292,7 @@ def section_movie(**kwargs):
             cache_frame_data = False
             )
         writer = MovieWriter(fps = kwargs['fps'])
-        write_movie(mmaker, anim, f'{mname}_section', field, codec, writer)
+        write_movie(mmaker, anim, f'{kwargs["mname"]}_section', field, codec, writer)
 
 #                                  Helper functions
 # --------------------------------------------------------------------------------------------------
@@ -396,7 +396,7 @@ def allFiles(folder):
     rawlist = os.listdir(folder)
     ncfiles = [file for file in rawlist if file[-3:] == '.nc' and 'restart' not in file]
     ncfiles.sort()
-    ncfiles = [folder + file for file in ncfiles]
+    ncfiles = [os.path.join(folder, file) for file in ncfiles]
     return ncfiles
 
 def qc_fileList(files, var, start, stop, sigma = None, nlevels = None):
@@ -660,8 +660,7 @@ class HorizontalMaker(AnimationFields, GeoReference):
             print('  -> Failed to download georeference, the background will not be shaded.')
 
         if 'vorticity' in var or 'pv' in var:
-            import grid.tge as tge
-            self.T = tge.main(self.M, verbose = True)
+            self.T = self.M.T
             self.T.get_art1(verbose = False)
 
         self._wetndry = True
@@ -712,15 +711,18 @@ class HorizontalMaker(AnimationFields, GeoReference):
         '''
         self.bar.update(i)
         self.i = i
-        if self.cb[self.var]['norm'] is not None:
-            plt.clf()
+        plt.clf()
+
         if self.gp is not None:
             plt.imshow(self.gp.img, extent = self.gp.extent)
+
         outdata = self.M.interpolate_to_z(self.field, z = self.z)
         cont = self.update_figure(
-            field = outdata, title = self.datetime[i].strftime('%m/%d, %H:%M:%S') + f' at {self.z} m depth'
+            field = outdata, 
+            title = self.datetime[i].strftime('%m/%d, %H:%M:%S') + f' at {self.z} m depth'
             )
         return cont
+    
 
     def update_figure(self, field=None, title=None):
         '''
