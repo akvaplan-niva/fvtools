@@ -163,7 +163,6 @@ class GridLoader:
             except:
                 pass
         else:
-            self.info = {}
             self.casename = 'FVCOM experiment'
 
     def _add_grid_parameters_txt(self):
@@ -2527,6 +2526,8 @@ Extended features through the mesh-connectivity TGE (.T) class:
         self.reference      = reference
         self.verbose        = verbose
         self._static_depth  = static_depth
+        self.info = {}
+        self.reference = {reference}
 
         if pathToFile is None:
             self._direct_initialization(x=x, y=y, lon = lon, lat = lat, tri = tri, h = h, siglay = siglay, siglev = siglev, 
@@ -2688,7 +2689,6 @@ class LoadNest:
             except:
                 pass
         else:
-            self.info = {}
             self.casename = 'FVCOM experiment'
 
 class NestROMS2FVCOM:
