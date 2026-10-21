@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------------------
 #                  Interpolate data from ROMS to the FVCOM nesting zone
 # -----------------------------------------------------------------------------------------
-import time
+import time as time_module
 import netCDF4
 import numpy as np
 import pandas as pd
@@ -119,7 +119,7 @@ def make_fileList(start, stop, ROMS):
     # ----
     for date in dates:
         # Pause two second to avoid being stopped
-        time.sleep(2)
+        time_module.sleep(2)
         try:
             file = ROMS.test_day(date)
 

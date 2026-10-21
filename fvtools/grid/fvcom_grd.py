@@ -163,6 +163,7 @@ class GridLoader:
             except:
                 pass
         else:
+            self.info = {}
             self.casename = 'FVCOM experiment'
 
     def _add_grid_parameters_txt(self):
@@ -2450,6 +2451,10 @@ Functions:
 
         Transect maker
             .prepare_section() - Create a transect by selecting points on a map, will store to casename_section.py
+            .prepare_section_interactive() 
+                - Same as prepare_section, but to be used in jupyter notebooks with %matplotlib widget.
+                - Must be called with await (e.g. await M.prepare_section_interactive())
+                                            
 
         Physics
             .get_coriolis()   - Computes the coriolis parameter
