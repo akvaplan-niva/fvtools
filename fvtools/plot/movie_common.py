@@ -592,8 +592,8 @@ def save_animation(
     output_stem : str or pathlib.Path
         Destination filename/path without the writer-specific extension.
     output_dir : str or pathlib.Path, optional
-        Directory for the movie. Defaults to the current working directory
-        unless output_stem itself includes a path. Created if necessary.
+        Directory for the movie. Defaults to Path.cwd(), regardless of
+        any directory in output_stem. Created if necessary.
     fps : float
         Frames per second, positive.
     progress_label : str
@@ -621,11 +621,13 @@ def save_animation(
             raise ValueError('Animation fps must be a positive finite number')
 
         Writer, extension = get_animator()
-        stem = Path(output_stem).expanduser()
-        if output_dir is not None:
-            # The explicit directory wins even when output_stem includes a path.
-            stem = Path(output_dir).expanduser() / stem.name
-        output_path = Path(f'{stem}.{extension}').resolve()
+        # Always use the Python/Jupyter working directory unless the caller
+        # explicitly selects another output directory.
+        destination = Path.cwd() if output_dir is None else Path(output_dir).expanduser()
+        filename = Path(output_stem).name
+        if not filename or filename in ('.', '..'):
+            raise ValueError('output_stem must specify a movie filename')
+        output_path = (destination / f'{filename}.{extension}').resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with MovieProgress(frame_count, progress_label) as progress:

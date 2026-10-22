@@ -11,6 +11,16 @@ from fvtools.plot.movie_common import (
     validate_plot_bounds, validate_vertical_selection, make_movie_axes,
 )
 
+# Synthetic section fields (not variable names in the FVCOM NetCDF file).
+SECTION_VELOCITY_FIELDS = {
+    'normal_velocity': 'normal',
+    'along_velocity': 'along',
+    'velocity_speed': 'speed',
+}
+
+# Only the speed magnitude is cell-centred. Vorticity and PV are nodal.
+CELL_VELOCITY_FIELDS = frozenset({'sp'})
+
 # ----------------------------------------------------------------------------------------
 #                     Create an animation from a number of files
 # ----------------------------------------------------------------------------------------
@@ -23,7 +33,7 @@ def main(folder=None, fname=None, filelist=None, var=None,
     For section normal-flow animations, specify section=... and
     var=['normal_velocity']; optional section_vlim is in m/s.
     """
-    options = _prepare_movie_options(
+    options = prepare_movie_options(
         folder=folder, fname=fname, filelist=filelist, var=var,
         sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
         section=section, section_res=section_res, fps=fps, mname=mname,
@@ -42,7 +52,7 @@ def main(folder=None, fname=None, filelist=None, var=None,
     return output_paths
 
 
-def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
+def prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
               sigma=None, z=None, xlim=None, ylim=None, start=None,
               stop=None, section=None, section_res=None, fps=12,
               mname=None, dpi=100, nlevels=20,
