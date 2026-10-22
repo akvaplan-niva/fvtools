@@ -13,6 +13,13 @@ from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.grid.tools import Filelist, num2date, date2num
 from fvtools.plot.geoplot import geoplot
 from datetime import datetime, timezone
+
+# Synthetic section fields (not variable names in the FVCOM NetCDF file).
+SECTION_VELOCITY_FIELDS = {
+    'normal_velocity': 'normal',
+    'along_velocity': 'along',
+    'velocity_speed': 'speed',
+}
     
 # ----------------------------------------------------------------------------------------
 #                     Create an animation from a number of files
@@ -68,6 +75,10 @@ def main(folder = None,
     section_res:  horizontal resolution of transect (if not specified, we will use 60 points)
     dpi:          pixels pr inch
     nlevels:      number of contour levels
+    section_vlim: optional positive m/s speed limit for section velocities;
+                  signed velocity uses [-section_vlim, section_vlim]
+    velocity_coordinates: 'east_north' (default) or 'projected' for u/v
+    section_neighbors: number of nearby cells used for the transect subgrid (default 12)
     Report issues/bugs to hes@akvaplan.niva.no
     '''
     # Copy the input to a dictionary
@@ -170,6 +181,8 @@ def surface_movie(**kwargs):
     '''
     Makes movies of tracer fields along constant sigma-levels
     '''
+    if any(f in SECTION_VELOCITY_FIELDS for f in kwargs['var']):
+        raise ValueError('Section velocity fields require section=...')
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
     mmaker = HorizontalMaker(**kwargs)
@@ -205,6 +218,8 @@ def zlevel_movie(**kwargs):
     '''
     Makes movies of tracer fields along constant z-levels
     '''
+    if any(f in SECTION_VELOCITY_FIELDS for f in kwargs['var']):
+        raise ValueError('Section velocity fields require section=...')
     # Dump to the movie maker
     print('\nFeeding data to the movie maker')
     mmaker = HorizontalMaker(**kwargs)  
@@ -235,6 +250,54 @@ def zlevel_movie(**kwargs):
         writer = MovieWriter(fps = kwargs['fps'])
         write_movie(mmaker, anim, f'{mname}_{kwargs["z"]}m_depth', field, codec, writer)
 
+def _set_section_velocity_colorbars(mmaker, fields, vlim, nlevels):
+    """Use one symmetric colour scale across all section frames.
+
+    If no explicit limit is supplied, estimate from first/middle/last
+    timestep (a fast approximation, not a guaranteed global maximum).
+    """
+    vel_fields = [f for f in fields if f in SECTION_VELOCITY_FIELDS]
+    if not vel_fields:
+        return
+    if vlim is not None:
+        if not np.isscalar(vlim) or not np.isfinite(vlim) or vlim <= 0:
+            raise ValueError('section_vlim must be a positive finite number in m/s')
+        limit = float(vlim)
+    else:
+        sample_indices = np.unique(np.linspace(0, len(mmaker.files)-1, 3, dtype=int))
+        samples = []
+        with mmaker.M.netcdf_session():
+            for j in sample_indices:
+                mmaker.M.zeta = mmaker.M.load_netCDF(
+                    mmaker.files[j], 'zeta', mmaker.index[j]
+                )
+                vel = mmaker.M.load_netCDF(
+                    mmaker.files[j], ('u', 'v'), mmaker.index[j]
+                )
+                out = mmaker.M.get_section_velocity(
+                    vel['u'], vel['v'],
+                    velocity_coordinates=mmaker.velocity_coordinates
+                )
+                for field in vel_fields:
+                    a = np.asarray(out[SECTION_VELOCITY_FIELDS[field]])
+                    a = np.abs(a[np.isfinite(a)])
+                    if a.size:
+                        samples.append(a.max())
+        limit = max(float(np.max(samples)), 1e-3) if samples else 0.1
+        print(f'- Sampled section velocity colour scale: {limit:.3g} m/s '
+              '(first/middle/last frames)')
+
+    for field in vel_fields:
+        cfg = mmaker.cb[field]
+        cfg['label'] = 'm/s'
+        cfg['extend'] = 'both'
+        cfg['cmap'] = cmo.cm.speed if field == 'velocity_speed' else cmo.cm.balance
+        cfg['colorticks'] = np.linspace(
+            0 if field == 'velocity_speed' else -limit,
+            limit, max(3, int(nlevels))
+        )
+
+
 def section_movie(**kwargs):
     '''
     Plot movies from cross-sections
@@ -252,18 +315,20 @@ def section_movie(**kwargs):
     print('- Prepare the section')
     M.prepare_section(section_file=section_file, res=kwargs['section_res'], store_transect_img=True)
 
-    # Crop grid to a sausage covering the transect (so we don't need to load excessive amounts of data to memory)
-    indices = []
-    for i, ii in zip(*M.cell_tree.query(np.vstack((M.x_sec, M.y_sec)).T, k = 6)): # I am not sure how many nodes we neeed
-        indices.extend(ii[i<np.inf].tolist())
-
-    # Temporarilly store x_sec and y_sec
+    # Keep enough neighbouring cells to triangulate CELL-centred u/v data
+    # across the section, while avoiding a full-domain read per frame.
+    n_neighbors = kwargs.get('section_neighbors', 12)
+    if (not isinstance(n_neighbors, (int, np.integer)) or n_neighbors < 3):
+        raise ValueError('section_neighbors must be an integer >= 3')
+    n_neighbors = min(int(n_neighbors), M.cell_number)
+    points = np.column_stack((M.x_sec, M.y_sec))
+    _, closest = M.cell_tree.query(points, k=n_neighbors)
+    indices = np.unique(np.asarray(closest).ravel())
     print('- Subgrid to deal with smaller data amounts')
-    C = M.subgrid(cells=np.unique(indices))
-    # C.x_sec, C.y_sec = M.x_sec, M.y_sec
+    C = M.subgrid(cells=indices)
 
-    # And re-prepare the section now that we have changed the grid
-    C.prepare_section(section_points=(M.x_sec, M.y_sec), res=kwargs['section_res'], store_transect_img=False)
+    # Reuse the EXACT same sampled positions, without resampling them.
+    C.x_sec, C.y_sec = M.x_sec.copy(), M.y_sec.copy()
     section = C.get_section_data(C.h)
 
     # Create the movie maker
@@ -275,6 +340,12 @@ def section_movie(**kwargs):
 
     # The vertical movie maker only needs to be aware of the cropped grid
     mmaker.M = C
+    mmaker.velocity_coordinates = kwargs.get('velocity_coordinates', 'east_north')
+    if any(f in SECTION_VELOCITY_FIELDS for f in kwargs['var']):
+        _set_section_velocity_colorbars(
+            mmaker, kwargs['var'], kwargs.get('section_vlim'),
+            kwargs.get('nlevels', 20)
+        )
 
     print('\nMovie maker:')
     for field in kwargs['var']:
@@ -327,6 +398,9 @@ def initialize_cb(file, var):
     for field in var:
         cb[field] = {}
         cb[field]['max'], cb[field]['min'] = -100, 100
+        if field in SECTION_VELOCITY_FIELDS:
+            cb[field]['units'] = 'm/s'
+            continue
         if field in ['pv', 'vorticity', 'sp']:
             continue
 
@@ -455,7 +529,7 @@ def qc_fileList(files, var, start, stop, sigma = None, nlevels = None):
 
             # To determine colorbar limits
             for field in var:
-                if field in ['vorticity', 'pv', 'sp']:
+                if field in ['vorticity', 'pv', 'sp'] or field in SECTION_VELOCITY_FIELDS:
                     continue
                 
                 if type(sigma) is not str and sigma is not None and field != 'zeta':
@@ -519,7 +593,7 @@ def parse_input(
         for file in [List[0], List[-1]]:
             with Dataset(file) as d:
                 for field in var:
-                    if field in ['vorticity', 'pv', 'sp']:
+                    if field in ['vorticity', 'pv', 'sp'] or field in SECTION_VELOCITY_FIELDS:
                         continue
                     
                     if type(sigma) is not str and sigma is not None and field != 'zeta':
@@ -770,22 +844,42 @@ class VerticalMaker(AnimationFields):
         self.bar.update(i)
         plt.clf()
         self.M.zeta = self.M.load_netCDF(self.files[i], 'zeta', self.index[i])
-        out = self.M.get_section_data(self.field)
-        cont = plt.contourf(
-            out['dst'], out['h'], out['transect'], 
-            cmap = self.cb[self.var]['cmap'], 
-            levels = self.cb[self.var]['colorticks'], 
-            extend = 'both'
+        if self.var in SECTION_VELOCITY_FIELDS:
+            uv = self.M.load_netCDF(
+                self.files[i], ('u', 'v'), self.index[i]
             )
+            out = self.M.get_section_velocity(
+                uv['u'], uv['v'],
+                velocity_coordinates=self.velocity_coordinates
+            )
+            field_data = out[SECTION_VELOCITY_FIELDS[self.var]]
+        else:
+            out = self.M.get_section_data(self.field)
+            field_data = out['transect']
 
-        # Plot the sigma layers on top to show the vertical resolution as well
-        plt.plot(self.sigma_distance(out), self.sigma_depth(out), c = 'grey', lw = 0.2)
+        # Physical section coordinates may be finite even for dry cells;
+        # masked values leave those regions blank without shifting the section.
+        field_data = np.ma.masked_invalid(field_data)
+        valid = field_data.count() > 0 and out['dst'].shape[0] > 1
+        if valid:
+            cont = plt.contourf(
+                out['dst'], out['h'], field_data,
+                cmap=self.cb[self.var]['cmap'],
+                levels=self.cb[self.var]['colorticks'],
+                extend='both'
+            )
+            plt.colorbar(cont, label=self.cb[self.var]['label'])
+        else:
+            plt.text(0.5, 0.5, 'No valid data for this time step',
+                     ha='center', va='center', transform=plt.gca().transAxes)
+
+        # Plot sigma layers on top to show vertical resolution.
+        plt.plot(self.sigma_distance(out), self.sigma_depth(out), c='grey', lw=0.2)
 
         # Settings
         if self.ylimit is not None:
             plt.ylim(self.ylimit)
 
-        plt.colorbar(cont, label = self.cb[self.var]['label'])
         plt.xlabel('km from start of transect')
         plt.ylabel('meter depth')
         plt.title(self.datetime[i].strftime('%m/%d, %H:%M:%S'))
