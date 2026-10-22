@@ -35,13 +35,15 @@ class GridLoader:
     def _direct_initialization(self, x = None, y = None, tri = None,
                                lon = None, lat = None,
                                h = None, siglay = None, siglev = None,
-                               obc_nodes = [], cropped_nodes = np.array(0), cropped_cells = np.array(0)):
+                               obc_nodes = None, cropped_nodes = np.array(0), cropped_cells = np.array(0)):
         '''
         Initialize a new FVCOM_grid object using known fields
         '''
         # Assertions to make sure that input is consistent, regardless of source
         assert tri.min() == 0, 'Triangulation is invalid'
-        assert type(obc_nodes) == list, 'obc_nodes must be given as a list'
+        if obc_nodes is None:
+            obc_nodes = []
+        assert isinstance(obc_nodes, list), 'obc_nodes must be given as a list'
         assert type(cropped_nodes) == np.ndarray, 'cropped nodes must be a numpy array'
         assert type(cropped_cells) == np.ndarray, 'cropped cells must be a numpy array'
         if h is not None: assert h.min() > 0, 'Minimum depth is invalid'
@@ -54,7 +56,7 @@ class GridLoader:
             self.x, self.y = np.squeeze(x), np.squeeze(y)
 
         if lon is None and lat is None:
-            self.lon, self.lat = np.zeros(x.shape), np.zeros(y.shape)
+            self.lon, self.lat = np.zeros(self.x.shape), np.zeros(self.y.shape)
         else:
             self.lon, self.lat = lon, lat
 
@@ -328,6 +330,20 @@ class InputCoordinates:
     @tri.setter
     def tri(self, var):
         self._tri = np.array(var)
+        self._invalidate_spatial_cache()
+
+    def _invalidate_spatial_cache(self):
+        """Discard geometry-dependent lookups after coordinate/topology changes.
+
+        Changes made *in place* (e.g. `M.x[:] = ...`) cannot be detected;
+        assign through the property instead.
+        """
+        for name in ('node_tree', 'cell_tree', '_ctri', '_latc', '_lonc',
+                     'boundary_nodes', 'coastline_nodes', 'cellstrings',
+                     '_T', '_cv', '_art1', '_nbsn', '_ntsn', '_nbve', '_ntve',
+                     '_nbe', '_nbse', '_nese', '_ISBCE', '_ISONB',
+                     'trs', '_section_weights_cache', '_section_vector_basis_cache'):
+            self.__dict__.pop(name, None)
 
     @property
     def x(self):
@@ -337,6 +353,7 @@ class InputCoordinates:
     @x.setter
     def x(self, var):
         self._x = np.array(var)
+        self._invalidate_spatial_cache()
     
     @property
     def y(self):
@@ -346,6 +363,7 @@ class InputCoordinates:
     @y.setter
     def y(self, var):
         self._y = np.array(var)
+        self._invalidate_spatial_cache()
 
     @property
     def lat(self):
@@ -355,6 +373,7 @@ class InputCoordinates:
     @lat.setter
     def lat(self, var):
         self._lat = np.array(var)
+        self.__dict__.pop('_latc', None)
 
     @property
     def lon(self):
@@ -364,6 +383,7 @@ class InputCoordinates:
     @lon.setter
     def lon(self, var):
         self._lon = np.array(var)
+        self.__dict__.pop('_lonc', None)
 
     @property
     def zeta(self):
@@ -610,27 +630,29 @@ class GridProximity:
     def node_number(self):
         return len(self.x)
 
-    @property
+    @cached_property
     def node_tree(self):
-        '''KDTree for nodes'''
-        return KDTree(np.array([self.x, self.y]).T)
+        """Lazily build and cache the node KDTree until coordinates change."""
+        return KDTree(np.column_stack((self.x, self.y)))
 
-    @property
+    @cached_property
     def cell_tree(self):
-        '''KDTree for cells'''
-        return KDTree(np.array([self.xc, self.yc]).T)
+        """Lazily build and cache the cell KDTree until the mesh changes."""
+        return KDTree(np.column_stack((self.xc, self.yc)))
 
-    def find_within(self, x, y, r = None, grid = 'node'):
-        '''
-        Find all grid points witin radius "r" (in meters) from the input points
-        grid: 'node' (default) or 'cell'
-        '''
-        query_points = np.array([x,y]).T 
-        inds = getattr(self, f'{grid}_tree').query_ball_point(query_points, r)
-        all_in_one_list = []
-        for l in inds:
-            all_in_one_list.extend(l)
-        return np.unique(all_in_one_list)
+    def find_within(self, x, y, r=None, grid='node'):
+        """Unique grid indices within radius `r` of one or more xy points.
+
+        Scalar x/y and equal-length coordinate arrays are both supported.
+        """
+        if grid not in ('node', 'cell'):
+            raise ValueError("grid must be 'node' or 'cell'")
+        if r is None or not np.isfinite(r) or r < 0:
+            raise ValueError('r must be a finite, non-negative radius')
+        x, y = np.broadcast_arrays(np.asarray(x), np.asarray(y))
+        points = np.column_stack((x.ravel(), y.ravel()))
+        hits = getattr(self, f'{grid}_tree').query_ball_point(points, r)
+        return np.asarray(sorted(set().union(*hits)), dtype=int)
 
     def isinside(self, x, y, x_buffer=0, y_buffer=0):
         '''
@@ -974,20 +996,20 @@ class CropGrid:
         return x[cropped_nodes], y[cropped_nodes], all_nodes[nv[cropped_cells]], np.array(cropped_nodes), cropped_cells
 
     def _return_valid_triangles(self, x, y, tri):
-        '''
-        Only return valid triangles
-        '''
-        _tri  = matplotlib.tri.Triangulation(x, y, tri)
-        _nbrs = _tri.neighbors
-        _nbrs[np.where(_nbrs > 0)] = 0
-        _illegal = np.where(np.sum(_nbrs, axis = 1)==-2)[0]
-        return np.array([element for element in range(tri.shape[0]) if element not in _illegal])
+        """Return indices of triangles without exactly two exterior edges.
+
+        This preserves the previous filtering rule while avoiding the
+        quadratic membership scan over all discarded triangles.
+        """
+        neighbors = matplotlib.tri.Triangulation(x, y, tri).neighbors
+        remove = np.count_nonzero(neighbors == -1, axis=1) == 2
+        return np.flatnonzero(~remove)
 
     def _update_obc(self):
         '''
         Update local land nodes, and local obc_nodes.
         '''
-        if any(self.coastline_nodes):
+        if len(self.coastline_nodes) > 0:
             ocean_obc_nodes, cells_connected_to_boundary = self._find_ocean_obc_nodes()
             self.obc_nodes = self._connect_ocean_obc_to_land(ocean_obc_nodes, cells_connected_to_boundary)
 
@@ -1552,8 +1574,9 @@ class SectionMaker:
         if section_file is None:
             self.write_section()
 
-        if hasattr(self, 'trs'):
-            delattr(self, 'trs')
+        self.__dict__.pop('trs', None)
+        self.__dict__.pop('_section_weights_cache', None)
+        self.__dict__.pop('_section_vector_basis_cache', None)
 
         if store_transect_img:
             self._plot_section_line()
@@ -1793,58 +1816,220 @@ class SectionMaker:
                     out[key] = out[key][not_horizontal, :]
         return out
 
+    def _section_velocity_basis(self, velocity_coordinates='east_north'):
+        """Unit tangent and normal in the velocity component coordinate frame.
+
+        x_sec/y_sec must be in a metric, projected CRS. For east_north,
+        rotate geographic east/north into grid x/y using short geodesic steps;
+        the resulting basis is cached across frames.
+        """
+        if velocity_coordinates not in ('east_north', 'projected'):
+            raise ValueError("velocity_coordinates must be 'east_north' or 'projected'")
+
+        xy = np.column_stack((self.x_sec, self.y_sec))
+        cache = self.__dict__.get('_section_vector_basis_cache')
+        if (cache is not None and cache['coordinates'] == velocity_coordinates
+                and cache['reference'] == self.reference
+                and np.array_equal(cache['xy'], xy)):
+            return cache['tangent_e'], cache['normal_e'], cache['tangent_n'], cache['normal_n']
+
+        if len(xy) < 2 or not np.isfinite(xy).all():
+            raise ValueError('Section requires at least two finite projected points')
+        from pyproj import CRS, Geod
+        crs = CRS.from_user_input(self.reference)
+        if not crs.is_projected or not all(axis.unit_conversion_factor and
+                                            np.isclose(axis.unit_conversion_factor, 1.0)
+                                            for axis in crs.axis_info[:2]):
+            raise ValueError('Section coordinates must use a projected CRS with metre units')
+
+        # A length-weighted central tangent is appropriate for an interpolated
+        # polyline. At sharp corners its normal is an average of both segments.
+        dx = np.gradient(xy[:, 0])
+        dy = np.gradient(xy[:, 1])
+        length = np.hypot(dx, dy)
+        if np.any(length <= 0):
+            raise ValueError('Section contains points with undefined tangent')
+        tx, ty = dx / length, dy / length
+        nx, ny = -ty, tx  # positive normal: left of start -> end
+
+        if velocity_coordinates == 'east_north':
+            lon, lat = self.Proj(xy[:, 0], xy[:, 1], inverse=True)
+            geod = Geod(ellps='WGS84')
+            lon_e, lat_e, _ = geod.fwd(lon, lat, np.full(len(xy), 90.0), np.full(len(xy), 10.0))
+            lon_n, lat_n, _ = geod.fwd(lon, lat, np.zeros(len(xy)), np.full(len(xy), 10.0))
+            xe, ye = self.Proj(lon_e, lat_e)
+            xn, yn = self.Proj(lon_n, lat_n)
+            e_dx, e_dy = xe - xy[:, 0], ye - xy[:, 1]
+            n_dx, n_dy = xn - xy[:, 0], yn - xy[:, 1]
+            e_norm = np.hypot(e_dx, e_dy)
+            n_norm = np.hypot(n_dx, n_dy)
+            if np.any(e_norm <= 0) or np.any(n_norm <= 0):
+                raise ValueError('Could not derive east/north vectors from CRS')
+            ex, ey = e_dx / e_norm, e_dy / e_norm
+            gx, gy = n_dx / n_norm, n_dy / n_norm
+            tangent_e, normal_e = tx * ex + ty * ey, nx * ex + ny * ey
+            tangent_n, normal_n = tx * gx + ty * gy, nx * gx + ny * gy
+        else:
+            tangent_e, normal_e, tangent_n, normal_n = tx, nx, ty, ny
+
+        self._section_vector_basis_cache = dict(
+            xy=xy.copy(), reference=self.reference, coordinates=velocity_coordinates,
+            tangent_e=tangent_e, normal_e=normal_e,
+            tangent_n=tangent_n, normal_n=normal_n,
+        )
+        return tangent_e, normal_e, tangent_n, normal_n
+
+    def get_section_velocity(self, u, v, velocity_coordinates='east_north'):
+        """Interpolate FVCOM 3-D cell velocities onto the current section.
+
+        Parameters
+        ----------
+        u, v : array-like
+            Cell-centred velocities with shape (sigma_layers, n_cells) or
+            (n_cells, sigma_layers). Normally read using load_netCDF.
+        velocity_coordinates : {'east_north', 'projected'}
+            'east_north' (default): u geographic east and v geographic north.
+            'projected': u/v already aligned to the projected mesh x/y axes.
+            Section x/y must be in metres in either case.
+
+        Returns
+        -------
+        dict
+            'normal', 'along', 'speed', 'u', 'v', 'h', 'dst', 'x', 'y'.
+            Arrays of velocity and physical z coordinate are indexed by
+            (section_point, sigma_layer). Positive normal is to the LEFT
+            looking from the first section point toward the last.
+            NaNs in either velocity component mask BOTH components.
+        """
+        def normalize(field, name):
+            arr = np.ma.filled(np.ma.asarray(field, dtype=float), np.nan)
+            layers = self.siglay.shape[1]
+            if arr.ndim != 2:
+                raise ValueError(f'{name} must be a 3-D FVCOM velocity field at one timestep')
+            if arr.shape == (layers, self.cell_number):
+                return arr.T
+            if arr.shape == (self.cell_number, layers):
+                return arr
+            raise ValueError(f'{name} has shape {arr.shape}; expected (sigma, cell) or (cell, sigma)')
+
+        u = normalize(u, 'u')
+        v = normalize(v, 'v')
+        if not hasattr(self, 'x_sec') or not hasattr(self, 'y_sec'):
+            raise ValueError('Call prepare_section() before get_section_velocity()')
+
+        self._initialize_section(None, None, False, 'siglay', 'c')
+        u_sec = self._interpolate_3D(u)
+        v_sec = self._interpolate_3D(v)
+
+        # Physical z of each SIGLAY midpoint. Unlike the visualization-only
+        # dpt_sec, this is NOT adjusted to pin the bottom at a fixed level.
+        # Masked/dry zeta must not change section geometry from frame to frame.
+        # Velocity is still masked there, but use zeta=0 to locate its grid layers.
+        safe_zeta = np.where(np.isfinite(self.zeta), self.zeta, 0.0)
+        zeta_cells = np.mean(safe_zeta[self.tri], axis=1)
+        z_cells = (zeta_cells[:, None]
+                   + (self.hc + zeta_cells)[:, None] * self.siglay_c)
+        z_sec = self._interpolate_3D(z_cells)
+
+        te, ne, tn, nn = self._section_velocity_basis(velocity_coordinates)
+        normal = u_sec * ne[:, None] + v_sec * nn[:, None]
+        along = u_sec * te[:, None] + v_sec * tn[:, None]
+        speed = np.hypot(u_sec, v_sec)
+
+        invalid = (~np.isfinite(u_sec) | ~np.isfinite(v_sec) | ~np.isfinite(z_sec))
+        for arr in (normal, along, speed, u_sec, v_sec):
+            arr[invalid] = np.nan
+
+        # Exclude only locations lacking GEOMETRY (not temporarily dry
+        # locations); prevents changing horizontal sampling across frames.
+        valid_rows = np.all(np.isfinite(z_sec), axis=1) & np.isfinite(self.dst_sec)
+        dst = np.broadcast_to(self.dst_sec[:, None], z_sec.shape)
+        return dict(
+            u=u_sec[valid_rows], v=v_sec[valid_rows],
+            normal=normal[valid_rows], along=along[valid_rows], speed=speed[valid_rows],
+            h=z_sec[valid_rows], dst=dst[valid_rows],
+            x=np.asarray(self.x_sec)[valid_rows], y=np.asarray(self.y_sec)[valid_rows],
+        )
+
     def _initialize_section(self, section_file, res, store_transect_img, sigma, grid):
         '''
         Prepare the section interpolators etc.
         '''
+        # A cached triangulation for node data must not be used for cell data.
+        if getattr(self, '_transect_grid', None) != grid:
+            self.__dict__.pop('trs', None)
+            self.__dict__.pop('_section_weights_cache', None)
         self._transect_sigma, self._transect_grid = sigma, grid
-        if not hasattr(self, 'x_sec') and not hasattr(self, 'y_sec'):
-            self.prepare_section(section_file = section_file, res = res, store_transect_img = store_transect_img)
+        if not (hasattr(self, 'x_sec') and hasattr(self, 'y_sec')):
+            self.prepare_section(section_file=section_file, res=res,
+                                 store_transect_img=store_transect_img)
         if not hasattr(self, 'trs'):
-            self.trs =  matplotlib.tri.Triangulation(
+            self.trs = matplotlib.tri.Triangulation(
                 getattr(self, f'x{self._transect_grid}'), 
                 getattr(self, f'y{self._transect_grid}'), 
                 triangles = getattr(self, f'{self._transect_grid}tri')
                 )
 
+    def _section_weights(self):
+        """Return cached triangle vertices/weights for the section points.
+
+        A triangulation lookup is needed only when the transect/grid changes,
+        not for every vertical level and every movie frame.
+        """
+        xy = np.column_stack((self.x_sec, self.y_sec))
+        cache = self.__dict__.get('_section_weights_cache')
+        if (cache is not None and cache['triangulation'] is self.trs
+                and np.array_equal(cache['xy'], xy)):
+            return cache['vertices'], cache['weights'], cache['inside']
+
+        triangle_ids = np.asarray(self.trs.get_trifinder()(
+            xy[:, 0], xy[:, 1]), dtype=int)
+        inside = triangle_ids >= 0
+        vertices = np.zeros((len(xy), 3), dtype=int)
+        weights = np.zeros((len(xy), 3), dtype=float)
+        if inside.any():
+            vertices[inside] = self.trs.triangles[triangle_ids[inside]]
+            v = vertices[inside]
+            x0, y0 = self.trs.x[v[:, 0]], self.trs.y[v[:, 0]]
+            x1, y1 = self.trs.x[v[:, 1]], self.trs.y[v[:, 1]]
+            x2, y2 = self.trs.x[v[:, 2]], self.trs.y[v[:, 2]]
+            xx, yy = xy[inside].T
+            denominator = ((y1 - y2) * (x0 - x2)
+                           + (x2 - x1) * (y0 - y2))
+            w0 = ((y1 - y2) * (xx - x2)
+                  + (x2 - x1) * (yy - y2)) / denominator
+            w1 = ((y2 - y0) * (xx - x2)
+                  + (x0 - x2) * (yy - y2)) / denominator
+            weights[inside] = np.column_stack((w0, w1, 1.0 - w0 - w1))
+
+        self._section_weights_cache = {
+            'triangulation': self.trs, 'xy': xy.copy(),
+            'vertices': vertices, 'weights': weights, 'inside': inside
+        }
+        return vertices, weights, inside
+
     def _interpolate_2D(self, field):
-        out_field = np.zeros((len(self.x_sec),))
-        out_field[:] = matplotlib.tri.LinearTriInterpolator(self.trs, field).__call__(self.x_sec, self.y_sec)
-        return out_field
+        """Interpolate a 1-D nodal/cell field to the fixed section."""
+        values = np.ma.filled(np.ma.asarray(field, dtype=float), np.nan)
+        if values.ndim != 1 or len(values) != len(self.trs.x):
+            raise ValueError('field must have one value per triangulation vertex')
+        vertices, weights, inside = self._section_weights()
+        out = np.full(len(self.x_sec), np.nan)
+        if inside.any():
+            out[inside] = np.sum(values[vertices[inside]] * weights[inside], axis=1)
+        return out
 
     def _interpolate_3D(self, field):
-        """
-        Horizontally interpolate a 3D field to the transect.
-
-        Parameters
-        ----------
-        field : np.ndarray
-            Array with shape (n_grid_points, n_vertical_levels).
-
-        Returns
-        -------
-        np.ndarray
-            Interpolated values with shape
-            (n_section_points, n_vertical_levels).
-            Points outside the triangulation are set to NaN.
-        """
-
-        npoints = len(self.x_sec)
-        nlevels = field.shape[1]
-
-        out = np.full((npoints, nlevels), np.nan)
-
-        for k in range(nlevels):
-            interpolator = matplotlib.tri.LinearTriInterpolator(
-                self.trs, field[:, k]
-            )
-
-            values = interpolator(
-                self.x_sec, self.y_sec
-            )
-
-            out[:, k] = np.ma.filled(values, np.nan)
-
+        """Interpolate (grid_point, level) data using cached section weights."""
+        values = np.ma.filled(np.ma.asarray(field, dtype=float), np.nan)
+        if values.ndim != 2 or values.shape[0] != len(self.trs.x):
+            raise ValueError('field must have shape (grid_point, level)')
+        vertices, weights, inside = self._section_weights()
+        out = np.full((len(self.x_sec), values.shape[1]), np.nan)
+        if inside.any():
+            out[inside] = np.einsum(
+                'pv,pvk->pk', weights[inside], values[vertices[inside]],
+                optimize=True)
         return out
 
 class ExportGrid:
@@ -2315,20 +2500,25 @@ class AnglesAndPhysics:
 
 class LegacyFunctions:
     def cell2node(self, fieldin):
-        '''Move data from cells to nodes
-        - adds its data from each cell to the nodes connected to it. Subsequently averages based on number of cells connected to each node.
-        '''
-        fieldout = np.zeros(self.node_number)
-        count = np.zeros(self.node_number)
-        for i in np.arange(self.cell_number):
-            n0, n1, n2 = [self.tri[i,j] for j in range(3)]
-            for n in [n0, n1, n2]:
-                fieldout[n] = fieldout[n] + fieldin[i]
-                count[n]+=1
-        fieldout = fieldout / count
-        return fieldout
+        """Average cell values at connected mesh nodes (equal cell weights).
 
-class FVCOM_grid(GridLoader, InputCoordinates, Coordinates, PropertiesFromTGE, LegacyPropertyAliases, CellTriangulation, FVCOMNetCDFIO,
+        Vectorized via bincount. Nodes without any attached cell return NaN.
+        """
+        values = np.asarray(fieldin, dtype=float)
+        if values.ndim != 1 or values.size != self.cell_number:
+            raise ValueError('fieldin must have one value per cell')
+        nodes = self.tri.ravel()
+        total = np.bincount(nodes, weights=np.repeat(values, 3),
+                            minlength=self.node_number)
+        count = np.bincount(nodes, minlength=self.node_number)
+        return np.divide(total, count, out=np.full(self.node_number, np.nan),
+                         where=count > 0)
+
+class OutputLoader(FVCOMNetCDFIO):
+    """FVCOM_grid NetCDF compatibility layer. See netcdf_io.FVCOMNetCDFIO."""
+
+
+class FVCOM_grid(GridLoader, InputCoordinates, Coordinates, PropertiesFromTGE, LegacyPropertyAliases, CellTriangulation, OutputLoader,
                  PlotFVCOM, ControlVolumePlotter, InterpolateToZ, LegacyFunctions, SectionMaker, ExportGrid, CropGrid, AnglesAndPhysics,
                  CoastLine, OBC, GridProximity):
     '''FVCOM grid class compatible with ApN FVCOM workflows, and Akvaplan-branch uk-fvcom.
@@ -2443,7 +2633,7 @@ Extended features through the mesh-connectivity TGE (.T) class:
                  lon = None, lat = None,
                  tri = None,
                  h = None, siglay = None, siglev = None,
-                 obc_nodes = [],
+                 obc_nodes = None,
                  cropped_nodes = np.array(0), cropped_cells = np.array(0)):
         '''
         pathToFile (if you want to read from a supported file format: 
