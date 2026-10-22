@@ -17,6 +17,7 @@ from matplotlib.patches import Polygon as mPolygon
 from scipy.spatial import cKDTree as KDTree
 from numba import njit
 from functools import cached_property
+from contextlib import contextmanager
 
 import asyncio
 import ipywidgets as widgets
@@ -1416,38 +1417,53 @@ class InterpolateToZ:
             interp_matrix = tools.make_interpolation_matrices(self.siglayz_uv, depth)
             setattr(self, f'interpolation_matrix_uv_{abs(int(depth))}_m', interp_matrix)
 
-    def interpolate_to_z(self, f, z, depths = None):
-        '''Interpolate data to user defined z-level
-        - f:       datafield
-        - z:       depth [m] to interpolate to f (positive number)
+    def interpolate_to_z(self, f, z, depths=None):
+        """Interpolate (sigma, location) values to z metres below surface.
 
-        Optional:
-        - depths:  depth of grid f. Positive downward. (since using a cached siglevz will be faster than forcing FVCOM_grid to find it each iteration)
-
-        Plot returned data using .plot_contours(data)
-        '''
+        Nearest-layer values are returned above the shallowest sigma point;
+        locations below the deepest valid sigma point return NaN. Exact
+        matches to a sigma depth are returned without interpolation.
+        """
+        f = self._as_array(f) if hasattr(self, '_as_array') else np.ma.filled(
+            np.ma.asarray(f, dtype=float), np.nan)
+        f = np.asarray(f, dtype=float)
         if depths is None:
-            for depth in ['siglevz', 'siglayz', 'siglevz_uv', 'siglayz_uv']:
-                depths = -getattr(self, depth).T
-                if f.shape == depths.shape:
-                    break
-                else:
-                    depths = np.empty(0)
-            assert depths.any(), 'Dimension does match siglev, siglay, siglev_center or siglay_center, try to transpose the input field'
+            candidates = ('siglayz', 'siglevz', 'siglayz_uv', 'siglevz_uv')
+            depths = next(( -np.asarray(getattr(self, attr)).T
+                            for attr in candidates
+                            if f.shape == getattr(self, attr).T.shape), None)
+            if depths is None:
+                raise ValueError('Field shape does not match sigma-depth coordinates')
+        depths = np.asarray(depths, dtype=float)
+        if f.ndim != 2 or f.shape != depths.shape:
+            raise ValueError('f and depths must have shape (sigma, location)')
+        if not np.isscalar(z) or not np.isfinite(z) or z < 0:
+            raise ValueError('z must be a nonnegative, finite depth')
 
-        # Find closest depth levels
-        depthsmax, depthsmin = np.copy(depths), np.copy(depths)
-        lt0 = (depths-z)<0
-        depthsmax[np.where(lt0)] = np.nan
-        depthsmin[np.where(lt0 == False)] = np.nan
-        depbot, deptop = np.nanmin(depthsmax, axis = 0), np.nanmax(depthsmin, axis = 0)
+        valid = np.isfinite(f) & np.isfinite(depths)
+        above = np.where(valid & (depths <= z), depths, -np.inf)
+        below = np.where(valid & (depths >= z), depths, np.inf)
+        upper_index = np.argmax(above, axis=0)
+        lower_index = np.argmin(below, axis=0)
+        loc = np.arange(f.shape[1])
+        upper_depth, lower_depth = above[upper_index, loc], below[lower_index, loc]
+        upper_value = f[upper_index, loc]
+        lower_value = f[lower_index, loc]
 
-        # Extract field data from nearest level above, and nearest level below. Use linear interpolation to get to z
-        f_t, f_b = np.nanmax(np.where(depths == deptop, f, np.nan), axis = 0), np.nanmax(np.where(depths == depbot, f, np.nan), axis = 0)
-        dz, dzt, dzb = depbot-deptop, z-deptop, depbot-z
-        zf = (f_t*dzb + f_b*dzt)/dz        
-        zf[np.where(np.isnan(f_t))] = f_b[np.where(np.isnan(f_t))] # Use nearest valid value if NaN at the surface (do not touch the bottom though)
-        return zf
+        out = np.full(f.shape[1], np.nan, dtype=float)
+        exact = np.isfinite(upper_depth) & np.isfinite(lower_depth) & (upper_depth == lower_depth)
+        out[exact] = upper_value[exact]
+        interpolate = (np.isfinite(upper_depth) & np.isfinite(lower_depth)
+                       & (lower_depth > upper_depth))
+        out[interpolate] = (
+            upper_value[interpolate] * (lower_depth[interpolate] - z)
+            + lower_value[interpolate] * (z - upper_depth[interpolate])
+        ) / (lower_depth[interpolate] - upper_depth[interpolate])
+
+        # Shallower than topmost sigma point: reuse the shallowest value.
+        shallower = (~np.isfinite(upper_depth)) & np.isfinite(lower_depth)
+        out[shallower] = lower_value[shallower]
+        return out
 
 class SectionMaker:
     '''
@@ -2313,75 +2329,339 @@ class LegacyFunctions:
         return fieldout
 
 class OutputLoader:
-    '''
-    Methods used to load FVCOM data from netCDF file (will automatically crop to a subgrid)
-    '''
-    def load_netCDF(self, filepath, field, time, sig = None):
-        '''
-        Reads a timestep from a field in the netCDF file from "filepath"
-        - filename: path to file to be read
-        - field:    field you want (e.g. 'tracer')
-        - time:     time-index in file to read
+    """Load FVCOM NetCDF variables and optionally process them for plotting.
 
-        optional:
-        - sig:      sigma layer to extract, will automatically return all
-        '''
-        with Dataset(filepath, 'r') as d:
-            # time variables or variables without time can be read directly and returned
-            if 'time' not in d[field].dimensions or len(d[field].dimensions) == 1:
-                return d[field][:]
+    Responsibilities are deliberately separated:
+      - _read_nc_variable: NetCDF I/O and mesh subsetting only.
+      - _as_array / _apply_wet_mask: missing-value and wet/dry treatment.
+      - _transform_vertical_field: sigma maximum and z interpolation.
+      - load_netCDF: validation, coordination and file lifetime.
+    """
 
-            if self.cropped_nodes.any() or self.cropped_cells.any():
-                if 'node' in d[field].dimensions:
-                    cropped = self.cropped_nodes
-                elif 'nele' in d[field].dimensions:
-                    cropped = self.cropped_cells
-            else:
-                cropped = None
+    @staticmethod
+    def _as_array(data):
+        """Convert masked/non-finite numeric values to NaN where possible.
 
-            # Automatically crop data
-            data = self._load_single_nc_field(d, field, cropped, time, sig)
-            
-            # Mask data if wetting/drying
-            try:
-                if 'node' in d[field].dimensions:
-                    wet = np.where(self._load_single_nc_field(d, 'wet_nodes', cropped, time, sig)==0)[0]
+        Preserve float32 for unmasked or masked float32 data. For masked
+        integers, promote to float so that missing values can be NaN.
+        """
+        arr = np.ma.asarray(data)
+        if arr.dtype.kind in 'fc':
+            return np.asarray(np.ma.masked_invalid(arr).filled(np.nan))
+        if arr.dtype.kind in 'iub' and np.ma.is_masked(arr):
+            return np.asarray(arr.astype(float).filled(np.nan))
+        return np.asarray(arr)
 
-                elif 'nele' in d[field].dimensions:
-                    wet = np.where(self._load_single_nc_field(d, 'wet_cells', cropped, time, sig)==0)[0]
-
-                if len(data.shape)==1:
-                    data[wet] = np.nan
-                else:
-                    data[:, wet] = np.nan
-            except:
-                pass
-        return np.array(data)
-
-    def _load_single_nc_field(self, d, field, cropped, time, sig):
-        '''
-        Loads data from a netCDF file, crops to mesh if needbe
-        '''
-        dim = len(d[field].dimensions)
-        if self.cropped_nodes.any() or self.cropped_cells.any():
-            if dim == 2:
-                data = d[field][time, : ][cropped]
-            elif dim == 3:
-                if sig is None:
-                    data = d[field][time, :, :][:, cropped]
-                else:
-                    data = d[field][time, sig, :][cropped]
-
+    def _crop_indices(self, dimensions):
+        """Return global mesh indices, or None on an uncropped grid."""
+        if 'node' in dimensions:
+            indices = np.asarray(self.cropped_nodes)
+        elif 'nele' in dimensions:
+            indices = np.asarray(self.cropped_cells)
         else:
-            if dim == 2:
-                data = d[field][time, :]
+            return None
+        # FVCOM_grid uses a scalar array as its 'not cropped' sentinel.
+        return indices if indices.ndim == 1 else None
 
-            if dim == 3:
-                if sig is None:
-                    data = d[field][time, :, :]
-                else:
-                    data = d[field][time, sig, :]
-        return data
+    @staticmethod
+    def _nc_spatial_dim(dimensions):
+        return next((d for d in ('node', 'nele') if d in dimensions), None)
+
+    @staticmethod
+    def _nc_vertical_dim(dimensions):
+        return next((d for d in ('siglay', 'siglev') if d in dimensions), None)
+
+    @staticmethod
+    def _read_nc_subset(variable, selection, axis, indices, remaining_dims):
+        """Read a cropped spatial dimension with efficient hyperslab slices.
+
+        Fast paths:
+        - One contiguous interval: exactly one slice, no fancy indexing.
+        - A relatively dense, reasonably sized interval: read one slice and
+          select the requested points in memory.
+        - Sparse/non-contiguous indices: read bounded blocks with slices,
+          then gather/reorder in memory. This avoids issuing one NetCDF
+          request for every index and avoids loading the whole domain.
+
+        Repeated and unordered indices retain their caller-supplied order.
+        """
+        indices = np.asarray(indices, dtype=np.intp)
+        if indices.ndim != 1:
+            raise ValueError('Subgrid indices must be a 1-D array')
+        if np.any(indices < 0) or np.any(indices >= variable.shape[axis]):
+            raise IndexError('Subgrid indices outside NetCDF spatial dimension')
+
+        # Time/sigma have already been selected with integers.
+        result_axis = sum(
+            not isinstance(x, (int, np.integer))
+            for x in selection[:axis]
+        )
+        if indices.size == 0:
+            selection[axis] = slice(0, 0)
+            return variable[tuple(selection)]
+
+        if indices.size == 1 or np.all(np.diff(indices) == 1):
+            selection[axis] = slice(int(indices[0]), int(indices[-1]) + 1)
+            return variable[tuple(selection)]
+
+        unique, inverse = np.unique(indices, return_inverse=True)
+        first, last = int(unique[0]), int(unique[-1])
+        span = last - first + 1
+
+        # Cap the amount of superfluous data in a single hyperslab.
+        n_other = 1
+        for i, size in enumerate(variable.shape):
+            if i != axis and not isinstance(selection[i], (int, np.integer)):
+                n_other *= size
+        byte_per_point = n_other * max(int(variable.dtype.itemsize), 8)
+        max_temp_bytes = 32 * 1024 * 1024
+
+        if span <= 2 * len(unique) and span * byte_per_point <= max_temp_bytes:
+            selection[axis] = slice(first, last + 1)
+            values = variable[tuple(selection)]
+            return np.take(values, indices - first, axis=result_axis)
+
+        # Group points by spatial NetCDF chunk when possible. For
+        # contiguous/unbounded chunks, use small fixed-width windows.
+        chunks = variable.chunking() if hasattr(variable, 'chunking') else None
+        spatial_chunk = (
+            chunks[axis] if isinstance(chunks, (tuple, list)) else None
+        )
+        preferred_width = (
+            int(spatial_chunk) if spatial_chunk is not None else 4096
+        )
+        max_width = max(1, max_temp_bytes // max(1, byte_per_point))
+        block_width = max(1, min(preferred_width, max_width))
+
+        block_ids = unique // block_width
+        boundaries = np.r_[0, np.flatnonzero(np.diff(block_ids)) + 1, len(unique)]
+        parts = []
+        for i, j in zip(boundaries[:-1], boundaries[1:]):
+            group = unique[i:j]
+            lo, hi = int(group[0]), int(group[-1]) + 1
+            selection[axis] = slice(lo, hi)
+            block = variable[tuple(selection)]
+            parts.append(np.take(block, group - lo, axis=result_axis))
+
+        if len(parts) == 1:
+            selected = parts[0]
+        elif any(np.ma.isMaskedArray(part) for part in parts):
+            selected = np.ma.concatenate(parts, axis=result_axis)
+        else:
+            selected = np.concatenate(parts, axis=result_axis)
+        return np.take(selected, inverse, axis=result_axis)
+
+    def _read_nc_variable(self, dataset, name, time, sig_index=None):
+        """Read a NetCDF variable, using slices for subgrid I/O.
+
+        Returns (raw data, remaining dimensions). Does not perform
+        wet/dry masking, NaN conversion or vertical interpolation.
+        """
+        variable = dataset[name]
+        dimensions = variable.dimensions
+        selection = [slice(None)] * len(dimensions)
+
+        if 'time' in dimensions:
+            if time is None:
+                raise ValueError(f'{name!r} requires a time index')
+            selection[dimensions.index('time')] = time
+
+        vertical = self._nc_vertical_dim(dimensions)
+        if sig_index is not None and vertical is not None:
+            selection[dimensions.index(vertical)] = sig_index
+
+        spatial = self._nc_spatial_dim(dimensions)
+        cropped = self._crop_indices(dimensions)
+        remaining_dimensions = tuple(
+            dim for dim, selector in zip(dimensions, selection)
+            if not isinstance(selector, (int, np.integer))
+        )
+        if spatial is not None and cropped is not None:
+            raw = self._read_nc_subset(
+                variable, selection, dimensions.index(spatial),
+                cropped, remaining_dimensions
+            )
+        else:
+            raw = variable[tuple(selection)]
+        return raw, remaining_dimensions
+
+    @contextmanager
+    def netcdf_session(self):
+        """Reuse a single open NetCDF file across sequential load_netCDF calls.
+
+        Usage for movies::
+
+            with grid.netcdf_session():
+                animation.save(filename, writer=writer)
+
+        The handle follows filenames, closing the previous file when the
+        animation advances to another file, and always closes on exit.
+        Ordinary load_netCDF calls still open and close independently.
+        """
+        if getattr(self, '_nc_session', None) is not None:
+            raise RuntimeError('Nested netcdf_session() is not supported')
+        session = {'path': None, 'dataset': None}
+        self._nc_session = session
+        try:
+            yield self
+        finally:
+            try:
+                if session['dataset'] is not None:
+                    session['dataset'].close()
+            finally:
+                self._nc_session = None
+
+    @contextmanager
+    def _netcdf_handle(self, filepath):
+        """Use a session-owned Dataset, if present, else a temporary one."""
+        session = getattr(self, '_nc_session', None)
+        if session is None:
+            with Dataset(filepath, 'r') as dataset:
+                yield dataset
+            return
+
+        path = os.fspath(filepath)
+        if session['dataset'] is None or session['path'] != path:
+            if session['dataset'] is not None:
+                session['dataset'].close()
+                session['dataset'] = None
+                session['path'] = None
+            session['dataset'] = Dataset(path, 'r')
+            session['path'] = path
+        yield session['dataset']
+
+    def _get_dry_mask(self, dataset, spatial, time, dry_masks):
+        """Load and cache the dry-point mask for one spatial staggering."""
+        wet_name = 'wet_nodes' if spatial == 'node' else 'wet_cells'
+        if wet_name not in dataset.variables:
+            return None
+        if wet_name not in dry_masks:
+            wet, remaining_dims = self._read_nc_variable(dataset, wet_name, time)
+            wet = self._as_array(wet)
+            if remaining_dims != (spatial,):
+                raise ValueError(
+                    f'{wet_name} must have one remaining {spatial!r} dimension; '
+                    f'found {remaining_dims}'
+                )
+            dry_masks[wet_name] = (~np.isfinite(wet)) | (wet == 0)
+        return dry_masks[wet_name]
+
+    @staticmethod
+    def _apply_wet_mask(data, remaining_dims, dry, name):
+        """Broadcast a 1-D dry-point mask over all non-spatial dimensions."""
+        if dry is None:
+            return data
+        spatial = 'node' if 'node' in remaining_dims else 'nele'
+        axis = remaining_dims.index(spatial)
+        if data.shape[axis] != dry.size:
+            raise ValueError(f'Wet/dry mask shape mismatch for {name!r}')
+        shape = [1] * data.ndim
+        shape[axis] = dry.size
+        return np.where(dry.reshape(shape), np.nan, data)
+
+    def _prepare_nc_field(self, raw, remaining_dims, dry, name):
+        """Convert NetCDF fill values to NaN and apply a wet/dry mask."""
+        data = self._as_array(raw)
+        return self._apply_wet_mask(data, remaining_dims, dry, name)
+
+    def _transform_vertical_field(self, data, remaining_dims, name,
+                                  sig=None, z=None):
+        """Apply a vertical maximum or sigma-to-z interpolation (no I/O)."""
+        vertical = self._nc_vertical_dim(remaining_dims)
+        if z is None:
+            if sig == 'max' and vertical is not None:
+                axis = remaining_dims.index(vertical)
+                return np.ma.masked_invalid(data).max(axis=axis).filled(np.nan)
+            return data
+
+        spatial = self._nc_spatial_dim(remaining_dims)
+        if vertical is None or spatial is None or data.ndim != 2:
+            raise ValueError(
+                f'Cannot interpolate {name!r} to z: expected one vertical '
+                'and one spatial dimension'
+            )
+        data = np.moveaxis(data, remaining_dims.index(vertical), 0)
+        depth_attr = {
+            ('siglay', 'node'): 'siglayz',
+            ('siglay', 'nele'): 'siglayz_uv',
+            ('siglev', 'node'): 'siglevz',
+            ('siglev', 'nele'): 'siglevz_uv',
+        }[(vertical, spatial)]
+        depths = -np.asarray(getattr(self, depth_attr)).T
+        if data.shape != depths.shape:
+            raise ValueError(
+                f'Shape mismatch for {name!r}: data {data.shape}, '
+                f'sigma depths {depths.shape}'
+            )
+        return self.interpolate_to_z(data, z, depths=depths)
+
+    def load_netCDF(self, filepath, field, time, sig=None, *, z=None,
+                    mask_dry=True):
+        """Read and process one or more FVCOM fields at one time step.
+
+        The existing public API is unchanged. 'field' may be a name or a
+        sequence of names; sequences return a dictionary. 'sig' is a layer
+        index, 'max' or None. z is metres below the instantaneous surface.
+        All variables and wet/dry masks are read from one Dataset handle.
+        When z is specified, self.zeta is updated for this time step.
+        """
+        if z is not None and sig is not None:
+            raise ValueError('Specify either sig or z, not both')
+        if isinstance(sig, str) and sig != 'max':
+            raise ValueError("sig must be an integer, None or 'max'")
+        if sig is not None and not isinstance(sig, (int, np.integer, str)):
+            raise TypeError("sig must be an integer, None or 'max'")
+        if z is not None and (not np.isscalar(z) or not np.isfinite(z) or z < 0):
+            raise ValueError('z must be a nonnegative, finite depth in metres')
+
+        single = isinstance(field, str)
+        fields = [field] if single else list(field)
+        if not fields or not all(isinstance(name, str) for name in fields):
+            raise ValueError('field must be a variable name or a list of names')
+
+        with self._netcdf_handle(filepath) as dataset:
+            for name in fields:
+                if name not in dataset.variables:
+                    raise KeyError(f'Variable {name!r} not found in {filepath}')
+
+            dry_masks = {}
+            prepared_cache = {}
+
+            def get_prepared(name, sig_index=None):
+                """Per-call reuse (not persistent between animation frames)."""
+                cache_key = (name, sig_index)
+                if cache_key not in prepared_cache:
+                    raw, remaining_dims = self._read_nc_variable(
+                        dataset, name, time, sig_index
+                    )
+                    spatial = self._nc_spatial_dim(remaining_dims)
+                    dry = None
+                    if (mask_dry and spatial is not None
+                            and 'time' in dataset[name].dimensions
+                            and name not in ('wet_nodes', 'wet_cells')):
+                        dry = self._get_dry_mask(
+                            dataset, spatial, time, dry_masks
+                        )
+                    prepared_cache[cache_key] = (
+                        self._prepare_nc_field(raw, remaining_dims, dry, name),
+                        remaining_dims,
+                    )
+                return prepared_cache[cache_key]
+
+            if z is not None:
+                if 'zeta' not in dataset.variables:
+                    raise KeyError('z interpolation requires zeta in the NetCDF file')
+                self.zeta, _ = get_prepared('zeta')
+
+            result = {}
+            sig_index = sig if isinstance(sig, (int, np.integer)) else None
+            for name in fields:
+                data, remaining_dims = get_prepared(name, sig_index)
+                result[name] = self._transform_vertical_field(
+                    data, remaining_dims, name, sig=sig, z=z
+                )
+
+        return result[field] if single else result
 
 class FVCOM_grid(GridLoader, InputCoordinates, Coordinates, PropertiesFromTGE, LegacyPropertyAliases, CellTriangulation, OutputLoader,
                  PlotFVCOM, ControlVolumePlotter, InterpolateToZ, LegacyFunctions, SectionMaker, ExportGrid, CropGrid, AnglesAndPhysics,

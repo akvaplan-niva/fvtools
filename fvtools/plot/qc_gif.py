@@ -71,10 +71,14 @@ def main(folder = None,
     Report issues/bugs to hes@akvaplan.niva.no
     '''
     # Copy the input to a dictionary
-    vars = dir()
-    kwargs = {}
-    for variable in vars:
-        kwargs[variable] = eval(variable)
+    options = dict(
+        folder=folder, fname=fname, filelist=filelist, var=var,
+        sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
+        section=section, section_res=section_res, fps=fps, mname=mname,
+        dpi=dpi, nlevels=nlevels, reference=reference
+    )
+    options.update(kwargs)
+    kwargs = options
 
     # Stop if insufficient input
     if section is None and sigma is None and z is None:
@@ -143,10 +147,14 @@ def get_input(
     zlevel_movie(**kwargs)
     '''
     # Copy the input
-    vars = dir()
-    kwargs = {}
-    for variable in vars:
-        kwargs[variable] = eval(variable)
+    options = dict(
+        folder=folder, fname=fname, filelist=filelist, var=var,
+        sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
+        section=section, section_res=section_res, fps=fps, mname=mname,
+        dpi=dpi, nlevels=nlevels, reference=reference
+    )
+    options.update(kwargs)
+    kwargs = options
 
     # Stop if insufficient input
     if section is None and sigma is None and z is None:
@@ -167,8 +175,7 @@ def surface_movie(**kwargs):
     mmaker = HorizontalMaker(**kwargs)
     MovieWriter, codec = get_animator()
 
-    if not kwargs['mname']:
-        kwargs['mname'] = mmaker.M.casename
+    mname = kwargs['mname'] or mmaker.M.casename
 
     for field in kwargs['var']:
         mmaker.var    = field
@@ -192,7 +199,7 @@ def surface_movie(**kwargs):
         writer = MovieWriter(fps = kwargs['fps'])
 
         # Set framerate, write the movie
-        write_movie(mmaker, anim, f'{kwargs["mname"]}_sigma_{kwargs["sigma"]}', field, codec, writer)
+        write_movie(mmaker, anim, f'{mname}_sigma_{kwargs["sigma"]}', field, codec, writer)
 
 def zlevel_movie(**kwargs):
     '''
@@ -203,13 +210,12 @@ def zlevel_movie(**kwargs):
     mmaker = HorizontalMaker(**kwargs)  
     mmaker.sigma = None
 
-    if not kwargs['mname']:
-        kwargs['mname'] = mmaker.M.casename
+    mname = kwargs['mname'] or mmaker.M.casename
 
     MovieWriter, codec = get_animator()
 
     for field in kwargs['var']:
-        if field in ['zeta', 'vorticity', 'pv']:
+        if field in ['zeta', 'vorticity', 'pv', 'sp']:
             continue
         mmaker.var    = field
         widget        = [f'- Make z-level {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
@@ -227,7 +233,7 @@ def zlevel_movie(**kwargs):
             cache_frame_data = False
             )
         writer = MovieWriter(fps = kwargs['fps'])
-        write_movie(mmaker, anim, f'{kwargs["mname"]}_{kwargs["z"]}m_depth', field, codec, writer)
+        write_movie(mmaker, anim, f'{mname}_{kwargs["z"]}m_depth', field, codec, writer)
 
 def section_movie(**kwargs):
     '''
@@ -239,14 +245,12 @@ def section_movie(**kwargs):
     # Find grid info
     print('- Get grid info, section points and triangulation')
     M = FVCOM_grid(kwargs['List'][0], verbose = False, reference = kwargs['reference'], static_depth = True)
-    if kwargs['section'] is True:
-        kwargs['section'] = None
+    section_file = None if kwargs['section'] is True else kwargs['section']
 
-    if not kwargs['mname']:
-        kwargs['mname'] = M.casename
+    mname = kwargs['mname'] or M.casename
 
     print('- Prepare the section')
-    M.prepare_section(section_file = kwargs['section'], res = kwargs['section_res'], store_transect_img = True)
+    M.prepare_section(section_file=section_file, res=kwargs['section_res'], store_transect_img=True)
 
     # Crop grid to a sausage covering the transect (so we don't need to load excessive amounts of data to memory)
     indices = []
@@ -259,7 +263,7 @@ def section_movie(**kwargs):
     # C.x_sec, C.y_sec = M.x_sec, M.y_sec
 
     # And re-prepare the section now that we have changed the grid
-    C.prepare_section(section_file = kwargs['section'], res = kwargs['section_res'], store_transect_img = False)
+    C.prepare_section(section_points=(M.x_sec, M.y_sec), res=kwargs['section_res'], store_transect_img=False)
     section = C.get_section_data(C.h)
 
     # Create the movie maker
@@ -292,7 +296,7 @@ def section_movie(**kwargs):
             cache_frame_data = False
             )
         writer = MovieWriter(fps = kwargs['fps'])
-        write_movie(mmaker, anim, f'{kwargs["mname"]}_section', field, codec, writer)
+        write_movie(mmaker, anim, f'{mname}_section', field, codec, writer)
 
 #                                  Helper functions
 # --------------------------------------------------------------------------------------------------
@@ -385,7 +389,8 @@ def write_movie(mmaker, anim, mname, field, codec, writer):
     if mname is None:
         mname = mmaker.M.casename
 
-    anim.save(f'{mname}_{field}.{codec}', writer = writer)
+    with mmaker.M.netcdf_session():
+        anim.save(f'{mname}_{field}.{codec}', writer = writer)
     plt.close('all')
     mmaker.bar.finish()
 
@@ -563,23 +568,14 @@ class AnimationFields:
     '''
     @property
     def field(self):
-        '''
-        Loads fields, we assume all "new" fields (ie. fabm tracers) to be 3D
-        - will mask grid points that are dry
-        '''
+        """Load a scalar field with subgrid, sigma/z and wet/dry handling."""
         if self.var in ['pv', 'vorticity', 'sp']:
-            field = getattr(self, self.var)
-        else:
-            if type(self.sigma) == str:
-                if self.sigma != 'max':
-                    raise ValueError(
-                        f'sigma must either be an integer number (index) or "max", {self.sigma} is not a valid option.'
-                        )
-                field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i]).max(axis = 0)
-            else:
-               field = self.M.load_netCDF(self.files[self.i], self.var, self.index[self.i], sig = self.sigma)
-        return field
-    
+            return getattr(self, self.var)
+        return self.M.load_netCDF(
+            self.files[self.i], self.var, self.index[self.i],
+            sig=self.sigma, z=getattr(self, 'z', None)
+        )
+
     @property
     def vorticity(self):
         '''
@@ -660,7 +656,8 @@ class HorizontalMaker(AnimationFields, GeoReference):
             print('  -> Failed to download georeference, the background will not be shaded.')
 
         if 'vorticity' in var or 'pv' in var:
-            self.T = self.M.T
+            import grid.tge as tge
+            self.T = tge.main(self.M, verbose = True)
             self.T.get_art1(verbose = False)
 
         self._wetndry = True
@@ -712,17 +709,13 @@ class HorizontalMaker(AnimationFields, GeoReference):
         self.bar.update(i)
         self.i = i
         plt.clf()
-
         if self.gp is not None:
             plt.imshow(self.gp.img, extent = self.gp.extent)
-
-        outdata = self.M.interpolate_to_z(self.field, z = self.z)
+        outdata = self.field
         cont = self.update_figure(
-            field = outdata, 
-            title = self.datetime[i].strftime('%m/%d, %H:%M:%S') + f' at {self.z} m depth'
+            field = outdata, title = self.datetime[i].strftime('%m/%d, %H:%M:%S') + f' at {self.z} m depth'
             )
         return cont
-    
 
     def update_figure(self, field=None, title=None):
         '''

@@ -52,7 +52,10 @@ def main(filelist = None,
     - verbose:    the routine will tell you where it is
     - vlev:       color levels to plot for the velocity-contour plot
     '''
-    # Figure out wether to read u, v or ua, va
+    if sigma is not None and z is not None:
+        raise ValueError('Specify either sigma or z, not both')
+
+    # Figure out whether to read u, v or ua, va
     avg = False
     if sigma is None and z is None:
         avg = True
@@ -72,7 +75,7 @@ def main(filelist = None,
     stream.verbose = verbose
         
     # Inititalize movie maker
-    UV           = UVmov(M, fl, stream, xlim, ylim, hres, avg, vlev, dpi = dpi)
+    UV           = UVmov(M, fl, stream, xlim, ylim, hres, avg, vlev, verbose=verbose, dpi=dpi)
     UV.sig, UV.z = sigma, z
 
     # Get the movie writer, prepare the show
@@ -96,7 +99,8 @@ def main(filelist = None,
         savename = f'{M.casename}_velocities.{codec}'
     else:
         savename = f'{mname}.{codec}'
-    anim.save(savename, writer = writer)
+    with M.netcdf_session():
+        anim.save(savename, writer = writer)
     UV.progress.bar.finish()
 
 def get_animator():
@@ -193,28 +197,25 @@ class UVmov:
         self.load_data(i)
 
         # Add georeference
-        plt.imshow(self.gp.img, extent = self.gp.extent)
+        if self.gp is not None:
+            plt.imshow(self.gp.img, extent=self.gp.extent)
 
-        # If _all_ contour lines are nan, we simply pass (can happen in wetting drying bug scenarios)
-        try:
-            c = self.M.plot_contour(self.sp_fv, levels = self.vlev, cmap = 'jet', extend = 'max', show = False)
-            self.stream.get_streamlines(self.ufv, self.vfv)
-            self.fig.colorbar(c, ax = plt.gca(), label = r'm$s^{-1}$', shrink = 0.5)
-        except:
-            pass
-        
+        # An entirely dry frame has no contour data.
+        if self.sp_fv.count():
+            c = self.M.plot_contour(self.sp_fv, levels=self.vlev,
+                                    cmap='jet', extend='max', show=False)
+            try:
+                self.stream.get_streamlines(self.ufv, self.vfv)
+            except Exception as exc:
+                print(f'Warning: streamline frame {i} failed: {exc}')
+            self.fig.colorbar(c, ax=plt.gca(), label=r'm$s^{-1}$', shrink=0.5)
+        else:
+            c = None
+
         # Title to get when/where
         self.format_figure(i)
 
         return c
-
-    def interpolate_to_z(self):
-        '''
-        map the velocity data from sigma to z-level before plotting, replace
-        existing velocitity-data structure.
-        '''
-        self.ufv = self.M.interpolate_to_z(self.ufv, self.z)
-        self.vfv = self.M.interpolate_to_z(self.vfv, self.z)
 
     def format_figure(self, i):
         plt.xlim(self.xlim)
@@ -237,29 +238,28 @@ class UVmov:
 
     # This will need some revision, maybe even using FVCOM_grids load_NETCDF function
     def load_data(self, i):
-        if self.avg:
-            self.ufv = self.M.load_netCDF(self.fl.path[i], 'ua', self.fl.index[i])
-            self.vfv = self.M.load_netCDF(self.fl.path[i], 'va', self.fl.index[i])
-
-        else:
-            self.ufv = self.M.load_netCDF(self.fl.path[i], 'u', self.fl.index[i], sig = self.sig)
-            self.vfv = self.M.load_netCDF(self.fl.path[i], 'v', self.fl.index[i], sig = self.sig)
-
-            if self.z is not None:
-                self.interpolate_to_z()
-        
-        # fvcom_streamlines should not be given nans, so we stop the streamlines at nans (velocity = 0)
-        if np.isnan(self.ufv).any():
-            naninds = np.where(np.isnan(self.ufv))[0]
-            self.ufv[naninds] = 0
-            self.vfv[naninds] = 0
-            self.sp_fv = np.sqrt(self.ufv**2+self.vfv**2)
-            self.sp_fv[naninds] = np.nan
-        else:
-            self.sp_fv = np.sqrt(self.ufv**2+self.vfv**2)
+        """Read both velocity components in one FVCOM_grid call."""
+        names = ('ua', 'va') if self.avg else ('u', 'v')
+        velocities = self.M.load_netCDF(
+            self.fl.path[i], names, self.fl.index[i],
+            sig=None if self.avg else self.sig,
+            z=None if self.avg else self.z,
+        )
+        u = np.asarray(velocities[names[0]], dtype=float)
+        v = np.asarray(velocities[names[1]], dtype=float)
+        if u.shape != v.shape or u.ndim != 1:
+            raise ValueError(f'Expected matching 1-D u/v arrays: {u.shape}, {v.shape}')
+        invalid = ~np.isfinite(u) | ~np.isfinite(v)
+        # Streamline code cannot accept NaNs; contours must still mask dry cells.
+        self.ufv = np.where(invalid, 0.0, u)
+        self.vfv = np.where(invalid, 0.0, v)
+        self.sp_fv = np.ma.array(np.hypot(u, v), mask=invalid)
 
         if self.vlev is None:
-            self.vlev = np.linspace(0, np.nanmax(self.sp_fv), 20)
+            valid = self.sp_fv.compressed()
+            if not valid.size:
+                raise ValueError('No valid velocities in the first animation frame')
+            self.vlev = np.linspace(0.0, max(valid.max(), 1e-6), 20)
 
 def parse_input(folder, filelist, start, stop):
     '''
