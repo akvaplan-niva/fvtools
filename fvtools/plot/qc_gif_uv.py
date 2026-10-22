@@ -6,6 +6,7 @@ Both scripts use fvtools.plot.movie_common for time/file selection.
 
 import matplotlib.pyplot as plt
 import numpy as np
+import warnings
 
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.plot.fvcom_streamlines import streamlines
@@ -15,20 +16,32 @@ from fvtools.plot.movie_common import (
     save_animation,
     make_horizontal_figure,
     get_grid_georeference,
+    validate_plot_bounds, validate_vertical_selection, make_movie_axes,
 )
-
 
 def main(filelist=None, folder=None, sigma=None, z=None, xlim=None,
          ylim=None, start=None, stop=None, vlev=None, hres=None,
          mname=None, verbose=False, fps=12, dpi=100,
-         reference='epsg:32633'):
+         reference='epsg:32633', output_dir=None):
     """Save a velocity/streamline movie; defaults to depth-averaged ua/va.
 
     sigma: integer model-layer index; z: depth in metres below the surface.
     Both cannot be specified at once. start/stop use yyyy-mm-dd-HH (UTC).
+    output_dir sets the destination folder; the absolute saved file path is returned.
     """
-    if sigma is not None and z is not None:
-        raise ValueError('Specify either sigma or z, not both')
+    validate_vertical_selection(sigma, z)
+    validate_plot_bounds(xlim, ylim)
+    if hres is not None and (not np.isscalar(hres) or
+                             not np.isfinite(hres) or hres <= 0):
+        raise ValueError('hres must be a positive finite distance')
+    if vlev is not None:
+        values = np.asarray(vlev)
+        if (values.ndim != 1 or values.size < 2
+                or not np.issubdtype(values.dtype, np.number)
+                or not np.all(np.isfinite(values))
+                or not np.all(np.diff(values) > 0)):
+            raise ValueError('vlev must be strictly increasing finite contour levels')
+        vlev = values
 
     frames = get_movie_frames(
         folder=folder, filelist=filelist, start=start, stop=stop,
@@ -45,11 +58,12 @@ def main(filelist=None, folder=None, sigma=None, z=None, xlim=None,
         verbose=verbose, dpi=dpi,
     )
     maker.sig, maker.z = sigma, z
-    save_animation(
+    return save_animation(
         maker.fig,
         maker.animate,
         frame_count=len(frames),
         output_stem=mname or f'{grid.casename}_velocities',
+        output_dir=output_dir,
         fps=fps,
         progress_label='- streamline movie: ',
         maker=maker,
@@ -78,6 +92,7 @@ class UVmov:
             sources=(None, 'hot', 'mapnik', 'voyager'), verbose=verbose,
         )
         self.fig = make_horizontal_figure(self.M, dpi=dpi)
+        self._plot_axes = None
 
 
     def load_data(self, i):
@@ -112,36 +127,44 @@ class UVmov:
         """Draw contours, streamlines, and a single frame's title."""
         self.bar.update(i)
         self.load_data(i)
-        self.fig.clear()
-        ax = self.fig.add_subplot(111)
-        plt.sca(ax)  # FVCOM plotting helpers draw on the active axes.
+        if (getattr(self, '_plot_axes', None) is None
+                or self._plot_axes.figure is not self.fig):
+            self._plot_axes = make_movie_axes(
+                self.fig, cmap='jet', levels=self.vlev,
+                label=r'm$s^{-1}$', extend='max', background=self.gp,
+            )
+        ax = self._plot_axes
+        ax.clear()  # Preserve the dedicated colorbar and basemap credit.
+        plt.sca(ax)  # Some FVCOM/streamline helpers use pyplot's active axes.
 
         if self.gp is not None:
             ax.imshow(self.gp.img, extent=self.gp.extent)
 
-        contour = None
-        if self.sp_fv.count():
-            contour = self.M.plot_contour(
-                self.sp_fv, levels=self.vlev,
-                cmap='jet', extend='max', show=False,
-            )
+        # A single valid cell is not enough for tricontourf: we need at
+        # least one triangle whose three cell-centre vertices are valid.
+        contour = self.M.plot_contour(
+            self.sp_fv, levels=self.vlev, cmap='jet', extend='max',
+            show=False, ax=ax, on_empty='skip',
+        )
+        if contour is None:
+            ax.text(0.5, 0.5, 'No valid velocity triangles at this depth/time',
+                    transform=ax.transAxes, ha='center', va='center')
+        else:
             try:
                 self.stream.get_streamlines(self.ufv, self.vfv)
             except Exception as exc:
-                print(f'Warning: streamline frame {i} failed: {exc}')
-            self.fig.colorbar(contour, ax=ax, label=r'm$s^{-1}$', shrink=0.5)
-        else:
-            ax.text(0.5, 0.5, 'No wet cells for this time step',
-                    transform=ax.transAxes, ha='center', va='center')
+                warnings.warn(f'Streamlines failed for frame {i}: {exc}',
+                              RuntimeWarning, stacklevel=2)
 
         self.format_figure(i)
         return contour
 
     def format_figure(self, i):
-        if self.xlim is not None:
-            plt.xlim(self.xlim)
-        if self.ylim is not None:
-            plt.ylim(self.ylim)
+        # Stable extent even when the valid (wet) cells change per frame.
+        plt.xlim(self.xlim if self.xlim is not None else
+                 (self.M.x.min(), self.M.x.max()))
+        plt.ylim(self.ylim if self.ylim is not None else
+                 (self.M.y.min(), self.M.y.max()))
         plt.xticks([])
         plt.yticks([])
         if self.avg:

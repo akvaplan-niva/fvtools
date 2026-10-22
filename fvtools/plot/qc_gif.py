@@ -3,29 +3,21 @@ import cmocean as cmo
 import matplotlib.pyplot as plt
 
 from netCDF4 import Dataset
+import warnings
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.plot.movie_common import (
     get_movie_frames, print_frame_range, save_animation,
     make_horizontal_figure, make_section_figure, get_grid_georeference,
+    validate_plot_bounds, validate_vertical_selection, make_movie_axes,
 )
 
-# Synthetic section fields (not variable names in the FVCOM NetCDF file).
-SECTION_VELOCITY_FIELDS = {
-    'normal_velocity': 'normal',
-    'along_velocity': 'along',
-    'velocity_speed': 'speed',
-}
-
-# Only the speed magnitude is cell-centred. Vorticity and PV are nodal.
-CELL_VELOCITY_FIELDS = frozenset({'sp'})
-    
 # ----------------------------------------------------------------------------------------
 #                     Create an animation from a number of files
 # ----------------------------------------------------------------------------------------
 def main(folder=None, fname=None, filelist=None, var=None,
          sigma=None, z=None, xlim=None, ylim=None, start=None, stop=None,
          section=None, section_res=None, fps=12, mname=None, dpi=100,
-         nlevels=20, reference='epsg:32633', **kwargs):
+         nlevels=20, reference='epsg:32633', output_dir=None, **kwargs):
     """Create FVCOM animations from sigma, z-level, and/or vertical sections.
 
     For section normal-flow animations, specify section=... and
@@ -35,23 +27,26 @@ def main(folder=None, fname=None, filelist=None, var=None,
         folder=folder, fname=fname, filelist=filelist, var=var,
         sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
         section=section, section_res=section_res, fps=fps, mname=mname,
-        dpi=dpi, nlevels=nlevels, reference=reference, **kwargs,
+        dpi=dpi, nlevels=nlevels, reference=reference,
+        output_dir=output_dir, **kwargs,
     )
 
+    output_paths = []
     if options['sigma'] is not None:
-        surface_movie(**options)
+        output_paths.extend(surface_movie(**options))
     if options['z'] is not None:
-        zlevel_movie(**options)
+        output_paths.extend(zlevel_movie(**options))
     if options['section'] not in (None, False):
-        section_movie(**options)
-    print('--> Done.')
+        output_paths.extend(section_movie(**options))
+    print(f'--> Done. Saved {len(output_paths)} movie(s).')
+    return output_paths
 
 
 def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
               sigma=None, z=None, xlim=None, ylim=None, start=None,
               stop=None, section=None, section_res=None, fps=12,
               mname=None, dpi=100, nlevels=20,
-              reference='epsg:32633', **kwargs):
+              reference='epsg:32633', output_dir=None, **kwargs):
     """Return all options and selected frames for the three movie functions.
 
     The returned dictionary can be passed directly to surface_movie,
@@ -64,12 +59,16 @@ def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
         sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
         section=section, section_res=section_res, fps=fps, mname=mname,
         dpi=dpi, nlevels=nlevels, reference=reference,
+        output_dir=output_dir,
     )
+    supported_extra = {'section_neighbors', 'section_vlim', 'velocity_coordinates'}
+    unknown = set(kwargs) - supported_extra
+    if unknown:
+        raise TypeError(f'Unknown movie option(s): {sorted(unknown)}')
     options.update(kwargs)
+    _validate_movie_options(options)
     if options['section'] in (None, False) and options['sigma'] is None and options['z'] is None:
         raise ValueError('Specify at least one of section, sigma or z')
-    if options['sigma'] is not None and options['z'] is not None:
-        raise ValueError('Specify either sigma or z, not both')
     frames = get_movie_frames(
         folder=options['folder'], fname=options['fname'],
         filelist=options['filelist'], start=options['start'],
@@ -84,6 +83,30 @@ def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
     print_frame_range(frames)
     return options
 
+
+def _validate_movie_options(options):
+    """Reject invalid settings before opening model output files."""
+    validate_plot_bounds(options['xlim'], options['ylim'])
+    validate_vertical_selection(options['sigma'], options['z'], allow_max=True)
+    for name in ('fps', 'dpi'):
+        value = options[name]
+        if not isinstance(value, (int, float, np.number)) or not np.isfinite(value) or value <= 0:
+            raise ValueError(f'{name} must be a positive finite number')
+    if (not isinstance(options['nlevels'], (int, np.integer))
+            or isinstance(options['nlevels'], (bool, np.bool_))
+            or options['nlevels'] < 3):
+        raise ValueError('nlevels must be an integer >= 3')
+    if not options['var']:
+        raise ValueError('var must contain at least one field')
+    resolution = options['section_res']
+    if resolution is not None and (
+        not isinstance(resolution, (int, float, np.number))
+        or not np.isfinite(resolution) or resolution <= 0
+    ):
+        raise ValueError('section_res must be a positive distance in metres')
+    if options.get('velocity_coordinates', 'east_north') not in ('east_north', 'projected'):
+        raise ValueError("velocity_coordinates must be 'east_north' or 'projected'")
+
     
 # ----------------------------------------------------------------------------------------------------------------------
 #                                            Movie plotters
@@ -92,7 +115,7 @@ def surface_movie(**kwargs):
     """Make horizontal contour movies on a specified sigma layer."""
     _validate_scalar_fields(kwargs['var'])
     maker = HorizontalMaker(**kwargs)
-    _write_horizontal_movies(
+    return _write_horizontal_movies(
         maker, kwargs, callback=maker.contourf_animate,
         suffix=f'sigma_{kwargs["sigma"]}',
     )
@@ -101,9 +124,12 @@ def surface_movie(**kwargs):
 def zlevel_movie(**kwargs):
     """Make horizontal contour movies interpolated to constant z levels."""
     _validate_scalar_fields(kwargs['var'])
+    unsupported = {'zeta', 'vorticity', 'pv', 'sp'}
+    if not any(field not in unsupported for field in kwargs['var']):
+        raise ValueError('No plottable fields for z-level movies')
     maker = HorizontalMaker(**kwargs)
     maker.sigma = None
-    _write_horizontal_movies(
+    return _write_horizontal_movies(
         maker, kwargs, callback=maker.zlevel_animate,
         suffix=f'{kwargs["z"]}m_depth',
         excluded=('zeta', 'vorticity', 'pv', 'sp'),
@@ -120,20 +146,29 @@ def _write_horizontal_movies(maker, options, *, callback, suffix, excluded=()):
     """Select fields and hand each figure to the shared animation writer."""
     name = options['mname'] or maker.M.casename
     count = len(options['time'])
-    for field in options['var']:
-        if field in excluded:
-            continue
+    selected = [field for field in options['var'] if field not in excluded]
+    skipped = [field for field in options['var'] if field in excluded]
+    if not selected:
+        raise ValueError(f'No plottable fields for this movie type: {skipped}')
+    if skipped:
+        warnings.warn(f'Skipping unsupported fields: {skipped}', UserWarning, stacklevel=2)
+    output_paths = []
+    for field in selected:
         maker.var = field
-        save_animation(
-            make_horizontal_figure(maker.M, dpi=options['dpi']),
+        maker.fig = make_horizontal_figure(maker.M, dpi=options['dpi'])
+        maker._plot_axes = None
+        output_paths.append(save_animation(
+            maker.fig,
             callback,
             frame_count=count,
             output_stem=f'{name}_{suffix}_{field}',
+            output_dir=options['output_dir'],
             fps=options['fps'],
             progress_label=f'- Make {field} movie: ',
             maker=maker,
             grid=maker.M,
-        )
+        ))
+    return output_paths
 
 
 def _set_section_velocity_colorbars(mmaker, fields, vlim, nlevels):
@@ -189,7 +224,9 @@ def section_movie(**kwargs):
     Plot movies from cross-sections
     '''
     print('\nCreate the section movie')
-    
+    if not any(field != 'zeta' for field in kwargs['var']):
+        raise ValueError('No plottable section fields: zeta is not a section field')
+
     # Find grid info
     print('- Get grid info, section points and triangulation')
     M = FVCOM_grid(kwargs['List'][0], verbose = False, reference = kwargs['reference'], static_depth = True)
@@ -200,11 +237,12 @@ def section_movie(**kwargs):
     print('- Prepare the section')
     M.prepare_section(section_file=section_file, res=kwargs['section_res'], store_transect_img=True)
 
-    # All FVCOM u/v fields are cell-centred: include neighbouring cells
-    # across the section, while avoiding a full-domain read per frame.
+    # include neighbouring cells across the section, while avoiding a full-domain read per frame.
     n_neighbors = kwargs.get('section_neighbors', 12)
     if (not isinstance(n_neighbors, (int, np.integer)) or n_neighbors < 3):
         raise ValueError('section_neighbors must be an integer >= 3')
+    if M.cell_number < 3:
+        raise ValueError('Section interpolation needs at least three mesh cells')
     n_neighbors = min(int(n_neighbors), M.cell_number)
     points = np.column_stack((M.x_sec, M.y_sec))
     _, closest = M.cell_tree.query(points, k=n_neighbors)
@@ -233,20 +271,28 @@ def section_movie(**kwargs):
         )
 
     print('\nMovie maker:')
-    for field in kwargs['var']:
-        if field == 'zeta':
-            continue
+    selected = [field for field in kwargs['var'] if field != 'zeta']
+    if not selected:
+        raise ValueError('No plottable section fields: zeta is not a section field')
+    if len(selected) != len(kwargs['var']):
+        warnings.warn('Skipping zeta in vertical section movies', UserWarning, stacklevel=2)
+    output_paths = []
+    for field in selected:
         mmaker.var = field
-        save_animation(
-            make_section_figure(dpi=kwargs['dpi']),
+        mmaker.fig = make_section_figure(dpi=kwargs['dpi'])
+        mmaker._plot_axes = None
+        output_paths.append(save_animation(
+            mmaker.fig,
             mmaker.vertical_animate,
             frame_count=len(kwargs['time']),
             output_stem=f'{mname}_section_{field}',
+            output_dir=kwargs['output_dir'],
             fps=kwargs['fps'],
             progress_label=f'- Make {field} movie: ',
             maker=mmaker,
             grid=mmaker.M,
-        )
+        ))
+    return output_paths
 
 
 #                                  Helper functions
@@ -345,6 +391,12 @@ def build_colorbars(frames, fields, sigma=None, nlevels=20):
 
 #                                                    Helper classes
 # ----------------------------------------------------------------------------------------------------------------------
+def _valid_contour_field(data):
+    """Return a masked array or None when a timestep is fully invalid."""
+    masked = np.ma.masked_invalid(np.ma.asarray(data, dtype=float))
+    return masked if masked.count() else None
+
+
 class AnimationFields:
     '''Fields loaded from FVCOM NetCDF or derived from velocity components.'''
     @property
@@ -364,9 +416,8 @@ class AnimationFields:
         We therefore load velocities for the entire grid when calculating the vorticity.
         '''
         with Dataset(self.files[self.i], 'r') as d:
-            _vort = self.T.vorticity(d['ua'][self.index[self.i], :], d['va'][self.index[self.i],:])
-        # The TGE vorticity is nodal even though its inputs ua/va are
-        # cell-centred. Crop by *nodes*, not by the input velocity cells.
+            _vort = self.M.T.vorticity(d['ua'][self.index[self.i], :], d['va'][self.index[self.i],:])
+        # The TGE vorticity is nodal even though its inputs ua/va are cell-centred. Crop by *nodes*, not by the input velocity cells.
         cropped_nodes = np.asarray(self.M.cropped_nodes)
         if cropped_nodes.ndim == 1 and cropped_nodes.size:
             _vort = _vort[cropped_nodes]
@@ -420,10 +471,20 @@ class HorizontalMaker(AnimationFields):
             sources=('hot', 'mapnik', 'voyager'), verbose=True,
         )
 
-        if 'vorticity' in var or 'pv' in var:
-            import fvtools.grid.tge as tge
-            self.T = tge.main(full_grid, verbose=True)
-            self.T.get_art1(verbose=False)
+    def _frame_axes(self):
+        """Reuse a fixed plot area and colorbar across all movie frames."""
+        if (getattr(self, '_plot_axes', None) is None
+                or self._plot_axes.figure is not self.fig):
+            scale = self.cb[self.var]
+            self._plot_axes = make_movie_axes(
+                self.fig, cmap=scale['cmap'],
+                levels=scale['colorticks'], label=scale['label'],
+                extend=scale['extend'], background=self.gp,
+            )
+        ax = self._plot_axes
+        ax.clear()
+        plt.sca(ax)  # FVCOM_grid helpers may use pyplot's current axes.
+        return ax
 
     def contourf_animate(self, i):
         '''
@@ -431,15 +492,18 @@ class HorizontalMaker(AnimationFields):
         '''
         self.bar.update(i)
         self.i = i
-        plt.clf()
+        ax = self._frame_axes()
         if self.gp is not None:
-            plt.imshow(self.gp.img, extent = self.gp.extent)
+            ax.imshow(self.gp.img, extent=self.gp.extent)
         if self.var in ['vorticity', 'pv', 'sp']:
             plt.tricontour(
                 self.M.x, self.M.y, self.M.tri, self.M.h, 40, colors = 'gray', alpha = 0.5, linewidths = 0.5, zorder = 10
                 )
-        cont = self.update_figure(field = self.field, title = self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S'))
-        return cont
+        field = _valid_contour_field(self.field)
+        if field is None:
+            ax.text(0.5, 0.5, 'No valid data for this time step',
+                    transform=ax.transAxes, ha='center', va='center')
+        return self.update_figure(field=field, title=self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S'))
 
     def zlevel_animate(self, i):
         '''
@@ -447,10 +511,13 @@ class HorizontalMaker(AnimationFields):
         '''
         self.bar.update(i)
         self.i = i
-        plt.clf()
+        ax = self._frame_axes()
         if self.gp is not None:
-            plt.imshow(self.gp.img, extent = self.gp.extent)
-        outdata = self.field
+            ax.imshow(self.gp.img, extent=self.gp.extent)
+        outdata = _valid_contour_field(self.field)
+        if outdata is None:
+            ax.text(0.5, 0.5, 'No valid data for this time step',
+                    transform=ax.transAxes, ha='center', va='center')
         cont = self.update_figure(
             field = outdata, title = self.datetime[i].strftime('%m/%d, %H:%M:%S') + f' at {self.z} m depth'
             )
@@ -460,25 +527,27 @@ class HorizontalMaker(AnimationFields):
         '''
         Add cosmetics to the figure
         '''
+        ax = self._plot_axes
+        cont = None
         if field is not None:
             cont = self.M.plot_contour(
-                field, 
-                show   = False, 
-                cmap   = self.cb[self.var]['cmap'],
-                levels = self.cb[self.var]['colorticks'], 
-                extend = self.cb[self.var]['extend'], 
-                zorder = 5
-                )
-        if self.xlim is not None and self.ylim is not None:
-            plt.xlim(self.xlim)
-            plt.ylim(self.ylim)
-        
-        if field is not None:
-            plt.colorbar(cont, label=self.cb[self.var]['label'], shrink=0.5)
-
-        plt.title(title)   
-        if field is not None:
-            return cont
+                field, show=False, ax=ax,
+                cmap=self.cb[self.var]['cmap'],
+                levels=self.cb[self.var]['colorticks'],
+                extend=self.cb[self.var]['extend'], zorder=5,
+                on_empty='skip',
+            )
+            if cont is None:
+                ax.text(0.5, 0.5, 'No valid contour triangles for this frame',
+                        transform=ax.transAxes, ha='center', va='center')
+        # Use the same physical map bounds for every frame (including dry
+        # frames); automatic limits would drift with partial triangles.
+        ax.set_xlim(self.xlim if self.xlim is not None else
+                    (self.M.x.min(), self.M.x.max()))
+        ax.set_ylim(self.ylim if self.ylim is not None else
+                    (self.M.y.min(), self.M.y.max()))
+        ax.set_title(title)
+        return cont
 
 class VerticalMaker(AnimationFields):
     '''
@@ -508,7 +577,17 @@ class VerticalMaker(AnimationFields):
         '''
         self.i = i
         self.bar.update(i)
-        plt.clf()
+        if (getattr(self, '_plot_axes', None) is None
+                or self._plot_axes.figure is not self.fig):
+            scale = self.cb[self.var]
+            self._plot_axes = make_movie_axes(
+                self.fig, cmap=scale['cmap'],
+                levels=scale['colorticks'], label=scale['label'],
+                extend='both',
+            )
+        ax = self._plot_axes
+        ax.clear()
+        plt.sca(ax)
         self.M.zeta = self.M.load_netCDF(self.files[i], 'zeta', self.index[i])
         if self.var in SECTION_VELOCITY_FIELDS:
             # Both 3-D velocity components are always defined on FVCOM cells.
@@ -535,9 +614,9 @@ class VerticalMaker(AnimationFields):
                 levels=self.cb[self.var]['colorticks'],
                 extend='both'
             )
-            plt.colorbar(cont, label=self.cb[self.var]['label'])
         else:
-            plt.text(0.5, 0.5, 'No valid data for this time step', ha='center', va='center', transform=plt.gca().transAxes)
+            plt.text(0.5, 0.5, 'No valid data for this time step',
+                     ha='center', va='center', transform=plt.gca().transAxes)
 
         # Plot sigma layers on top to show vertical resolution.
         plt.plot(self.sigma_distance(out), self.sigma_depth(out), c='grey', lw=0.2)
@@ -549,5 +628,4 @@ class VerticalMaker(AnimationFields):
         plt.xlabel('km from start of transect')
         plt.ylabel('meter depth')
         plt.title(self.datetime[i].strftime('%m/%d, %H:%M:%S'))
-        ax = plt.gca()
         ax.set_facecolor('tab:grey')

@@ -2270,26 +2270,66 @@ class PlotFVCOM:
             ax.scatter(self.x_obc[i][[0,-1]], self.y_obc[i][[0,-1]], zorder = 11, c = 'r', **kwargs) # start and end points 
         #plt.draw()
 
-    def plot_contour(self, field, show = True, ax = None, *args, **kwargs):
-        '''
-        Plot contour of node- or cell data, basically just a shortcut for pyplot.tricontourf()
-        - pass a field, it will be plotted to a new axes or to one that you pass (ax = None by default)
-        '''
-        f = np.squeeze(field)
-        if len(f) == self.node_number:
+    def plot_contour(self, field, show=True, ax=None, *args,
+                     on_empty='raise', **kwargs):
+        """Draw a contour of node- or cell-centred data.
+
+        Invalid (NaN, infinite, or NumPy-masked) vertices are excluded by
+        masking *triangles*, not merely by masking the field. Matplotlib's
+        tricontourf requires all vertices of every unmasked triangle to have
+        valid values. This is important when a requested z-level is deeper
+        than part of the mesh.
+
+        Parameters
+        ----------
+        on_empty : {'raise', 'skip'}
+            When no triangle has three valid vertices, raise ValueError
+            (default) or return None. Movie routines should use 'skip' so
+            the frame can still be rendered with its date and background.
+        """
+        if on_empty not in ('raise', 'skip'):
+            raise ValueError("on_empty must be 'raise' or 'skip'")
+
+        values = np.ma.asarray(np.squeeze(field), dtype=float)
+        if values.ndim != 1:
+            raise ValueError(f'Expected a one-dimensional contour field, got {values.shape}')
+
+        if values.size == self.node_number:
             x, y, tri = self.x, self.y, self.tri
-        elif len(f) == self.cell_number:
+        elif values.size == self.cell_number:
             x, y, tri = self.xc, self.yc, self.ctri
         else:
-            assert False, f'The input fields shape {f.shape} does not match the cell dimension {self.xc.shape} or the node dimension {self.x.shape}'
+            raise ValueError(
+                f'Field length {values.size} does not match '
+                f'{self.node_number} nodes or {self.cell_number} cells'
+            )
 
-        # Mask nan values if any and send to plot
-        if np.isnan(f).any():
-            kwargs['mask'] = np.isnan(f)[tri].any(axis=1)
+        tri = np.asarray(tri, dtype=np.intp)
+        if tri.ndim != 2 or tri.shape[1] != 3:
+            raise ValueError('Expected a triangulation with shape (n, 3)')
 
-        # Add transform if the current axes is a GeoAxes (for WMS georeferenced plots)
+        # Convert masked values to NaN, then discard triangles adjacent to
+        # any invalid point. Matplotlib tolerates NaN values only in vertices
+        # *not referenced* by the remaining triangles.
+        data = np.asarray(np.ma.masked_invalid(values).filled(np.nan))
+        invalid = ~np.isfinite(data)
+        triangle_mask = invalid[tri].any(axis=1)
+
+        caller_mask = kwargs.pop('mask', None)
+        if caller_mask is not None:
+            caller_mask = np.asarray(caller_mask, dtype=bool)
+            if caller_mask.shape != (len(tri),):
+                raise ValueError('Triangle mask has wrong shape')
+            triangle_mask |= caller_mask
+
+        if not np.any(~triangle_mask):
+            if on_empty == 'skip':
+                return None
+            raise ValueError('No valid triangles to contour')
+
+        kwargs['mask'] = triangle_mask
         kwargs = self._transform_to_kwargs(**kwargs)
-        return self._plot_contour(x, y, tri, f, show, ax = ax, *args, **kwargs)
+        return self._plot_contour(x, y, tri, data, show, ax=ax, *args, **kwargs)
 
     def _transform_to_kwargs(self, **kwargs):
         '''

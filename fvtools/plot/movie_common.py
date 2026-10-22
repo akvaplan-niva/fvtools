@@ -10,8 +10,11 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from textwrap import fill
 
 import matplotlib.animation as animation
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
 import matplotlib.pyplot as plt
 import numpy as np
 from netCDF4 import Dataset
@@ -130,6 +133,7 @@ def frames_from_files(files, start=None, stop=None):
         raise ValueError('No FVCOM timesteps in the requested time range')
     return _validated_frames(times, num2date(time=times), paths, indices)
 
+
 def get_movie_frames(*, folder=None, fname=None, filelist=None,
                      start=None, stop=None):
     """Find frames from a folder, single file, or fvtools Filelist text file.
@@ -149,9 +153,128 @@ def get_movie_frames(*, folder=None, fname=None, filelist=None,
         raise ValueError('Provide filelist, folder, or fname')
     return frames
 
+
+
+def validate_plot_bounds(xlim=None, ylim=None):
+    """Validate a paired projected map extent (also used by both movie scripts)."""
+    if (xlim is None) != (ylim is None):
+        raise ValueError('xlim and ylim must be supplied together')
+    for name, value in (('xlim', xlim), ('ylim', ylim)):
+        if value is None:
+            continue
+        bounds = np.asarray(value)
+        if (bounds.shape != (2,)
+                or not np.issubdtype(bounds.dtype, np.number)
+                or not np.all(np.isfinite(bounds))
+                or bounds[0] >= bounds[1]):
+            raise ValueError(f'{name} must contain two increasing finite limits')
+
+
+def validate_vertical_selection(sigma=None, z=None, *, allow_max=False):
+    """Validate a sigma layer or depth; permit max only for scalar movies."""
+    if sigma is not None and z is not None:
+        raise ValueError('Specify either sigma or z, not both')
+    if sigma is not None:
+        valid_layer = (isinstance(sigma, (int, np.integer))
+                       and not isinstance(sigma, (bool, np.bool_)))
+        if not valid_layer and not (allow_max and sigma == 'max'):
+            choices = "integer layer index, 'max', or None" if allow_max else 'integer layer index or None'
+            raise ValueError(f'sigma must be an {choices}')
+    if z is not None and (
+        not isinstance(z, (int, float, np.number))
+        or isinstance(z, (bool, np.bool_))
+        or not np.isfinite(z) or z < 0
+    ):
+        raise ValueError('z must be a finite nonnegative depth in metres')
+
 def print_frame_range(frames):
     print(f"Start: {frames.datetime[0].strftime('%d/%B-%Y, %H:%M:%S')}")
     print(f"End:   {frames.datetime[-1].strftime('%d/%B-%Y, %H:%M:%S')}")
+
+
+class StablePalettePillowWriter(animation.PillowWriter):
+    """GIF writer using one palette for every frame.
+
+    PillowWriter normally converts each RGB image to a GIF palette
+    independently.  A fixed Matplotlib colorbar can consequently change
+    colour from frame to frame (especially above a detailed basemap).
+    Reusing one palette prevents these *encoding* artefacts.  This affects
+    GIFs only; MP4/ffmpeg output is unchanged.
+
+    Like Matplotlib's PillowWriter, frames are buffered in memory before
+    being written.  GIF output is limited to 256 colours by the format.
+    """
+
+    @staticmethod
+    def _palette_for_frames(frames):
+        from PIL import Image
+        from math import ceil
+
+        # Sample frames across the entire movie, not just the first one.
+        # Work with small thumbnails to avoid constructing a full-size
+        # montage, which would be expensive for long model runs.
+        samples = np.unique(np.linspace(
+            0, len(frames) - 1, min(len(frames), 32), dtype=int
+        ))
+        width, height, columns = 128, 96, 8
+        rows = ceil(len(samples) / columns)
+        sheet = Image.new('RGB', (columns * width, (rows + 1) * height),
+                          color='white')
+        for position, index in enumerate(samples):
+            sample = frames[int(index)].convert('RGB').resize(
+                (width, height), Image.Resampling.BILINEAR
+            )
+            sheet.paste(sample, (
+                (position % columns) * width,
+                (position // columns) * height,
+            ))
+
+        # Reserve a meaningful share of the colour samples for the fixed
+        # right-hand colourbar and its labels, independently of the colours
+        # elsewhere in the image. This helps when a basemap is present.
+        first = (frames[0] if frames[0].mode == 'RGB'
+                 else frames[0].convert('RGB'))
+        w, h = first.size
+        bar_region = first.crop((int(.86*w), int(.14*h),
+                                 int(.99*w), int(.90*h)))
+        bar_sample = bar_region.resize(
+            (width, height), Image.Resampling.BILINEAR
+        )
+        for column in range(columns):
+            sheet.paste(bar_sample, (column * width, rows * height))
+
+        # Median-cut runs only on the small RGB sample image, never on
+        # the full-resolution movie. The resulting palette is immutable.
+        return sheet.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
+
+    def finish(self):
+        from PIL import Image
+
+        if not self._frames:
+            raise RuntimeError('No animation frames were rendered to the GIF')
+
+        palette = self._palette_for_frames(self._frames)
+        # Replace each buffered RGB frame in place with its compact P-mode
+        # version. Keeping all original RGB frames *and* indexed copies would
+        # unnecessarily increase peak RAM for large FVCOM movie exports.
+        for i, frame in enumerate(self._frames):
+            if frame.mode == 'RGBA':
+                background = Image.new('RGBA', frame.size, 'white')
+                rgb = Image.alpha_composite(background, frame).convert('RGB')
+            else:
+                rgb = frame if frame.mode == 'RGB' else frame.convert('RGB')
+            self._frames[i] = rgb.quantize(
+                palette=palette, dither=Image.Dither.NONE
+            )
+
+        self._frames[0].save(
+            self.outfile, save_all=True, append_images=self._frames[1:],
+            duration=int(1000 / self.fps), loop=0, optimize=False,
+        )
+        # Release buffers immediately, rather than retaining all frames
+        # on an object that can outlive a completed animation.
+        self._frames.clear()
+
 
 def get_animator():
     """Return a Matplotlib writer class and its file extension."""
@@ -163,8 +286,10 @@ def get_animator():
         ('html', 'html'),
     ):
         if name in available:
-            return animation.writers[name], suffix
+            return (StablePalettePillowWriter if name == 'pillow'
+                    else animation.writers[name]), suffix
     raise RuntimeError('No supported Matplotlib animation writer available')
+
 
 class MovieProgress:
     """Progress indicator shared by FVCOM movie writers.
@@ -250,6 +375,126 @@ def make_section_figure(*, dpi=100, figsize=(19.2, 8.74)):
     return plt.figure(figsize=figsize, dpi=dpi)
 
 
+# geoplot downloads tiles using Contextily.  xyzservices provides the
+# attribution metadata that Contextily associates with those providers.
+# These strings are fallbacks only, for environments without xyzservices.
+_BASEMAP_PROVIDERS = {
+    'hot': ('OpenStreetMap', 'HOT'),
+    'mapnik': ('OpenStreetMap', 'Mapnik'),
+    'voyager': ('CartoDB', 'Voyager'),
+}
+_BASEMAP_FALLBACK_CREDITS = {
+    'hot': ('© OpenStreetMap contributors; tiles styled by the '
+            'Humanitarian OpenStreetMap Team (HOT), hosted by OpenStreetMap France'),
+    'mapnik': '© OpenStreetMap contributors',
+    'voyager': '© OpenStreetMap contributors; © CARTO',
+}
+
+
+def _provider_credit(source):
+    """Use the real Contextily/xyzservices attribution when available."""
+    if source is None:
+        source = 'hot'  # geoplot's default Contextily provider.
+
+    if not isinstance(source, str):
+        attribution = getattr(source, 'attribution', None)
+        if not attribution and hasattr(source, 'get'):
+            attribution = source.get('attribution')
+        return str(attribution) if attribution else None
+
+    key = source.lower()
+    if key not in _BASEMAP_PROVIDERS:
+        return None  # Never invent credits for unknown tile servers.
+
+    try:
+        import xyzservices.providers as providers
+        group, name = _BASEMAP_PROVIDERS[key]
+        provider = getattr(getattr(providers, group), name)
+        credit = provider.get('attribution')
+    except (ImportError, AttributeError, KeyError):
+        credit = _BASEMAP_FALLBACK_CREDITS[key]
+
+    credit = str(credit).replace('(C)', '©')
+    if key == 'hot' and 'HOT' not in credit:
+        credit += ' (HOT)'
+    return credit
+
+
+def basemap_credit(source, background=None):
+    """Attribution for the tile source that actually supplied the image.
+
+    Prefer metadata returned by geoplot/Contextily, if present. Otherwise
+    use Contextily's provider information for the successful source, never
+    the attribution of a failed provider in the fallback chain.
+    """
+    if background is not None:
+        supplied = getattr(background, 'attribution', None)
+        if supplied:
+            credit = str(supplied)
+        else:
+            credit = None
+            for attribute in ('provider', 'source'):
+                provider = getattr(background, attribute, None)
+                if provider is not None:
+                    credit = _provider_credit(provider)
+                    if credit:
+                        break
+    else:
+        credit = None
+
+    if not credit:
+        credit = _provider_credit(source)
+    if not credit:
+        return None
+
+    # Plain-text licensing URLs remain legible when a GIF/MP4 is detached
+    # from its source page. Contextily may otherwise supply only a label.
+    if ('OpenStreetMap' in credit and 'openstreetmap.org/copyright' not in credit):
+        credit += ' · openstreetmap.org/copyright'
+    if ('CARTO' in credit and 'carto.com/attribution' not in credit):
+        credit += ' · carto.com/attribution'
+    return credit
+
+
+def add_basemap_credit(figure, background):
+    """Draw a *persistent*, legible credit on a horizontal movie figure.
+
+    Called once per figure, not each frame. The figure itself must not be
+    cleared during animation; only the map axes can be cleared.
+    """
+    credit = getattr(background, 'attribution', None) if background is not None else None
+    if not credit:
+        return None
+    return figure.text(
+        0.99, 0.012, fill(str(credit), width=95, break_long_words=False),
+        transform=figure.transFigure,
+        ha='right', va='bottom', fontsize=8, color='#171717',
+        bbox=dict(facecolor='white', alpha=0.88, edgecolor='none', pad=2),
+        zorder=100,
+    )
+
+
+def make_movie_axes(figure, *, cmap, levels, label='', extend='both',
+                    background=None):
+    """Reserve a fixed plot area and a persistent colorbar for every frame.
+
+    The colorbar is based on the fixed frame-independent contour levels. It
+    remains visible even on a time step without valid triangles. Redraw only
+    the map axes with ``ax.clear()``; never call ``figure.clear()`` per frame.
+    """
+    levels = np.asarray(levels, dtype=float)
+    if levels.ndim != 1 or len(levels) < 2 or not np.all(np.diff(levels) > 0):
+        raise ValueError('Movie contour levels must be strictly increasing')
+    ax = figure.add_axes([0.08, 0.075, 0.765, 0.865])
+    cax = figure.add_axes([0.875, 0.20, 0.018, 0.64])
+    norm = Normalize(vmin=float(levels[0]), vmax=float(levels[-1]))
+    mappable = ScalarMappable(norm=norm, cmap=cmap)
+    figure.colorbar(mappable, cax=cax, label=label, boundaries=levels,
+                    extend=extend, spacing='proportional')
+    add_basemap_credit(figure, background)
+    return ax
+
+
 def get_georeference(x, y, reference, *, sources=('hot', 'mapnik', 'voyager'),
                      verbose=False):
     """Optionally fetch a georeferenced basemap for a horizontal movie.
@@ -273,6 +518,27 @@ def get_georeference(x, y, reference, *, sources=('hot', 'mapnik', 'voyager'),
                 options['source'] = source
             background = geoplot(x, y, **options)
             if background is not None:
+                # Real geoplot objects contain the raster and its extent.
+                # Assign only to such objects; small mocked objects in tests
+                # are not necessarily mutable.
+                if hasattr(background, 'img') and hasattr(background, 'extent'):
+                    credit = basemap_credit(source, background)
+                    if credit is None:
+                        raise ValueError(
+                            f'Unknown map attribution for source {source!r}; '
+                            'set the provider attribution explicitly'
+                        )
+                    try:
+                        background.attribution = credit
+                    except (AttributeError, TypeError):
+                        # The only properties used by the movie scripts are
+                        # img, extent and attribution. Support read-only map
+                        # result objects, too.
+                        from types import SimpleNamespace
+                        background = SimpleNamespace(
+                            img=background.img, extent=background.extent,
+                            attribution=credit,
+                        )
                 return background
         except Exception as exc:
             if verbose:
@@ -293,7 +559,8 @@ def get_grid_georeference(grid, *, xlim=None, ylim=None, at='node',
         x, y = grid.xc, grid.yc
     else:
         raise ValueError("at must be 'node' or 'cell'")
-    return get_georeference(x, y, grid.reference, sources=sources, verbose=verbose)
+    return get_georeference(x, y, grid.reference, sources=sources,
+                            verbose=verbose)
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +573,7 @@ def save_animation(
     *,
     frame_count,
     output_stem,
+    output_dir=None,
     fps=12,
     progress_label='- movie: ',
     maker=None,
@@ -322,7 +590,10 @@ def save_animation(
     frame_count : int
         Number of frames to encode (positive).
     output_stem : str or pathlib.Path
-        Destination path without the writer-specific extension.
+        Destination filename/path without the writer-specific extension.
+    output_dir : str or pathlib.Path, optional
+        Directory for the movie. Defaults to the current working directory
+        unless output_stem itself includes a path. Created if necessary.
     fps : float
         Frames per second, positive.
     progress_label : str
@@ -350,7 +621,12 @@ def save_animation(
             raise ValueError('Animation fps must be a positive finite number')
 
         Writer, extension = get_animator()
-        output_path = Path(f'{output_stem}.{extension}')
+        stem = Path(output_stem).expanduser()
+        if output_dir is not None:
+            # The explicit directory wins even when output_stem includes a path.
+            stem = Path(output_dir).expanduser() / stem.name
+        output_path = Path(f'{stem}.{extension}').resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with MovieProgress(frame_count, progress_label) as progress:
             if maker is not None:
@@ -368,6 +644,9 @@ def save_animation(
             with session:
                 movie.save(str(output_path), writer=Writer(fps=fps))
 
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            raise RuntimeError(f'Animation writer produced no output: {output_path}')
+        print(f'--> Movie saved: {output_path}')
         return output_path
     finally:
         plt.close(figure)
