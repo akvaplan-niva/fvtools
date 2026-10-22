@@ -153,24 +153,27 @@ class HBVRunoff:
         - Assumes that all .var files in the hbv folder are runoff data.
         - crop to time between start and stop
         '''
-        # Load data for the full country
+        # Load data for the full country, in vassdragsområde order (os.listdir is not sorted)
+        files = sorted([f for f in os.listdir(hbvfolder) if f.endswith('.var')], key = lambda f: int(f.split('.var')[0][-3:]))
         data = []
-        for i, file in enumerate(os.listdir(hbvfolder)):
+        for i, file in enumerate(files):
             # Figure out which number this vassdragsområde is
             vassdragsomraade = int(file.split('.var')[0][-3:])
-        
+
             # Load the data
             _data = pd.read_csv(f'{hbvfolder}{file}', header = None, sep=r'\s+')
-        
+
             # Load the dates, will have the same coverage in all files
             if i == 0:
                 dates = [datetime(int(d[0:4]), int(d[4:6]), int(d[6:8]), int(d[9:11]), tzinfo = timezone.utc) for d in _data[0]]
-        
+
             data.append(_data.rename(columns = {1: vassdragsomraade}).drop(columns=0))
-        
-        # Re-scale vassdragsområde 183 (python index 182), as suggested by James Sample at NIVA
-        data[182] = 6/16 * data[181]
+
         self.transport = pd.concat(data, axis = 1).T
+
+        # Re-scale vassdragsområde 183 to 6/16 of 182, as suggested by James Sample at NIVA
+        if 182 in self.transport.index and 183 in self.transport.index:
+            self.transport.loc[183] = 6/16 * self.transport.loc[182]
         self.dates = np.array(dates)
 
         assert any(self.dates <= start), f'the database does not cover dates prior to {self.dates[0]}'
