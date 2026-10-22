@@ -1,357 +1,153 @@
-import sys
-import os
-import numpy as np
-import cmocean as cmo
+"""Animate horizontal FVCOM velocities and streamlines.
+
+Use qc_gif.py for vertical sections and section-normal velocity instead.
+Both scripts use fvtools.plot.movie_common for time/file selection.
+"""
+
 import matplotlib.pyplot as plt
-import progressbar as pb
-import matplotlib.animation as manimation
+import numpy as np
 
-from fvtools.plot.fvcom_streamlines import streamlines
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.tools import Filelist, num2date, date2num
-from fvtools.plot.geoplot import geoplot
-from netCDF4 import Dataset
-from datetime import datetime, timezone
+from fvtools.plot.fvcom_streamlines import streamlines
+from fvtools.plot.movie_common import (
+    get_movie_frames,
+    print_frame_range,
+    save_animation,
+    make_horizontal_figure,
+    get_grid_georeference,
+)
 
-# ---------------------------------------------------------------------------------------
-#             Interpolate velocity data to depths of interest, create
-#             a movie showing velocity maxima/minima and streamlines
-# ---------------------------------------------------------------------------------------
-def main(filelist = None,
-         folder = None,
-         sigma  = None,
-         z      = None,
-         xlim   = None,
-         ylim   = None,
-         start  = None,
-         stop   = None,
-         vlev   = None,
-         hres   = None,
-         mname  = None,
-         verbose = False,
-         fps    = 12,
-         dpi    = 100,
-         reference = 'epsg:32633'):
-    '''
-    Interpolate velocity data to depths of interest, create
-    a movie showing velocity maxima/minima and streamlines
 
-    Mandatory input:
-    ----
-    - filelist or folder
-    - sigma or z: (u, v) at sigma layer OR z-level to plot
-                --> if not specified, we will use (ua, va) instead
+def main(filelist=None, folder=None, sigma=None, z=None, xlim=None,
+         ylim=None, start=None, stop=None, vlev=None, hres=None,
+         mname=None, verbose=False, fps=12, dpi=100,
+         reference='epsg:32633'):
+    """Save a velocity/streamline movie; defaults to depth-averaged ua/va.
 
-    Optional input:
-    ----
-    - xlim, ylim: limited area
-    - hres:       distance between streamline seeding points
-    - start:      start limit
-    - stop:       stop limit
-    - fps:        framerate
-    - verbose:    the routine will tell you where it is
-    - vlev:       color levels to plot for the velocity-contour plot
-    '''
+    sigma: integer model-layer index; z: depth in metres below the surface.
+    Both cannot be specified at once. start/stop use yyyy-mm-dd-HH (UTC).
+    """
     if sigma is not None and z is not None:
         raise ValueError('Specify either sigma or z, not both')
 
-    # Figure out whether to read u, v or ua, va
-    avg = False
-    if sigma is None and z is None:
-        avg = True
-        
-    # Initialize the filelist
-    fl  = parse_input(folder, filelist, start, stop)
-
-    # Establish a grid object
-    M   = FVCOM_grid(fl.path[0], verbose = verbose, reference = reference)
-
-    # Check if we can use a cropped version of the grid
+    frames = get_movie_frames(
+        folder=folder, filelist=filelist, start=start, stop=stop,
+    )
+    print_frame_range(frames)
+    grid = FVCOM_grid(frames.path[0], verbose=verbose, reference=reference)
     if xlim is not None and ylim is not None:
-        M = M.subgrid(xlim, ylim)
+        grid = grid.subgrid(xlim, ylim)
 
-    # Establish the streamline maker
-    stream         = streamlines(M, color = 'w', verbose = verbose)
-    stream.verbose = verbose
-        
-    # Inititalize movie maker
-    UV           = UVmov(M, fl, stream, xlim, ylim, hres, avg, vlev, verbose=verbose, dpi=dpi)
-    UV.sig, UV.z = sigma, z
+    stream = streamlines(grid, color='w', verbose=verbose)
+    maker = UVmov(
+        grid, frames, stream, xlim, ylim, hres,
+        avg=(sigma is None and z is None), vlev=vlev,
+        verbose=verbose, dpi=dpi,
+    )
+    maker.sig, maker.z = sigma, z
+    save_animation(
+        maker.fig,
+        maker.animate,
+        frame_count=len(frames),
+        output_stem=mname or f'{grid.casename}_velocities',
+        fps=fps,
+        progress_label='- streamline movie: ',
+        maker=maker,
+        grid=grid,
+    )
 
-    # Get the movie writer, prepare the show
-    MovieWriter, codec = get_animator()
 
-    # Inititalize the progressbar
-    UV.progress = progress(len(fl.path))
-    anim        = manimation.FuncAnimation(UV.fig,
-                                           UV.animate,
-                                           frames           = len(UV.fl.path),
-                                           save_count       = len(UV.fl.path),
-                                           repeat           = False,
-                                           blit             = False,
-                                           cache_frame_data = False)
-        
-    # Set framerate, write the movie
-    writer = MovieWriter(fps = fps)
-
-    # Choose a savaname, save the animation, close progressbar and return.
-    if mname is None:
-        savename = f'{M.casename}_velocities.{codec}'
-    else:
-        savename = f'{mname}.{codec}'
-    with M.netcdf_session():
-        anim.save(savename, writer = writer)
-    UV.progress.bar.finish()
-
-def get_animator():
-    '''
-    Check which animator is available, get going
-    '''
-    avail          = manimation.writers.list()
-    if 'ffmpeg' in avail:
-        FuncAnimation = manimation.writers['ffmpeg']
-        codec      = 'mp4'
-       
-    elif 'pillow' in avail:
-        FuncAnimation = manimation.writers['pillow']
-        codec      = 'gif'
-
-    elif 'imagemagick' in avail:
-        FuncAnimation = manimation.writers['imagemagick']
-        codec      = 'gif'
-
-    elif 'html' in avail:
-        FuncAnimation = manimation.writers['html']
-        codec      = 'html'
-
-    else:
-        raise ValueError('None of the standard animators are available')
-    
-    print(f'- This movie will be written as a {codec} file')
-    return FuncAnimation, codec
-    
-class progress:
-    '''
-    Add a progressbar to the loop
-    '''
-    def __init__(self, frames):
-        '''
-        pre-define number of frames etc.
-        '''
-        self.bar = pb.ProgressBar(widgets = ['- streamline movie: ', pb.Percentage(), pb.Bar(), pb.ETA()], maxval = frames)
-        self.bar.start()
 
 class UVmov:
-    '''
-    Containts variables and procedures to create a velocity movie with
-    streamplots and stuff.
-    '''
-    def __init__(self, M, fl, stream, xlim, ylim, hres, avg, vlev = None, verbose = True, dpi = 300):
-        '''
-        Initialize grid, georeferenced image etc. for the movie maker
-        '''
-        # Store input
-        self.M    = M;    self.fl   = fl;  self.stream = stream
-        self.xlim = xlim; self.ylim = ylim
-        self.avg  = avg
+    """Load and render one horizontal velocity frame at a time."""
+
+    def __init__(self, M, fl, stream, xlim, ylim, hres,
+                 avg, vlev=None, verbose=True, dpi=300):
+        self.M = M
+        self.fl = fl
+        self.stream = stream
+        self.xlim, self.ylim = xlim, ylim
+        self.avg = avg
         self.vlev = vlev
+        self.sig = None
+        self.z = None
 
-        # Prepare streamlines
         self.stream.initialize_positions(xlim, ylim, hres)
+        self.gp = get_grid_georeference(
+            self.M, xlim=self.xlim, ylim=self.ylim, at='cell',
+            sources=(None, 'hot', 'mapnik', 'voyager'), verbose=verbose,
+        )
+        self.fig = make_horizontal_figure(self.M, dpi=dpi)
 
-        # Prepare file search
-        self.old_path = 'loremipsum'
 
-        # Prepare georeference
-        if verbose:
-            print('- Initialize georeference')
-        if self.xlim is not None and self.ylim is not None:
-            self.gp  = geoplot(self.xlim, self.ylim, projection = M.reference)
-        else:
-            self.gp  = geoplot(self.M.xc, self.M.yc, projection = M.reference)
-        
-        # Initialize the figure
-        self.fig = self.make_figure(dpi = dpi)
-
-        # Use a wet and dry scheme
-        self._wetndry = True
-
-    def make_figure(self, size = 15., dpi = 300):
-        dx = self.M.x.max() - self.M.x.min()
-        dy = self.M.y.max() - self.M.y.min()
-        aspect_ratio = float(dy)/(float(dx)*1.2)
-        return plt.figure(figsize=(size / aspect_ratio, size), dpi = dpi)
-
-    def animate(self, i):
-        '''
-        Write frames in sigma levels
-        '''
-        # Clean the frame
-        # - future: remove contour and colorbar, keep georeference? Might not be too significant performance wise though
-        plt.clf()
-        
-        # See if we need to open new netcdf
-        self.progress.bar.update(i)
-
-        # Extract data from netcdf (and compute speed)
-        self.load_data(i)
-
-        # Add georeference
-        if self.gp is not None:
-            plt.imshow(self.gp.img, extent=self.gp.extent)
-
-        # An entirely dry frame has no contour data.
-        if self.sp_fv.count():
-            c = self.M.plot_contour(self.sp_fv, levels=self.vlev,
-                                    cmap='jet', extend='max', show=False)
-            try:
-                self.stream.get_streamlines(self.ufv, self.vfv)
-            except Exception as exc:
-                print(f'Warning: streamline frame {i} failed: {exc}')
-            self.fig.colorbar(c, ax=plt.gca(), label=r'm$s^{-1}$', shrink=0.5)
-        else:
-            c = None
-
-        # Title to get when/where
-        self.format_figure(i)
-
-        return c
-
-    def format_figure(self, i):
-        plt.xlim(self.xlim)
-        plt.ylim(self.ylim)
-        plt.yticks([])
-        plt.xticks([])
-        if self.avg:
-            plt.title(f'avg: {self.fl.datetime[i].strftime("%m/%d, %H:%M:%S")}')
-
-        elif self.sig is not None:
-            plt.title(f'sigma = {self.sig}: {self.fl.datetime[i].strftime("%m/%d, %H:%M:%S")}')
-
-        elif self.z is not None:
-            plt.title(f'z = {self.z}: {self.fl.datetime[i].strftime("%m/%d, %H:%M:%S")}')
-
-    def get_path(self,i):
-        if self.fl.path[i] != self.old_path:
-            self.d          = Dataset(self.fl.path[i])
-            self.old_path   = self.fl.path[i]
-
-    # This will need some revision, maybe even using FVCOM_grids load_NETCDF function
     def load_data(self, i):
-        """Read both velocity components in one FVCOM_grid call."""
+        """Read two velocity components together, retaining a shared mask."""
         names = ('ua', 'va') if self.avg else ('u', 'v')
-        velocities = self.M.load_netCDF(
+        uv = self.M.load_netCDF(
             self.fl.path[i], names, self.fl.index[i],
             sig=None if self.avg else self.sig,
             z=None if self.avg else self.z,
         )
-        u = np.asarray(velocities[names[0]], dtype=float)
-        v = np.asarray(velocities[names[1]], dtype=float)
-        if u.shape != v.shape or u.ndim != 1:
-            raise ValueError(f'Expected matching 1-D u/v arrays: {u.shape}, {v.shape}')
+        u = np.ma.asarray(uv[names[0]], dtype=float).filled(np.nan)
+        v = np.ma.asarray(uv[names[1]], dtype=float).filled(np.nan)
+        # FVCOM u/v and depth-averaged ua/va are always cell-centred.
+        expected_shape = (self.M.cell_number,)
+        if u.shape != expected_shape or v.shape != expected_shape:
+            raise ValueError(
+                f'Expected cell-centred velocities {expected_shape}; '
+                f'got u={u.shape}, v={v.shape}'
+            )
+
         invalid = ~np.isfinite(u) | ~np.isfinite(v)
-        # Streamline code cannot accept NaNs; contours must still mask dry cells.
         self.ufv = np.where(invalid, 0.0, u)
         self.vfv = np.where(invalid, 0.0, v)
         self.sp_fv = np.ma.array(np.hypot(u, v), mask=invalid)
 
         if self.vlev is None:
             valid = self.sp_fv.compressed()
-            if not valid.size:
-                raise ValueError('No valid velocities in the first animation frame')
-            self.vlev = np.linspace(0.0, max(valid.max(), 1e-6), 20)
+            vmax = max(float(valid.max()), 1e-6) if valid.size else 0.1
+            self.vlev = np.linspace(0, vmax, 20)
 
-def parse_input(folder, filelist, start, stop):
-    '''
-    Return the fields the routine expects
-    '''
-    if filelist is None:
-        assert folder is not None, 'You must provide either lead me to a folder or a filelist'
-        files = allFiles(folder)
+    def animate(self, i):
+        """Draw contours, streamlines, and a single frame's title."""
+        self.bar.update(i)
+        self.load_data(i)
+        self.fig.clear()
+        ax = self.fig.add_subplot(111)
+        plt.sca(ax)  # FVCOM plotting helpers draw on the active axes.
 
-        # Input string to fvcom time, initialize Filelist-like object
-        start, stop = parse_time_input(files[0], start, stop)
-        fl = qc_fileList(files, start, stop)
+        if self.gp is not None:
+            ax.imshow(self.gp.img, extent=self.gp.extent)
 
-    else:
-        fl   = Filelist(filelist, start, stop)
+        contour = None
+        if self.sp_fv.count():
+            contour = self.M.plot_contour(
+                self.sp_fv, levels=self.vlev,
+                cmap='jet', extend='max', show=False,
+            )
+            try:
+                self.stream.get_streamlines(self.ufv, self.vfv)
+            except Exception as exc:
+                print(f'Warning: streamline frame {i} failed: {exc}')
+            self.fig.colorbar(contour, ax=ax, label=r'm$s^{-1}$', shrink=0.5)
+        else:
+            ax.text(0.5, 0.5, 'No wet cells for this time step',
+                    transform=ax.transAxes, ha='center', va='center')
 
-    # Print time
-    print(' ')
-    print(f"Start: {fl.datetime[0].strftime('%d/%B-%Y, %H:%M:%S')}")
-    print(f"End:   {fl.datetime[-1].strftime('%d/%B-%Y, %H:%M:%S')}")
-    
-    return fl
+        self.format_figure(i)
+        return contour
 
-def qc_fileList(files, start, stop):
-    '''
-    Take a timestep, couple it to a file
-    ----
-    - files: FileList
-    - start: Day to start
-    - stop:  Day to stop
-    '''
-    print('Making filelist:\n-----')
-    fl = mini_filelist()
-    time, List, index  = np.empty(0), [], []
-
-    def crop_selection(t, indices, inds):
-        return t[inds], indices[inds]
-
-    for this_file in files:
-        with  Dataset(this_file) as d:
-            t = date2num(num2date(Itime = d['Itime'][:], Itime2 = d['Itime2'][:]))
-            indices = np.arange(len(t))
-            if start is not None:
-                if t.min()<start and t.max()<start:
-                    print(f' - {this_file} is before the date range')
-                    continue
-
-                else:
-                    inds = np.where(t>=start)[0]
-                    if elements(inds)>0:
-                        t, indices = crop_selection(t, indices, inds)
-
-            if stop is not None:
-                if t.min()>stop:
-                    break
-
-                inds = np.where(t<=stop)[0]
-                if elements(inds)>0:
-                    t, indices = crop_selection(t, indices, inds)
-                    
-            print(f' - {this_file}')
-            time     = np.append(time, t)
-            List     = List + [this_file]*len(t)
-            index.extend(list(indices))
-
-    fl.time, fl.datetime, fl.path, fl.index = time, num2date(time = time), List, index
-    return fl
-
-def parse_time_input(file_in, start, stop):
-    """
-    Translate time input to FVCOM time
-    """
-    if start is not None:
-        start_num = start.split('-')
-        start = date2num([datetime(int(start_num[0]), int(start_num[1]), int(start_num[2]), int(start_num[3]), tzinfo = timezone.utc)])
-    if stop is not None:
-        stop_num = stop.split('-')
-        stop = date2num([datetime(int(stop_num[0]), int(stop_num[1]), int(stop_num[2]), int(stop_num[3]), tzinfo = timezone.utc)])
-    return start, stop
-
-def allFiles(folder):
-    '''
-    Return list of netCDF output files in a folder
-    '''
-    rawlist = os.listdir(folder)
-    ncfiles = [file for file in rawlist if file[-3:] == '.nc' and 'restart' not in file]
-    ncfiles.sort()
-    ncfiles = [os.path.join(folder, file) for file in ncfiles]
-    return ncfiles
-
-def elements(array):
-    return array.ndim and array.size
-
-class mini_filelist:
-    pass
+    def format_figure(self, i):
+        if self.xlim is not None:
+            plt.xlim(self.xlim)
+        if self.ylim is not None:
+            plt.ylim(self.ylim)
+        plt.xticks([])
+        plt.yticks([])
+        if self.avg:
+            prefix = 'avg'
+        elif self.sig is not None:
+            prefix = f'sigma = {self.sig}'
+        else:
+            prefix = f'z = {self.z}'
+        plt.title(f'{prefix}: {self.fl.datetime[i]:%m/%d, %H:%M:%S}')

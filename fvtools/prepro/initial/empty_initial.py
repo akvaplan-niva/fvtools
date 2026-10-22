@@ -70,7 +70,7 @@ def make_initial_file(M, initial_time, obc_type = 0):
 
     # Write to the initial file
     with netCDF4.Dataset(f'{M.casename}_initial.nc', 'w') as initial:
-        timedim  = initial.createDimension('time', 0)
+        timedim  = initial.createDimension('time', None)
         nodedim  = initial.createDimension('node', len(M.x))
         celldim  = initial.createDimension('nele', len(M.xc))
         threedim = initial.createDimension('three', 3)

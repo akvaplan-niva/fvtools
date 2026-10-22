@@ -1,18 +1,13 @@
-import os
 import numpy as np
 import cmocean as cmo
-import progressbar as pb
 import matplotlib.pyplot as plt
-import matplotlib.animation as manimation
-import warnings
-warnings.filterwarnings("ignore")
 
 from netCDF4 import Dataset
-from matplotlib.colors import Normalize
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.tools import Filelist, num2date, date2num
-from fvtools.plot.geoplot import geoplot
-from datetime import datetime, timezone
+from fvtools.plot.movie_common import (
+    get_movie_frames, print_frame_range, save_animation,
+    make_horizontal_figure, make_section_figure, get_grid_georeference,
+)
 
 # Synthetic section fields (not variable names in the FVCOM NetCDF file).
 SECTION_VELOCITY_FIELDS = {
@@ -20,235 +15,126 @@ SECTION_VELOCITY_FIELDS = {
     'along_velocity': 'along',
     'velocity_speed': 'speed',
 }
+
+# Only the speed magnitude is cell-centred. Vorticity and PV are nodal.
+CELL_VELOCITY_FIELDS = frozenset({'sp'})
     
 # ----------------------------------------------------------------------------------------
 #                     Create an animation from a number of files
 # ----------------------------------------------------------------------------------------
-def main(folder = None,
-         fname  = None,
-         filelist = None,
-         var    = ['salinity', 'temp', 'zeta'],
-         sigma  = None,
-         z      = None,
-         xlim   = None,
-         ylim   = None,
-         start  = None,
-         stop   = None,
-         section = None,
-         section_res  = None,
-         fps    = 12,
-         mname  = None,
-         dpi    = 100,
-         nlevels = 20,
-         reference = 'epsg:32633',
-         **kwargs):
-    '''
-    One-liner to make animations of FVCOM output fields.
-    ---
+def main(folder=None, fname=None, filelist=None, var=None,
+         sigma=None, z=None, xlim=None, ylim=None, start=None, stop=None,
+         section=None, section_res=None, fps=12, mname=None, dpi=100,
+         nlevels=20, reference='epsg:32633', **kwargs):
+    """Create FVCOM animations from sigma, z-level, and/or vertical sections.
 
-    Reads files, creates animation.
-    - from single files
-    - from multiple files in a folder
-    - from files referenced in a filelist
-    
-    Mandatory to choose one of these:
-    ----
-    fname:    file you want to read
-    folder:   folder holding FVCOM output file
-    filelist: "filelist.txt" file from fvcom_make_filelist.py
-    
-    At least one:
-    ----
-    sigma:        sigma layer to animate (or 'max' if you want to plot the maximum vertical value)
-    z:            z-level to animate
-    section:      make a movie of a transect
-                    - a .txt file with lon lat columns (at least 2 points separated by a space)
-                    - True (then you can click on a map to create a section)
-
-    Optional:
-    ----
-    var:          field names (in output), as list.
-    xlim, ylim:   bound to a smaller domain
-    start:        'yyyy-mm-dd-hh' string - first timestep in movie
-    stop:         'yyyy-mm-dd-hh' string - last timestep in movie
-    fps:          movie framerate ('out' by default)
-    section_res:  horizontal resolution of transect (if not specified, we will use 60 points)
-    dpi:          pixels pr inch
-    nlevels:      number of contour levels
-    section_vlim: optional positive m/s speed limit for section velocities;
-                  signed velocity uses [-section_vlim, section_vlim]
-    velocity_coordinates: 'east_north' (default) or 'projected' for u/v
-    section_neighbors: number of nearby cells used for the transect subgrid (default 12)
-    Report issues/bugs to hes@akvaplan.niva.no
-    '''
-    # Copy the input to a dictionary
-    options = dict(
+    For section normal-flow animations, specify section=... and
+    var=['normal_velocity']; optional section_vlim is in m/s.
+    """
+    options = _prepare_movie_options(
         folder=folder, fname=fname, filelist=filelist, var=var,
         sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
         section=section, section_res=section_res, fps=fps, mname=mname,
-        dpi=dpi, nlevels=nlevels, reference=reference
+        dpi=dpi, nlevels=nlevels, reference=reference, **kwargs,
     )
-    options.update(kwargs)
-    kwargs = options
 
-    # Stop if insufficient input
-    if section is None and sigma is None and z is None:
-        raise ValueError('The routine needs at least one of "section", "sigma" or "z"')
-
-    # Get the relevant files
-    kwargs['time'], kwargs['dates'], kwargs['List'], kwargs['index'], kwargs['cb'] = parse_input(**kwargs)
-
-    # Plot surface fields
-    if kwargs['sigma'] is not None:
-        surface_movie(**kwargs)
-
-    # Plot fields interpolated to constant z-levels
-    if kwargs['z'] is not None:
-        zlevel_movie(**kwargs)
-
-    # Plot section fields
-    if kwargs['section'] is not None and kwargs['section'] is not False:
-        section_movie(**kwargs)
-
+    if options['sigma'] is not None:
+        surface_movie(**options)
+    if options['z'] is not None:
+        zlevel_movie(**options)
+    if options['section'] not in (None, False):
+        section_movie(**options)
     print('--> Done.')
 
-def get_input(
-        folder = None,
-        fname  = None,
-        filelist = None,
-        var    = ['salinity', 'temp', 'zeta'],
-        sigma  = None,
-        z      = None,
-        xlim   = None,
-        ylim   = None,
-        start  = None,
-        stop   = None,
-        section = None,
-        section_res  = None,
-        fps    = 12,
-        mname  = None,
-        dpi    = 100,
-        nlevels = 20,
-        reference = 'epsg:32633',
-        **kwargs
-        ):
-    '''
-    Returns a dict with all keyword arguments (kwargs) needed to run 
-    surface_movie, zlevel_movie and section_movie (including filelist).
-    
-    See .main for input descriptions
 
-    Example usage:
-    ---
-    kwargs = get_input(
-        folder = 'output/', start = '2019-02-01-00', stop = '2019-02-20-00', 
-        sigma = 0, var = ['salinity', 'temp']
-        )
+def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
+              sigma=None, z=None, xlim=None, ylim=None, start=None,
+              stop=None, section=None, section_res=None, fps=12,
+              mname=None, dpi=100, nlevels=20,
+              reference='epsg:32633', **kwargs):
+    """Return all options and selected frames for the three movie functions.
 
-    # Make surface movie of sigma = 0
-    surface_movie(**kwargs)
-
-    # Make section movie
-    kwargs['section'] = 'section.txt'
-    kwargs['section_res'] = 50
-    section_movie(**kwargs)
-
-    # Make z-level movie
-    kwargs['z'] = 100
-    zlevel_movie(**kwargs)
-    '''
-    # Copy the input
+    The returned dictionary can be passed directly to surface_movie,
+    zlevel_movie or section_movie. Only called internally by main().
+    """
     options = dict(
-        folder=folder, fname=fname, filelist=filelist, var=var,
+        folder=folder, fname=fname, filelist=filelist,
+        var=['salinity', 'temp', 'zeta'] if var is None else (
+            [var] if isinstance(var, str) else list(var)),
         sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
         section=section, section_res=section_res, fps=fps, mname=mname,
-        dpi=dpi, nlevels=nlevels, reference=reference
+        dpi=dpi, nlevels=nlevels, reference=reference,
     )
     options.update(kwargs)
-    kwargs = options
+    if options['section'] in (None, False) and options['sigma'] is None and options['z'] is None:
+        raise ValueError('Specify at least one of section, sigma or z')
+    if options['sigma'] is not None and options['z'] is not None:
+        raise ValueError('Specify either sigma or z, not both')
+    frames = get_movie_frames(
+        folder=options['folder'], fname=options['fname'],
+        filelist=options['filelist'], start=options['start'],
+        stop=options['stop'],
+    )
+    options['time'], options['dates'] = frames.time, frames.datetime
+    options['List'], options['index'] = frames.path, frames.index
+    options['cb'] = build_colorbars(
+        frames, options['var'], sigma=options['sigma'],
+        nlevels=options['nlevels'],
+    )
+    print_frame_range(frames)
+    return options
 
-    # Stop if insufficient input
-    if section is None and sigma is None and z is None:
-        raise ValueError('The routine needs at least one of "section", "sigma" or "z"')
-
-    kwargs['time'], kwargs['dates'], kwargs['List'], kwargs['index'], kwargs['cb'] = parse_input(**kwargs)
-    return kwargs
     
 # ----------------------------------------------------------------------------------------------------------------------
 #                                            Movie plotters
 # ----------------------------------------------------------------------------------------------------------------------
 def surface_movie(**kwargs):
-    '''
-    Makes movies of tracer fields along constant sigma-levels
-    '''
-    if any(f in SECTION_VELOCITY_FIELDS for f in kwargs['var']):
-        raise ValueError('Section velocity fields require section=...')
-    # Dump to the movie maker
-    print('\nFeeding data to the movie maker')
-    mmaker = HorizontalMaker(**kwargs)
-    MovieWriter, codec = get_animator()
+    """Make horizontal contour movies on a specified sigma layer."""
+    _validate_scalar_fields(kwargs['var'])
+    maker = HorizontalMaker(**kwargs)
+    _write_horizontal_movies(
+        maker, kwargs, callback=maker.contourf_animate,
+        suffix=f'sigma_{kwargs["sigma"]}',
+    )
 
-    mname = kwargs['mname'] or mmaker.M.casename
-
-    for field in kwargs['var']:
-        mmaker.var    = field
-        widget        = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
-        mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(kwargs['time']))
-
-        # Prepare figure
-        fig = mmaker.make_figure(dpi = kwargs['dpi'])
-
-        # prepare movie maker
-        mmaker.bar.start()
-        anim = manimation.FuncAnimation(
-            fig,
-            mmaker.contourf_animate,
-            frames           = len(kwargs['time']),
-            save_count       = len(kwargs['time']),
-            repeat           = False,
-            blit             = False,
-            cache_frame_data = False
-            )
-        writer = MovieWriter(fps = kwargs['fps'])
-
-        # Set framerate, write the movie
-        write_movie(mmaker, anim, f'{mname}_sigma_{kwargs["sigma"]}', field, codec, writer)
 
 def zlevel_movie(**kwargs):
-    '''
-    Makes movies of tracer fields along constant z-levels
-    '''
-    if any(f in SECTION_VELOCITY_FIELDS for f in kwargs['var']):
-        raise ValueError('Section velocity fields require section=...')
-    # Dump to the movie maker
-    print('\nFeeding data to the movie maker')
-    mmaker = HorizontalMaker(**kwargs)  
-    mmaker.sigma = None
+    """Make horizontal contour movies interpolated to constant z levels."""
+    _validate_scalar_fields(kwargs['var'])
+    maker = HorizontalMaker(**kwargs)
+    maker.sigma = None
+    _write_horizontal_movies(
+        maker, kwargs, callback=maker.zlevel_animate,
+        suffix=f'{kwargs["z"]}m_depth',
+        excluded=('zeta', 'vorticity', 'pv', 'sp'),
+    )
 
-    mname = kwargs['mname'] or mmaker.M.casename
 
-    MovieWriter, codec = get_animator()
+def _validate_scalar_fields(fields):
+    invalid = set(fields).intersection(SECTION_VELOCITY_FIELDS)
+    if invalid:
+        raise ValueError(f'Section velocity fields require section=...: {sorted(invalid)}')
 
-    for field in kwargs['var']:
-        if field in ['zeta', 'vorticity', 'pv', 'sp']:
+
+def _write_horizontal_movies(maker, options, *, callback, suffix, excluded=()):
+    """Select fields and hand each figure to the shared animation writer."""
+    name = options['mname'] or maker.M.casename
+    count = len(options['time'])
+    for field in options['var']:
+        if field in excluded:
             continue
-        mmaker.var    = field
-        widget        = [f'- Make z-level {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
-        mmaker.bar    = pb.ProgressBar(widgets=widget, maxval = len(kwargs['time']))
-        mmaker.bar.start()
+        maker.var = field
+        save_animation(
+            make_horizontal_figure(maker.M, dpi=options['dpi']),
+            callback,
+            frame_count=count,
+            output_stem=f'{name}_{suffix}_{field}',
+            fps=options['fps'],
+            progress_label=f'- Make {field} movie: ',
+            maker=maker,
+            grid=maker.M,
+        )
 
-        fig = mmaker.make_figure(dpi = kwargs['dpi'])
-        anim = manimation.FuncAnimation(
-            fig,
-            mmaker.zlevel_animate,
-            frames           = len(kwargs['time']),
-            save_count       = len(kwargs['time']),
-            repeat           = False,
-            blit             = False,
-            cache_frame_data = False
-            )
-        writer = MovieWriter(fps = kwargs['fps'])
-        write_movie(mmaker, anim, f'{mname}_{kwargs["z"]}m_depth', field, codec, writer)
 
 def _set_section_velocity_colorbars(mmaker, fields, vlim, nlevels):
     """Use one symmetric colour scale across all section frames.
@@ -303,7 +189,6 @@ def section_movie(**kwargs):
     Plot movies from cross-sections
     '''
     print('\nCreate the section movie')
-    MovieWriter, codec = get_animator()
     
     # Find grid info
     print('- Get grid info, section points and triangulation')
@@ -315,7 +200,7 @@ def section_movie(**kwargs):
     print('- Prepare the section')
     M.prepare_section(section_file=section_file, res=kwargs['section_res'], store_transect_img=True)
 
-    # Keep enough neighbouring cells to triangulate CELL-centred u/v data
+    # All FVCOM u/v fields are cell-centred: include neighbouring cells
     # across the section, while avoiding a full-domain read per frame.
     n_neighbors = kwargs.get('section_neighbors', 12)
     if (not isinstance(n_neighbors, (int, np.integer)) or n_neighbors < 3):
@@ -352,294 +237,116 @@ def section_movie(**kwargs):
         if field == 'zeta':
             continue
         mmaker.var = field
-        widget     = [f'- Make {field} movie: ', pb.Percentage(), pb.Bar(), pb.ETA()]
-        mmaker.bar = pb.ProgressBar(widgets=widget, maxval=len(kwargs['time']))
-
-        fig   = plt.figure(figsize = (19.2, 8.74), dpi = kwargs['dpi'])
-        mmaker.bar.start()
-        anim  = manimation.FuncAnimation(
-            fig,
+        save_animation(
+            make_section_figure(dpi=kwargs['dpi']),
             mmaker.vertical_animate,
-            frames           = len(kwargs['time']),
-            save_count       = len(kwargs['time']),
-            repeat           = False,
-            blit             = False,
-            cache_frame_data = False
-            )
-        writer = MovieWriter(fps = kwargs['fps'])
-        write_movie(mmaker, anim, f'{mname}_section', field, codec, writer)
+            frame_count=len(kwargs['time']),
+            output_stem=f'{mname}_section_{field}',
+            fps=kwargs['fps'],
+            progress_label=f'- Make {field} movie: ',
+            maker=mmaker,
+            grid=mmaker.M,
+        )
+
 
 #                                  Helper functions
 # --------------------------------------------------------------------------------------------------
-def get_animator():
-    '''
-    Check which animator is available, get going
-    '''
-    avail = manimation.writers.list()
-    if 'ffmpeg' in avail:
-        FuncAnimation = manimation.writers['ffmpeg']
-        codec = 'mp4'
-    elif 'imagemagick' in avail:
-        FuncAnimation = manimation.writers['imagemagick']
-        codec = 'gif'
-    elif 'pillow' in avail:
-        FuncAnimation = manimation.writers['pillow']
-        codec = 'gif'         
-    elif 'html' in avail:
-        FuncAnimation = manimation.writers['html']
-        codec = 'html'
-    else:
-        raise ValueError('None of the standard animators are available, can not make the movie')
-    return FuncAnimation, codec
 
-def initialize_cb(file, var):
-    '''create the colorbar handler'''
+def initialize_cb(filepath, fields):
+    """Initialize colourbar metadata without scanning field values."""
     cb = {}
-    for field in var:
-        cb[field] = {}
-        cb[field]['max'], cb[field]['min'] = -100, 100
-        if field in SECTION_VELOCITY_FIELDS:
-            cb[field]['units'] = 'm/s'
-            continue
-        if field in ['pv', 'vorticity', 'sp']:
-            continue
-
-        with Dataset(file) as d:
-            cb[field]['units'] = d[field].units
+    with Dataset(filepath) as dataset:
+        for field in fields:
+            if field in SECTION_VELOCITY_FIELDS:
+                units = 'm/s'
+            elif field in ('pv', 'vorticity', 'sp'):
+                units = ''
+            else:
+                units = getattr(dataset[field], 'units', '')
+            cb[field] = {'min': np.inf, 'max': -np.inf, 'units': units}
     return cb
 
-def setup_colorbar(cb, var, nlevels = 30):
-    '''Set colormap, colorticks etc.'''
-    for var in cb:
-        # Standard settings:
-        cb[var]['cmap'] = cmo.cm.turbid
-        try:
-            cb[var]['label'] = cb[var]['units']
-        except:
-            cb[var]['label'] = ''
-        cb[var]['colorticks'] = np.linspace(cb[var]['min'], cb[var]['max']+(cb[var]['max']-cb[var]['min'])/nlevels, nlevels)
-        cb[var]['norm'] = None
-        cb[var]['extend'] = 'both'
 
-        # Exceptions
-        if var == 'salinity':
-            cb[var]['cmap'] = cmo.cm.haline
-
-        if var == 'temp':
-            cb[var]['cmap'] = cmo.cm.thermal
-            cb[var]['label'] = r'$^\circ$C'
-
-        if var == 'zeta':
-            vmin = cb[var]['min']
-            vmax = cb[var]['max']
-            if vmax <0 or vmin >0:
-                cb[var]['cmap'] = cmo.cm.deep 
-            else:    
-                cb[var]['cmap'] = cmo.tools.crop(cmo.cm.balance, vmin, vmax, 0)
-
-        
-        if 'tracer' in var:
-            cb[var]['cmap'] = cmo.cm.dense
-            cb[var]['label'] = cb[var]['units']
-
-        # Colorticks
-        if var == 'vorticity':
-            cb[var]['cmap'] = cmo.cm.curl
-            cb[var]['colorticks'] = np.linspace(-0.0001, 0.0001, nlevels)
-            cb[var]['label'] = '1/s'
-
-        if var == 'pv':
-            cb[var]['cmap'] = cmo.cm.curl
-            cb[var]['colorticks'] = np.linspace(-0.00001, 0.00001, nlevels)
-            cb[var]['label'] = '1/ms'
-
-        if var == 'sp':
-            cb[var]['cmap'] = cmo.cm.speed
-            cb[var]['colorticks'] = np.linspace(0, 0.4, nlevels)
-            cb[var]['label'] = 'm/s'
+def setup_colorbar(cb, var=None, nlevels=20):
+    """Style colourbars after scanning the selected frames."""
+    nlevels = max(3, int(nlevels))
+    for field, settings in cb.items():
+        lo, hi = settings['min'], settings['max']
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            lo, hi = 0.0, 1.0
+        if lo == hi:
+            padding = max(abs(float(lo))*0.01, 1e-6)
+            lo, hi = lo-padding, hi+padding
+        settings.update(
+            min=lo, max=hi, cmap=cmo.cm.turbid,
+            label=settings['units'], norm=None, extend='both',
+            colorticks=np.linspace(lo, hi, nlevels),
+        )
+        if field == 'salinity':
+            settings['cmap'] = cmo.cm.haline
+        elif field == 'temp':
+            settings['cmap'] = cmo.cm.thermal
+            settings['label'] = r'$^\circ$C'
+        elif field == 'zeta':
+            settings['cmap'] = (
+                cmo.tools.crop(cmo.cm.balance, lo, hi, 0)
+                if lo < 0 < hi else cmo.cm.deep
+            )
+        elif 'tracer' in field:
+            settings['cmap'] = cmo.cm.dense
+        elif field == 'vorticity':
+            settings.update(cmap=cmo.cm.curl, label='1/s',
+                            colorticks=np.linspace(-1e-4, 1e-4, nlevels))
+        elif field == 'pv':
+            settings.update(cmap=cmo.cm.curl, label='1/ms',
+                            colorticks=np.linspace(-1e-5, 1e-5, nlevels))
+        elif field == 'sp':
+            settings.update(cmap=cmo.cm.speed, label='m/s',
+                            colorticks=np.linspace(0, 0.4, nlevels))
     return cb
 
-def write_movie(mmaker, anim, mname, field, codec, writer):
-    if mname is None:
-        mname = mmaker.M.casename
 
-    with mmaker.M.netcdf_session():
-        anim.save(f'{mname}_{field}.{codec}', writer = writer)
-    plt.close('all')
-    mmaker.bar.finish()
+def _update_field_limits(settings, data):
+    """Ignore masked/invalid values when calculating plotting limits."""
+    values = np.ma.masked_invalid(np.ma.asarray(data))
+    if values.count():
+        settings['min'] = min(settings['min'], float(values.min()))
+        settings['max'] = max(settings['max'], float(values.max()))
 
-def allFiles(folder):
-    '''
-    Return list of netCDF output files in a folder
-    '''
-    rawlist = os.listdir(folder)
-    ncfiles = [file for file in rawlist if file[-3:] == '.nc' and 'restart' not in file]
-    ncfiles.sort()
-    ncfiles = [os.path.join(folder, file) for file in ncfiles]
-    return ncfiles
 
-def qc_fileList(files, var, start, stop, sigma = None, nlevels = None):
-    '''
-    Take a timestep, couple it to a file
-    - files: FileList
-    - var:   Field to read
-    - sigma: Sigma layer to extract
-    - start: time to start. format: (yyyy-mm-dd-HH)
-    - stop:  time to stop.  format: (yyyy-mm-dd-HH)
-    '''
-    def crop_selection(t, indices, inds):
-        return t[inds], indices[inds]
+def build_colorbars(frames, fields, sigma=None, nlevels=20):
+    """Estimate limits for selected frames, independently of file discovery.
 
-    print('Compiling filelist')
-    time, List, index  = np.empty(0), [], []
-
-    # For contour plots
-    cb = initialize_cb(files[0], var)
-
-    # Loop over all files
-    for this in files:
-        with Dataset(this) as d:
-            t = date2num(num2date(Itime = d['Itime'][:], Itime2 = d['Itime2'][:]))
-            indices = np.arange(len(t))
-
-            # Do not read data that is before scope
-            if start is not None:
-                if t.min()<start and t.max()<start:
-                    print(f' - {this} is before the date range')
-                    continue
-                else:
-                    inds = np.where(t>=start)[0]
-                    if elements(inds)>0:
-                        t, indices = crop_selection(t, indices, inds)
-
-            # Avoid reading data that is after of scope
-            if stop is not None:
-                if t.min()>stop:
-                    print(f' - {this} is after the date range')
-                    break
-                inds = np.where(t<=stop)[0]
-                if elements(inds) > 0:
-                    t, indices = crop_selection(t, indices, inds)
-
-            # If within bounds
-            print(f' - {this}')
-            time = np.append(time, t)
-            List = List + [this]*len(t)
-            index.extend(list(indices))
-
-            # To determine colorbar limits
-            for field in var:
-                if field in ['vorticity', 'pv', 'sp'] or field in SECTION_VELOCITY_FIELDS:
-                    continue
-                
-                if type(sigma) is not str and sigma is not None and field != 'zeta':
-                    if d.variables.get(field)[indices, sigma, :].min() < cb[field]['min']:
-                        cb[field]['min'] = d.variables.get(field)[indices, sigma, :][:].min() 
-                
-                    if d.variables.get(field)[indices, sigma, :].max() > cb[field]['max']:
-                        cb[field]['max'] = d.variables.get(field)[indices, sigma, :][:].max()
-                
-                else:
-                    if d.variables.get(field)[indices, :].min() < cb[field]['min']:
-                        cb[field]['min'] = d.variables.get(field)[indices, :].min() 
-                
-                    if d.variables.get(field)[indices, :].max() > cb[field]['max']:
-                        cb[field]['max'] = d.variables.get(field)[indices, :].max()
-
-    # Set colormap settings
-    cb = setup_colorbar(cb, var, nlevels = nlevels)
-
-    return time, num2date(time = time), List, index, cb
-
-def parse_time_input(start, stop):
+    For z=... (or full 3-D sections), source sigma values determine the
+    scale; this may be wider than the actual interpolated field.
     """
-    Translate time input to FVCOM time
-    """
-    if start is not None:
-        start_num = start.split('-')
-        start = date2num(
-            [datetime(int(start_num[0]), int(start_num[1]), int(start_num[2]), int(start_num[3]), tzinfo = timezone.utc)]
-            )
+    cb = initialize_cb(frames.path[0], fields)
+    direct = [f for f in fields if f not in (
+        'pv', 'vorticity', 'sp', *SECTION_VELOCITY_FIELDS)]
+    if direct:
+        for path, indices in frames.iter_files():
+            with Dataset(path) as dataset:
+                for field in direct:
+                    variable = dataset[field]
+                    dimensions = variable.dimensions
+                    time_axis = dimensions.index('time') if 'time' in dimensions else None
+                    vertical_axis = next((i for i, dim in enumerate(dimensions)
+                                          if dim in ('siglay', 'siglev')), None)
+                    for idx in (indices if time_axis is not None else [None]):
+                        selection = [slice(None)] * len(dimensions)
+                        if time_axis is not None:
+                            selection[time_axis] = idx
+                        if vertical_axis is not None and isinstance(sigma, (int, np.integer)):
+                            selection[vertical_axis] = sigma
+                        _update_field_limits(cb[field], variable[tuple(selection)])
+    return setup_colorbar(cb, nlevels=nlevels)
 
-    if stop is not None:
-        stop_num = stop.split('-')
-        stop = date2num(
-            [datetime(int(stop_num[0]), int(stop_num[1]), int(stop_num[2]), int(stop_num[3]), tzinfo = timezone.utc)]
-            )
 
-    return start, stop
-
-def parse_input(
-        folder = None, fname = None, filelist = None, 
-        start = None, stop = None, 
-        sigma = None, 
-        var = None, 
-        nlevels = None,
-        **kwargs
-        ):
-    '''
-    Return the fields the routine expects
-    '''
-    if filelist:
-        # Prepare the filelist
-        # ----
-        fl = Filelist(filelist, start, stop)
-        time, dates, List, index = fl.time, fl.datetime, fl.path, fl.index        
-
-        # For contour plots
-        cb = initialize_cb(List[0], var)
-
-        # To determine colorbar limits (rewrite later on so that the code is shared with qc_fileList)
-        for file in [List[0], List[-1]]:
-            with Dataset(file) as d:
-                for field in var:
-                    if field in ['vorticity', 'pv', 'sp'] or field in SECTION_VELOCITY_FIELDS:
-                        continue
-                    
-                    if type(sigma) is not str and sigma is not None and field != 'zeta':
-                        if d.variables.get(field)[:, sigma, :].min() < cb[field]['min']:
-                            cb[field]['min'] = d.variables.get(field)[:, sigma, :][:].min() 
-                    
-                        if d.variables.get(field)[:, sigma, :].max() > cb[field]['max']:
-                            cb[field]['max'] = d.variables.get(field)[:, sigma, :][:].max()
-                    
-                    else:
-                        if d.variables.get(field)[:, :].min() < cb[field]['min']:
-                            cb[field]['min'] = d.variables.get(field)[:, :].min() 
-                    
-                        if d.variables.get(field)[:, :].max() > cb[field]['max']:
-                            cb[field]['max'] = d.variables.get(field)[:, :].max()
-
-        # Finish colorbar setup
-        cb = setup_colorbar(cb, var, nlevels = nlevels)
-    else:
-        if folder is not None:
-            files = allFiles(folder)
-        elif fname is not None:
-            files = [fname]
-        else:
-            raise InputError('You must provide the routine one of: folder, fname or filelist')
-
-        # Prepare time (string to fvcom time)
-        start, stop = parse_time_input(start, stop)
-
-        # Couple file to timestep
-        time, dates, List, index, cb = qc_fileList(files, var, start, stop, sigma = sigma, nlevels = nlevels)
-
-    print(f"Start: {dates[0].strftime('%d/%B-%Y, %H:%M:%S')}")
-    print(f"End:   {dates[-1].strftime('%d/%B-%Y, %H:%M:%S')}")
-    return time, dates, List, index, cb
-
-def elements(array):
-    return array.ndim and array.size
 
 #                                                    Helper classes
 # ----------------------------------------------------------------------------------------------------------------------
 class AnimationFields:
-    '''
-    Some fields can be read directly from the netCDF file, some must be inferred.
-    - It seems to be faster to get the entire array (not just those we are plotting)
-    '''
+    '''Fields loaded from FVCOM NetCDF or derived from velocity components.'''
     @property
     def field(self):
         """Load a scalar field with subgrid, sigma/z and wet/dry handling."""
@@ -658,41 +365,26 @@ class AnimationFields:
         '''
         with Dataset(self.files[self.i], 'r') as d:
             _vort = self.T.vorticity(d['ua'][self.index[self.i], :], d['va'][self.index[self.i],:])
-        if self.M.cropped_cells.any():
-            _vort = _vort[self.M.cropped_cells]
+        # The TGE vorticity is nodal even though its inputs ua/va are
+        # cell-centred. Crop by *nodes*, not by the input velocity cells.
+        cropped_nodes = np.asarray(self.M.cropped_nodes)
+        if cropped_nodes.ndim == 1 and cropped_nodes.size:
+            _vort = _vort[cropped_nodes]
         return _vort
-    
+
     @property
     def pv(self):
-        return (self.M.f + self.vorticity)/self.M.h
+        # Nodal potential vorticity: nodal Coriolis, nodal vorticity,
+        # and nodal bathymetric depth. Do not substitute M.hc here.
+        return (self.M.f + self.vorticity) / self.M.h
 
     @property
     def sp(self):
-        return np.sqrt(
-            self.M.load_netCDF(self.files[self.i], 'ua', self.index[self.i])**2 + 
-            self.M.load_netCDF(self.files[self.i], 'va', self.index[self.i])**2
-            )
+        uv = self.M.load_netCDF(self.files[self.i], ('ua', 'va'),
+                                    self.index[self.i])
+        return np.hypot(uv['ua'], uv['va'])
 
-class GeoReference:
-    '''
-    Temporarilly here, I want to use this one in roms_movie as well
-    '''
-    def _get_georeference(self, x, y, reference):
-        '''
-        Expects that your 
-        '''
-        for source in ['hot', 'mapnik', 'voyager']:
-            try:
-                georef = geoplot(x, y, source = source, projection = reference)
-                break
-
-            except:
-                georef = None
-                pass
-        
-        return georef
-    
-class HorizontalMaker(AnimationFields, GeoReference):
+class HorizontalMaker(AnimationFields):
     '''
     All the data needed by the 
     '''
@@ -711,54 +403,27 @@ class HorizontalMaker(AnimationFields, GeoReference):
         # Copy colormap settings
         self.cb = cb
 
-        # Prepare grid
-        self.M = FVCOM_grid(List[0], reference = reference)
-
+        # Keep the full mesh for vorticity stencils near cropped boundaries.
+        full_grid = FVCOM_grid(List[0], reference=reference)
+        self.M = full_grid
         if self.xlim is not None and self.ylim is not None:
-            self.M = self.M.subgrid(self.xlim, self.ylim)
+            self.M = full_grid.subgrid(self.xlim, self.ylim)
 
         if 'pv' in var:
-            self.M.get_coriolis()
-            
-        print('- Downloading georeference')
-        if self.xlim is not None and self.ylim is not None:
-            self.gp = self._get_georeference(self.xlim, self.ylim, reference)
-        else:
-            self.gp = self._get_georeference(self.M.x, self.M.y, reference)
+            self.M.get_coriolis()  # PV lives on nodes, not elements.
 
-        if self.gp is None:
-            print('  -> Failed to download georeference, the background will not be shaded.')
+        # Only 'sp' is cell-centred among the derived 2-D fields.
+        # PV, vorticity, and ordinary scalar fields use nodal extents.
+        map_location = 'cell' if set(var).issubset(CELL_VELOCITY_FIELDS) else 'node'
+        self.gp = get_grid_georeference(
+            self.M, xlim=self.xlim, ylim=self.ylim, at=map_location,
+            sources=('hot', 'mapnik', 'voyager'), verbose=True,
+        )
 
         if 'vorticity' in var or 'pv' in var:
-            import grid.tge as tge
-            self.T = tge.main(self.M, verbose = True)
-            self.T.get_art1(verbose = False)
-
-        self._wetndry = True
-
-    def make_figure(self, size = 15., dpi = 300):
-        dx = self.M.x.max() - self.M.x.min()
-        dy = self.M.y.max() - self.M.y.min()
-        aspect_ratio = float(dy)/(float(dx)*1.2)
-        return plt.figure(figsize=(size / aspect_ratio, size), dpi = dpi)
-
-    def animate(self, i):
-        '''
-        Write frames
-        '''
-        self.bar.update(i)
-        self.i = i
-        plt.clf()
-        if self.gp is not None:
-            plt.imshow(self.gp.img, extent = self.gp.extent)
-        cont = self.M.plot_cvs(
-            self.field, 
-            cmap = cmo.cm.dense,
-            Norm = self.cb[self.var]['norm'],
-            verbose = False
-            )
-        self.update_figure(title = self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S') + f' in sigma = {self.sigma}')
-        return cont
+            import fvtools.grid.tge as tge
+            self.T = tge.main(full_grid, verbose=True)
+            self.T.get_art1(verbose=False)
 
     def contourf_animate(self, i):
         '''
@@ -808,7 +473,8 @@ class HorizontalMaker(AnimationFields, GeoReference):
             plt.xlim(self.xlim)
             plt.ylim(self.ylim)
         
-        plt.colorbar(cont, label = self.cb[self.var]['label'], shrink = 0.5)
+        if field is not None:
+            plt.colorbar(cont, label=self.cb[self.var]['label'], shrink=0.5)
 
         plt.title(title)   
         if field is not None:
@@ -845,6 +511,7 @@ class VerticalMaker(AnimationFields):
         plt.clf()
         self.M.zeta = self.M.load_netCDF(self.files[i], 'zeta', self.index[i])
         if self.var in SECTION_VELOCITY_FIELDS:
+            # Both 3-D velocity components are always defined on FVCOM cells.
             uv = self.M.load_netCDF(
                 self.files[i], ('u', 'v'), self.index[i]
             )
@@ -870,8 +537,7 @@ class VerticalMaker(AnimationFields):
             )
             plt.colorbar(cont, label=self.cb[self.var]['label'])
         else:
-            plt.text(0.5, 0.5, 'No valid data for this time step',
-                     ha='center', va='center', transform=plt.gca().transAxes)
+            plt.text(0.5, 0.5, 'No valid data for this time step', ha='center', va='center', transform=plt.gca().transAxes)
 
         # Plot sigma layers on top to show vertical resolution.
         plt.plot(self.sigma_distance(out), self.sigma_depth(out), c='grey', lw=0.2)
@@ -885,38 +551,3 @@ class VerticalMaker(AnimationFields):
         plt.title(self.datetime[i].strftime('%m/%d, %H:%M:%S'))
         ax = plt.gca()
         ax.set_facecolor('tab:grey')
-
-class PiecewiseNorm(Normalize):
-    ''' piecewise normalization of colormap'''
-    def __init__(self, levels, clip = False):
-        self._levels = np.sort(levels)
-        self._normed = np.linspace(0,1,len(levels))
-        Normalize.__init__(self, None, None, clip)
-
-    def __call__(self, value, clip = None):
-        # Linearly interpolate to get the normalized value
-        return np.ma.masked_array(np.interp(value, self._levels, self._normed))
-
-# Example of how to add a custom colorbar
-if False:
-    # Make a custom colormap for this project
-    from matplotlib.colors import ListedColormap, BoundaryNorm
-    import matplotlib.pyplot as plt
-    import numpy as np
-    ranges = [0.0004, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
-    n = len(ranges)-1
-    colors_per_range = 3
-
-    sequential = ['Purples', 'Greens', 'cividis', 'Reds', 'Blues', 'RdPu']
-    colors = []
-    this_range = np.array([])
-    for i in range(n):
-        colors.extend(plt.get_cmap(sequential[i])(np.linspace(0.8, 1, 3)))
-        _rng = np.linspace(ranges[i], ranges[i+1], colors_per_range, endpoint = False)
-        this_range = np.append(this_range, _rng)
-    this_range = np.append(this_range, ranges[-1])
-
-    cmap = ListedColormap(colors)
-    norm = BoundaryNorm(this_range, cmap.N)
-
-class InputError(Exception): pass
