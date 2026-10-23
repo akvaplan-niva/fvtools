@@ -112,10 +112,10 @@ class MatchTopo:
 
         # Update the nodes by to their distance from the obc
         self.M.h  = h_coarse*self.weight + self.M.h*(1 - self.weight)
-        self.match_depth_in_nest_and_model()
+        
+        # Update and save changes to the bathymetry and vertical grid
+        self._update_depth_and_sigma()
 
-        # Store the smoothed bathymetry to the mesh (ends up in casename_dep.dat)
-        self.store_bathymetry()
         return self.M, self.NEST
 
     def add_ROMS_bathymetry_to_FVCOM_and_NEST(self):
@@ -149,14 +149,22 @@ class MatchTopo:
 
         # Update the nodes by to their distance from the obc
         self.M.h  = h_coarse*self.weight + self.M.h*(1 - self.weight)
-        self.match_depth_in_nest_and_model()
 
+        # Update and save changes to the bathymetry and vertical grid
+        self._update_depth_and_sigma()
+
+        return self.M, self.NEST
+
+    def _update_depth_and_sigma(self):
         # Re-calculate the sigma distribution from the input file, as it can (when using the SOUZA option) be depth dependent
         self.M.read_sigma()
 
+        # Match depth AND sigma layers
+        self.match_depth_in_nest_and_model()
+        self.NEST.inherit_sig(self.M)
+
         # Store the smoothed bathymetry to the mesh (ends up in casename_dep.dat)
         self.store_bathymetry()
-        return self.M, self.NEST
 
     def match_depth_in_nest_and_model(self):
         '''

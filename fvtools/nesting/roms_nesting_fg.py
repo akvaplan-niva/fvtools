@@ -78,6 +78,7 @@ def main(fvcom_grd,
     N4R.nearest4(M)
 
     print('\nSet the nestingzone bathymetry equal to ROMS and add a smooth transition zone.\n---')
+    # Will only be done once for each model, there is a flag in M.npy which skips this step if it already has been done once.
     Match   = MatchTopo(ROMS, M, NEST, latlon)
     M, NEST = Match.add_ROMS_bathymetry_to_FVCOM_and_NEST()
 

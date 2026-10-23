@@ -2966,10 +2966,7 @@ class NEST_grid(LoadNest, GridProximity, NestROMS2FVCOM, Coordinates, PlotFVCOM,
         # Add information from full fvcom grid (M), vertical coords and OBC-nodes
         if M is not None:
             self.Proj   = M.Proj
-            # Can not do that
-            nodes = M.find_nearest(self.x, self.y, grid = 'node')
-            self.siglay = M.siglay[nodes, :]
-            self.siglev = M.siglev[nodes, :]
+
         else:
             try:
                 self.Proj = Proj(self.info['reference'])
@@ -2979,6 +2976,14 @@ class NEST_grid(LoadNest, GridProximity, NestROMS2FVCOM, Coordinates, PlotFVCOM,
         # Get lat and lon
         self.lon, self.lat   = self.Proj(self.x, self.y, inverse=True)
         self.lonc, self.latc = self.Proj(self.xc, self.yc, inverse=True)
+
+    def inherit_sig(self, M):
+        '''
+        Inherit the vertical layers from the model grid
+        '''
+        nodes = M.find_nearest(self.x, self.y, grid = 'node')
+        self.siglay = M.siglay[nodes, :]
+        self.siglev = M.siglev[nodes, :]
 
     # Basic property names to comply with the subclasses we use to derive properties in M    
     @property
