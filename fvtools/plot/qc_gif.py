@@ -20,7 +20,7 @@ SECTION_VELOCITY_FIELDS = {
 
 # Only the speed magnitude is cell-centred. Vorticity and PV are nodal.
 CELL_VELOCITY_FIELDS = frozenset({'sp'})
-
+    
 # ----------------------------------------------------------------------------------------
 #                     Create an animation from a number of files
 # ----------------------------------------------------------------------------------------
@@ -33,7 +33,7 @@ def main(folder=None, fname=None, filelist=None, var=None,
     For section normal-flow animations, specify section=... and
     var=['normal_velocity']; optional section_vlim is in m/s.
     """
-    options = prepare_movie_options(
+    options = _prepare_movie_options(
         folder=folder, fname=fname, filelist=filelist, var=var,
         sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
         section=section, section_res=section_res, fps=fps, mname=mname,
@@ -52,7 +52,7 @@ def main(folder=None, fname=None, filelist=None, var=None,
     return output_paths
 
 
-def prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
+def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
               sigma=None, z=None, xlim=None, ylim=None, start=None,
               stop=None, section=None, section_res=None, fps=12,
               mname=None, dpi=100, nlevels=20,
@@ -247,7 +247,8 @@ def section_movie(**kwargs):
     print('- Prepare the section')
     M.prepare_section(section_file=section_file, res=kwargs['section_res'], store_transect_img=True)
 
-    # include neighbouring cells across the section, while avoiding a full-domain read per frame.
+    # All FVCOM u/v fields are cell-centred: include neighbouring cells
+    # across the section, while avoiding a full-domain read per frame.
     n_neighbors = kwargs.get('section_neighbors', 12)
     if (not isinstance(n_neighbors, (int, np.integer)) or n_neighbors < 3):
         raise ValueError('section_neighbors must be an integer >= 3')
@@ -426,8 +427,9 @@ class AnimationFields:
         We therefore load velocities for the entire grid when calculating the vorticity.
         '''
         with Dataset(self.files[self.i], 'r') as d:
-            _vort = self.M.T.vorticity(d['ua'][self.index[self.i], :], d['va'][self.index[self.i],:])
-        # The TGE vorticity is nodal even though its inputs ua/va are cell-centred. Crop by *nodes*, not by the input velocity cells.
+            _vort = self.T.vorticity(d['ua'][self.index[self.i], :], d['va'][self.index[self.i],:])
+        # The TGE vorticity is nodal even though its inputs ua/va are
+        # cell-centred. Crop by *nodes*, not by the input velocity cells.
         cropped_nodes = np.asarray(self.M.cropped_nodes)
         if cropped_nodes.ndim == 1 and cropped_nodes.size:
             _vort = _vort[cropped_nodes]
@@ -481,62 +483,95 @@ class HorizontalMaker(AnimationFields):
             sources=('hot', 'mapnik', 'voyager'), verbose=True,
         )
 
+        if 'vorticity' in var or 'pv' in var:
+            import fvtools.grid.tge as tge
+            self.T = tge.main(full_grid, verbose=True)
+            self.T.get_art1(verbose=False)
+
+
+
     def _frame_axes(self):
-        """Reuse a fixed plot area and colorbar across all movie frames."""
+        """Build static map artists once and retain them for every frame."""
         if (getattr(self, '_plot_axes', None) is None
                 or self._plot_axes.figure is not self.fig):
             scale = self.cb[self.var]
-            self._plot_axes = make_movie_axes(
+            ax = make_movie_axes(
                 self.fig, cmap=scale['cmap'],
                 levels=scale['colorticks'], label=scale['label'],
                 extend=scale['extend'], background=self.gp,
             )
-        ax = self._plot_axes
-        ax.clear()
-        plt.sca(ax)  # FVCOM_grid helpers may use pyplot's current axes.
+            self._plot_axes = ax
+            self._dynamic_contour = None
+            self._status_artist = None
+            self._bathy_contours = None
+
+            if self.gp is not None:
+                ax.imshow(self.gp.img, extent=self.gp.extent, zorder=0)
+            if self.var in ('vorticity', 'pv', 'sp'):
+                # Static bathymetry: the original nodal FVCOM mesh is used
+                # regardless of whether the animated field is cell-centred.
+                # The same grid may have been used for a previous nodal
+                # movie with masked/dry triangles. Bathymetry is static and
+                # should never inherit the previous field's triangle mask.
+                bathy_mesh = self.M.mtri_nodes
+                if bathy_mesh.mask is not None:
+                    bathy_mesh.set_mask(None)
+                self._bathy_contours = ax.tricontour(
+                    bathy_mesh, self.M.h, 40,
+                    colors='gray', alpha=0.5, linewidths=0.5,
+                    zorder=10,
+                )
+            ax.set_aspect('equal')
+            ax.set_xlim(self.xlim if self.xlim is not None
+                        else (self.M.x.min(), self.M.x.max()))
+            ax.set_ylim(self.ylim if self.ylim is not None
+                        else (self.M.y.min(), self.M.y.max()))
+        else:
+            ax = self._plot_axes
+
+        self._clear_dynamic_artists()
         return ax
 
+    def _clear_dynamic_artists(self):
+        """Remove only last frame's field and warning; keep static artists."""
+        contour = getattr(self, '_dynamic_contour', None)
+        if contour is not None:
+            # Matplotlib >= 3.8: ContourSet is a removable Artist.
+            if hasattr(contour, 'remove'):
+                contour.remove()
+            else:
+                # Older Matplotlib versions have one collection per level.
+                for artist in getattr(contour, 'collections', ()):
+                    artist.remove()
+            self._dynamic_contour = None
+        label = getattr(self, '_status_artist', None)
+        if label is not None:
+            label.remove()
+            self._status_artist = None
+
     def contourf_animate(self, i):
-        '''
-        Write frames of data at z level using tricontourf
-        '''
+        """Draw one sigma-layer frame; never redraw the static bathymetry."""
         self.bar.update(i)
         self.i = i
-        ax = self._frame_axes()
-        if self.gp is not None:
-            ax.imshow(self.gp.img, extent=self.gp.extent)
-        if self.var in ['vorticity', 'pv', 'sp']:
-            plt.tricontour(
-                self.M.x, self.M.y, self.M.tri, self.M.h, 40, colors = 'gray', alpha = 0.5, linewidths = 0.5, zorder = 10
-                )
+        self._frame_axes()
         field = _valid_contour_field(self.field)
-        if field is None:
-            ax.text(0.5, 0.5, 'No valid data for this time step',
-                    transform=ax.transAxes, ha='center', va='center')
-        return self.update_figure(field=field, title=self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S'))
+        return self.update_figure(
+            field=field, title=self.datetime[i].strftime('%d/%B-%Y, %H:%M:%S')
+        )
 
     def zlevel_animate(self, i):
-        '''
-        Write frames using tricontourf
-        '''
+        """Draw one z-level frame without clearing the figure or colorbar."""
         self.bar.update(i)
         self.i = i
-        ax = self._frame_axes()
-        if self.gp is not None:
-            ax.imshow(self.gp.img, extent=self.gp.extent)
-        outdata = _valid_contour_field(self.field)
-        if outdata is None:
-            ax.text(0.5, 0.5, 'No valid data for this time step',
-                    transform=ax.transAxes, ha='center', va='center')
-        cont = self.update_figure(
-            field = outdata, title = self.datetime[i].strftime('%m/%d, %H:%M:%S') + f' at {self.z} m depth'
-            )
-        return cont
+        self._frame_axes()
+        return self.update_figure(
+            field=_valid_contour_field(self.field),
+            title=self.datetime[i].strftime('%m/%d, %H:%M:%S')
+                  + f' at {self.z} m depth',
+        )
 
     def update_figure(self, field=None, title=None):
-        '''
-        Add cosmetics to the figure
-        '''
+        """Update only the dynamic field and title; preserve static artists."""
         ax = self._plot_axes
         cont = None
         if field is not None:
@@ -547,15 +582,20 @@ class HorizontalMaker(AnimationFields):
                 extend=self.cb[self.var]['extend'], zorder=5,
                 on_empty='skip',
             )
-            if cont is None:
-                ax.text(0.5, 0.5, 'No valid contour triangles for this frame',
-                        transform=ax.transAxes, ha='center', va='center')
-        # Use the same physical map bounds for every frame (including dry
-        # frames); automatic limits would drift with partial triangles.
-        ax.set_xlim(self.xlim if self.xlim is not None else
-                    (self.M.x.min(), self.M.x.max()))
-        ax.set_ylim(self.ylim if self.ylim is not None else
-                    (self.M.y.min(), self.M.y.max()))
+        self._dynamic_contour = cont
+        if cont is None:
+            message = ('No valid data for this time step' if field is None
+                       else 'No valid contour triangles for this frame')
+            self._status_artist = ax.text(
+                0.5, 0.5, message,
+                transform=ax.transAxes, ha='center', va='center',
+                zorder=20,
+            )
+        # Fixed extents prevent apparent movement between sparse/dry frames.
+        ax.set_xlim(self.xlim if self.xlim is not None
+                    else (self.M.x.min(), self.M.x.max()))
+        ax.set_ylim(self.ylim if self.ylim is not None
+                    else (self.M.y.min(), self.M.y.max()))
         ax.set_title(title)
         return cont
 

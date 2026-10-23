@@ -342,7 +342,8 @@ class InputCoordinates:
                      'boundary_nodes', 'coastline_nodes', 'cellstrings',
                      '_T', '_cv', '_art1', '_nbsn', '_ntsn', '_nbve', '_ntve',
                      '_nbe', '_nbse', '_nese', '_ISBCE', '_ISONB',
-                     'trs', '_section_weights_cache', '_section_vector_basis_cache'):
+                     'trs', '_section_weights_cache', '_section_vector_basis_cache',
+                     'mtri_nodes', 'mtri_cells'):
             self.__dict__.pop(name, None)
 
     @property
@@ -873,6 +874,9 @@ class CellTriangulation:
     @ctri.setter
     def ctri(self, var):
         self._ctri = var
+        # A replacement of the cell connectivity invalidates the cached
+        # Matplotlib triangulation (the nodal triangulation is unchanged).
+        self.__dict__.pop('mtri_cells', None)
 
     def cell_tri(self):
         '''Get triangulation connecting cell centres.'''
@@ -2236,6 +2240,20 @@ class ExportGrid:
         print(f'- Wrote {filename}')
 
 class PlotFVCOM:
+    @cached_property
+    def mtri_nodes(self):
+        """Cached Matplotlib triangulation for nodal fields.
+
+        The geometry is shared by successive movie frames.  Only the
+        triangle mask changes for wet/dry or below-bottom values.
+        """
+        return matplotlib.tri.Triangulation(self.x, self.y, self.tri)
+
+    @cached_property
+    def mtri_cells(self):
+        """Cached cell-centre triangulation for FVCOM velocity fields."""
+        return matplotlib.tri.Triangulation(self.xc, self.yc, self.ctri)
+
     @property
     def transform(self):
         if not hasattr(self, '_transform'):
@@ -2272,20 +2290,15 @@ class PlotFVCOM:
 
     def plot_contour(self, field, show=True, ax=None, *args,
                      on_empty='raise', **kwargs):
-        """Draw a contour of node- or cell-centred data.
+        """Contour node- or cell-centred data on a cached triangulation.
 
-        Invalid (NaN, infinite, or NumPy-masked) vertices are excluded by
-        masking *triangles*, not merely by masking the field. Matplotlib's
-        tricontourf requires all vertices of every unmasked triangle to have
-        valid values. This is important when a requested z-level is deeper
-        than part of the mesh.
+        The mesh geometry is created once per grid.  Invalid values in a
+        timestep only update its triangle mask, so masked z-level fields
+        never reach an unmasked triangle in ``tricontourf``.  This method
+        never copies or mutates the FVCOM connectivity arrays themselves.
 
-        Parameters
-        ----------
-        on_empty : {'raise', 'skip'}
-            When no triangle has three valid vertices, raise ValueError
-            (default) or return None. Movie routines should use 'skip' so
-            the frame can still be rendered with its date and background.
+        The cached triangulation's mask is the mask from its **most recent**
+        contour call.  Callers should not rely on that mask remaining fixed.
         """
         if on_empty not in ('raise', 'skip'):
             raise ValueError("on_empty must be 'raise' or 'skip'")
@@ -2293,53 +2306,63 @@ class PlotFVCOM:
         values = np.ma.asarray(np.squeeze(field), dtype=float)
         if values.ndim != 1:
             raise ValueError(f'Expected a one-dimensional contour field, got {values.shape}')
-
         if values.size == self.node_number:
-            x, y, tri = self.x, self.y, self.tri
+            triangulation = self.mtri_nodes
         elif values.size == self.cell_number:
-            x, y, tri = self.xc, self.yc, self.ctri
+            triangulation = self.mtri_cells
         else:
             raise ValueError(
                 f'Field length {values.size} does not match '
                 f'{self.node_number} nodes or {self.cell_number} cells'
             )
 
-        tri = np.asarray(tri, dtype=np.intp)
-        if tri.ndim != 2 or tri.shape[1] != 3:
-            raise ValueError('Expected a triangulation with shape (n, 3)')
-
-        # Convert masked values to NaN, then discard triangles adjacent to
-        # any invalid point. Matplotlib tolerates NaN values only in vertices
-        # *not referenced* by the remaining triangles.
+        # Matplotlib rejects *masked* or non-finite values in the vertices
+        # of a visible triangle.  Mask triangles, not just vertex data.
         data = np.asarray(np.ma.masked_invalid(values).filled(np.nan))
-        invalid = ~np.isfinite(data)
-        triangle_mask = invalid[tri].any(axis=1)
-
+        triangles = triangulation.triangles
+        triangle_mask = (~np.isfinite(data))[triangles].any(axis=1)
         caller_mask = kwargs.pop('mask', None)
         if caller_mask is not None:
             caller_mask = np.asarray(caller_mask, dtype=bool)
-            if caller_mask.shape != (len(tri),):
+            if caller_mask.shape != (len(triangles),):
                 raise ValueError('Triangle mask has wrong shape')
             triangle_mask |= caller_mask
 
-        if not np.any(~triangle_mask):
+        # set_mask() invalidates Matplotlib's cached C++ triangulation. Avoid
+        # calling it when the mask has not changed (common for dry-area masks).
+        previous = triangulation.mask
+        replacement = triangle_mask if np.any(triangle_mask) else None
+        changed = ((previous is None) != (replacement is None))
+        if not changed and previous is not None:
+            changed = not np.array_equal(previous, replacement)
+        if changed:
+            triangulation.set_mask(replacement)
+
+        if replacement is not None and np.all(replacement):
             if on_empty == 'skip':
                 return None
             raise ValueError('No valid triangles to contour')
+        if triangles.size == 0:
+            if on_empty == 'skip':
+                return None
+            raise ValueError('No triangles to contour')
 
-        kwargs['mask'] = triangle_mask
-        kwargs = self._transform_to_kwargs(**kwargs)
-        return self._plot_contour(x, y, tri, data, show, ax=ax, *args, **kwargs)
+        kwargs = self._transform_to_kwargs(ax=ax, **kwargs)
+        return self._plot_contour(triangulation, data, show, ax=ax,
+                                  *args, **kwargs)
 
-    def _transform_to_kwargs(self, **kwargs):
-        '''
-        Add a transformation to the plot if the background is a WMS server (and in general when the axes is a cartopy GeoAxes)
-        '''
+    def _transform_to_kwargs(self, ax=None, **kwargs):
+        """Pass the CRS transform to a Cartopy axes when applicable.
+
+        Explicit axes avoid pyplot global-figure lookups during animation
+        saving, where Matplotlib temporarily detaches the figure manager.
+        """
         if self.transform is not None:
             import cartopy.mpl.geoaxes as geoaxes
-            if isinstance(plt.gca(), geoaxes.GeoAxes):
+            target = ax if ax is not None else plt.gca()
+            if isinstance(target, geoaxes.GeoAxes):
                 kwargs['transform'] = self.transform
-        return kwargs   
+        return kwargs
 
     def georeference(self, 
                     url='https://wms.geonorge.no/skwms1/wms.topograatone?service=wms&request=getcapabilities', 
@@ -2409,17 +2432,14 @@ class PlotFVCOM:
         gl.top_labels = None
 
     @staticmethod
-    def _plot_contour(x, y, tri, field, show = False, ax = None, *args, **kwargs):
-        if not ax:
+    def _plot_contour(triangulation, field, show=False, ax=None, *args, **kwargs):
+        """Draw on the already constructed/masked triangulation."""
+        if ax is None:
             ax = plt.gca()
-        if 'mask' in kwargs:
-            triangulation = matplotlib.tri.Triangulation(x, y, tri, mask=kwargs['mask'])
-            kwargs.pop("mask", None)
-        else:
-            triangulation = matplotlib.tri.Triangulation(x, y, tri)
         cont = ax.tricontourf(triangulation, field, *args, **kwargs)
         ax.set_aspect('equal')
-        if show: plt.show(block=False)
+        if show:
+            plt.show(block=False)
         return cont
 
     def _plot_section_line(self):
