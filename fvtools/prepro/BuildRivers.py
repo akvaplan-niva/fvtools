@@ -409,38 +409,46 @@ class CropRivers:
         while True:
             iteration += 1
             print(f' - iteration {iteration}')
+            # Create the figure BEFORE georeferencing. M.georeference()
+            # configures the current figure (Cartopy/map background), so a
+            # subsequent plt.subplots() would discard that georeferenced Axes.
+            fig = plt.figure(figsize=(10, 10))
             self.M.re_project(self.info['grid_projection'])
             self.M.georeference()
-            # Buffered domain and model coordinates are in the grid projection.
+            ax = plt.gca()
+
+            # All manually drawn positions use the grid projection of this map.
             x, y = self.M.Proj(Rivers.lon, Rivers.lat)
             in_model = np.asarray(self.buffered_domain.contains(
                 [shp.geometry.Point(a, b) for a, b in zip(x, y)]
             ), dtype=bool)
 
-            fig, ax = plt.subplots(figsize=(10, 10))
             ax.plot(self.x_land, self.y_land, 'b.', label='land nodes', zorder=1)
             plot_polygon(self.buffered_domain, ax=ax, facecolor='lightblue',
                          edgecolor='blue', alpha=0.5)
             ax.set_title('Drag black river points, then press Done. Orange lines show original outlets.')
 
-            # This is a regular Matplotlib Axes, not a Cartopy GeoAxes.
-            # x and y were already transformed into grid_projection above.
-            # Therefore all artists must use those grid coordinates directly;
-            # passing transform=Rivers.crs to ax.scatter would raise ValueError.
+            # Use projected x/y directly, as for the draggable dots and lines.
+            # Do not pass Rivers.crs here: those coordinates are in the
+            # database projection, which may differ from the grid projection.
             ax.scatter(x[~in_model], y[~in_model],
                        s=Rivers.rivers.areal.to_numpy()[~in_model], color='r',
                        label='Will not be used')
             ax.scatter(x[in_model], y[in_model],
                        s=Rivers.rivers.areal.to_numpy()[in_model], color='g',
                        label='Will be used')
-            ax.set_aspect('equal', adjustable='datalim')
 
             original_lon, original_lat = Rivers.Proj(
                 Rivers.rivers['x_original'].to_numpy(),
                 Rivers.rivers['y_original'].to_numpy(), inverse=True)
             xo, yo = self.M.Proj(original_lon, original_lat)
             editor = DraggablePoints(ax, x, y, xo, yo)
-            ax.legend()
+            # Scale scatter markers in the legend independently of runoff area.
+            # This leaves the actual map symbols unchanged.
+            legend = ax.legend(loc='upper right', fontsize=9)
+            for handle in legend.legend_handles:
+                if hasattr(handle, 'set_sizes'):
+                    handle.set_sizes([24.0])
             plt.show()
             try:
                 edited_x, edited_y = await editor.wait()
