@@ -423,15 +423,18 @@ class CropRivers:
                          edgecolor='blue', alpha=0.5)
             ax.set_title('Drag black river points, then press Done. Orange lines show original outlets.')
 
-            self.M.re_project(Rivers.reference)
-            ax.scatter(Rivers.x[~in_model], Rivers.y[~in_model],
-                       s=Rivers.rivers.areal[~in_model], color='r',
-                       transform=Rivers.crs, label='Will not be used')
-            ax.scatter(Rivers.x[in_model], Rivers.y[in_model],
-                       s=Rivers.rivers.areal[in_model], color='g',
-                       transform=Rivers.crs, label='Will be used')
+            # This is a regular Matplotlib Axes, not a Cartopy GeoAxes.
+            # x and y were already transformed into grid_projection above.
+            # Therefore all artists must use those grid coordinates directly;
+            # passing transform=Rivers.crs to ax.scatter would raise ValueError.
+            ax.scatter(x[~in_model], y[~in_model],
+                       s=Rivers.rivers.areal.to_numpy()[~in_model], color='r',
+                       label='Will not be used')
+            ax.scatter(x[in_model], y[in_model],
+                       s=Rivers.rivers.areal.to_numpy()[in_model], color='g',
+                       label='Will be used')
+            ax.set_aspect('equal', adjustable='datalim')
 
-            self.M.re_project(self.info['grid_projection'])
             original_lon, original_lat = Rivers.Proj(
                 Rivers.rivers['x_original'].to_numpy(),
                 Rivers.rivers['y_original'].to_numpy(), inverse=True)
