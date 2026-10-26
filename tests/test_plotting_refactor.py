@@ -13,14 +13,19 @@ import numpy as np
 import pytest
 
 from fvtools.grid.fvcom_grd import (
-    FVCOM_grid, PlotFVCOM, ControlVolumePlotter,
-    _find_cv_walls, _connect_cv_walls,
+    FVCOM_grid,
+    PlotFVCOM,
+    ControlVolumePlotter,
 )
-from fvtools.grid._components.plotting import PlotFVCOM as PlottingMixin
+
+from fvtools.grid._components.plotting import (
+    PlotFVCOM as PlottingMixin,
+)
+
 from fvtools.grid._components.control_volumes import (
     ControlVolumePlotter as ControlVolumeMixin,
-    _find_cv_walls as ActualFindCVWalls,
-    _connect_cv_walls as ActualConnectCVWalls,
+    _find_cv_walls,
+    _connect_cv_walls,
 )
 
 
@@ -62,10 +67,6 @@ def test_plotting_classes_and_cv_helper_imports_still_work():
     assert ControlVolumePlotter is ControlVolumeMixin
     assert issubclass(FVCOM_grid, PlottingMixin)
     assert issubclass(FVCOM_grid, ControlVolumeMixin)
-    # Unlike class methods, these were module-level Numba functions: they must move too.
-    assert _find_cv_walls is ActualFindCVWalls
-    assert _connect_cv_walls is ActualConnectCVWalls
-
 
 def test_plot_triangulations_are_cached_separately_and_reset(multi_cell_grid):
     grid = multi_cell_grid

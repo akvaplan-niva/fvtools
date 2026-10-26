@@ -22,52 +22,56 @@ class ControlVolumePlotter:
             self._cv = self._get_cvs()
         return self._cv
 
-    def plot_cvs(self, 
-                 field,
-                 cmap = 'jet', 
-                 cmax = None, 
-                 cmin = None, 
-                 Norm = None, 
-                 edgecolor = 'face', 
-                 inds = None,
-                 **kwargs):
-        '''
-        Plots nodal fields on control volume patches
+    def plot_cvs(self, field, cmap='jet', cmax=None, cmin=None, Norm=None,
+                 edgecolor='face', inds=None, **kwargs):
+        """Plot a nodal field on control-volume patches.
 
-        Optional:
-        ----
-        - edgecolor: None by default. Set a color, e.g. "k" to draw interfaces between CVs
-        - cmap:      colormap
-        - cmax:      cap colors to cmax
-        - cmin:      floor colors to cmin
-        - Norm:      to create non-linear colorbars (ref matplotlib documentation)
-        --> for cmax and cmin, the routine exclusively plots CVs with values within in that range
+        ``inds`` selects node indices (or a boolean mask). If ``cmin`` and/or
+        ``cmax`` are given, thresholding is applied *within* that selection.
+        Patches and plotted values use exactly the same node order.
 
-        keyword arguments are sent to matplotlib.collections.PatchCollection
-        '''
-        if inds == None:
-            inds = np.arange(0, len(field), dtype = int)
+        Additional keyword arguments are forwarded to ``PatchCollection``.
+        """
+        field = np.asanyarray(field)
+        if field.ndim != 1 or len(field) != self.node_number:
+            raise ValueError('field must be one-dimensional with one value per node')
 
-        # mask cvs with values below/above threshold
-        if cmax is not None and cmin is None:
-            inds = np.where(field<=cmax)[0]
-        elif cmin is not None and cmax is None: 
-            inds = np.where(field>=cmin)[0]
-        elif cmax is not None and cmin is not None:
-            inds = np.intersect1d(np.where(field<=cmax)[0], np.where(field>=cmin)[0])
+        # Preserve the old fast path for repeated full-domain frames.
+        full_domain = inds is None and cmin is None and cmax is None
+        if inds is None:
+            inds = np.arange(self.node_number, dtype=np.intp)
+        else:
+            inds = np.asarray(inds)
+            if inds.ndim != 1:
+                raise ValueError('inds must be a one-dimensional index array or mask')
+            if np.issubdtype(inds.dtype, np.bool_):
+                if len(inds) != self.node_number:
+                    raise ValueError('boolean inds must have one entry per node')
+                inds = np.flatnonzero(inds)
+            elif not np.issubdtype(inds.dtype, np.integer):
+                raise TypeError('inds must contain integer node indices')
+            if np.any(inds < 0) or np.any(inds >= self.node_number):
+                raise IndexError('inds contains node indices outside the grid')
 
-        if len(inds) == len(self.cv): 
-            collection = PatchCollection(self.cv, cmap=cmap, edgecolor=edgecolor, norm=Norm, **kwargs)
-        else: 
-            collection = PatchCollection(self.cv[inds], cmap=cmap, edgecolor=edgecolor, norm=Norm, **kwargs)
+        if cmax is not None:
+            inds = inds[field[inds] <= cmax]
+        if cmin is not None:
+            inds = inds[field[inds] >= cmin]
+
+        # self.cv is a Python list. NumPy advanced indexing does not work on
+        # it, and comparing lengths is insufficient if inds permutes nodes.
+        patches = self.cv if full_domain else [self.cv[int(i)] for i in inds]
+        collection = PatchCollection(
+            patches, cmap=cmap, edgecolor=edgecolor, norm=Norm, **kwargs
+        )
         collection.set_array(field[inds])
-        ax   = plt.gca()
-        _ret = ax.add_collection(collection)
+        ax = plt.gca()
+        artist = ax.add_collection(collection)
         ax.autoscale_view(True)
         ax.set_aspect('equal')
-        if _ret._A is not None: 
-            plt.gca()._sci(_ret)
-        return _ret
+        if artist._A is not None:
+            ax._sci(artist)
+        return artist
 
     def _get_cvs(self, nodes = None):
         '''
