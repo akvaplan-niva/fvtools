@@ -195,14 +195,31 @@ class RiverPositions:
         self.reference = epsg_code
         self.Proj = Proj(epsg_code)
 
-        # load all rivers
+        # Read the river database. Each edited database carries its own
+        # immutable original outlet coordinates.
         rivers = pd.read_csv(path).set_index('rivers')
+        original_columns = ('x_original', 'y_original')
+        missing_columns = [col for col in original_columns if col not in rivers]
 
-        # Remove those who are not in the requested vassdragsområde
-        self.rivers = rivers[[v in vassdrag for v in rivers.vassdragsomraade]]
+        if missing_columns:
+            # Only the national, unedited database may omit original coordinates.
+            # An old case-specific file must be migrated once instead of silently
+            # treating already-moved outlets as their original locations.
+            if os.path.basename(os.fspath(path)) != 'river_positions.csv':
+                raise ValueError(
+                    f'{path} is missing {missing_columns}. '
+                    'Use a case database containing x_original and y_original.'
+                )
+            rivers['x_original'] = rivers['x_outlet']
+            rivers['y_original'] = rivers['y_outlet']
 
-        # Set initial x- and y-positions
-        self.x, self.y = self.rivers.x_outlet.values, self.rivers.y_outlet.values
+        if rivers.index.has_duplicates:
+            raise ValueError(f'Duplicate river IDs found in {path}')
+        if rivers[['x_original', 'y_original']].isna().any().any():
+            raise ValueError(f'Missing original river coordinates in {path}')
+
+        # Filter while retaining both the current and the original coordinates.
+        self.rivers = rivers.loc[rivers.vassdragsomraade.isin(vassdrag)].copy()
 
     @cached_property
     def crs(self):
@@ -258,159 +275,111 @@ class RiverPositions:
         self.rivers = self.rivers.iloc[indices]
 
 class DraggablePoints:
+    """Drag outlets in a widget figure and display vectors from original outlets."""
 
-    def __init__(self, ax, x_data, y_data):
-
+    def __init__(self, ax, x_data, y_data, x_original, y_original):
         self.ax = ax
         self.canvas = ax.figure.canvas
+        self.x_data = np.asarray(x_data, dtype=float).copy()
+        self.y_data = np.asarray(y_data, dtype=float).copy()
+        self.original_x = np.asarray(x_original, dtype=float).copy()
+        self.original_y = np.asarray(y_original, dtype=float).copy()
 
-        self.x_data = list(x_data)
-        self.y_data = list(y_data)
+        n = len(self.x_data)
+        if any(len(arr) != n for arr in
+               (self.y_data, self.original_x, self.original_y)):
+            raise ValueError('Original and current river coordinate arrays must align')
 
         self.selected_index = None
         self.was_modified = False
 
+        # Use ONE line artist for all rivers rather than thousands of artists.
+        # Each vector is [original, current, NaN] in plotting coordinates.
+        self._line_x = np.full(3 * n, np.nan)
+        self._line_y = np.full(3 * n, np.nan)
+        self._line_x[0::3] = self.original_x
+        self._line_x[1::3] = self.x_data
+        self._line_y[0::3] = self.original_y
+        self._line_y[1::3] = self.y_data
+        self.displacement_lines, = ax.plot(
+            self._line_x, self._line_y, '-', color='darkorange',
+            linewidth=1.2, alpha=0.8, zorder=7,
+            label='Original → edited position'
+        )
+
+        self.original_points, = ax.plot(
+            self.original_x, self.original_y, '.', color='darkorange',
+            markersize=3, alpha=0.7, zorder=7
+        )
         self.points, = ax.plot(
-            self.x_data,
-            self.y_data,
-            'ko',
-            markersize=10
+            self.x_data, self.y_data, 'ko', markersize=10, zorder=8,
+            label='Draggable outlets'
         )
 
-        # Matplotlib events
         self.cid_press = self.canvas.mpl_connect(
-            'button_press_event',
-            self.on_press
+            'button_press_event', self.on_press
         )
-
         self.cid_motion = self.canvas.mpl_connect(
-            'motion_notify_event',
-            self.on_motion
+            'motion_notify_event', self.on_motion
         )
-
         self.cid_release = self.canvas.mpl_connect(
-            'button_release_event',
-            self.on_release
+            'button_release_event', self.on_release
         )
 
-        # Jupyter widget
         self.done_button = widgets.Button(
-            description='Done',
-            button_style='success',
-            icon='check'
+            description='Done', button_style='success', icon='check'
         )
-
-        self.done_button.on_click(
-            self.on_done
-        )
-
+        self.done_button.on_click(self.on_done)
+        self._future = None
         display(self.done_button)
 
-        # Will contain the asyncio Future while waiting
-        self._future = None
-
     def on_press(self, event):
-
-        if event.inaxes != self.ax:
+        if event.inaxes != self.ax or not len(self.x_data):
             return
-
-        xy_pixels = self.ax.transData.transform(
-            np.column_stack(
-                (self.x_data, self.y_data)
-            )
+        pixels = self.ax.transData.transform(
+            np.column_stack((self.x_data, self.y_data))
         )
-
-        click_pixel = np.array(
-            [event.x, event.y]
-        )
-
-        distances = np.linalg.norm(
-            xy_pixels - click_pixel,
-            axis=1
-        )
-
-        if np.min(distances) < 15:
-
-            self.selected_index = np.argmin(
-                distances
-            )
+        distances = np.linalg.norm(pixels - [event.x, event.y], axis=1)
+        closest = np.argmin(distances)
+        if distances[closest] < 15:
+            self.selected_index = closest
 
     def on_motion(self, event):
-
-        if self.selected_index is None:
+        if (self.selected_index is None or event.inaxes != self.ax
+                or event.xdata is None or event.ydata is None):
             return
-
-        if event.inaxes != self.ax:
-            return
-
-        if event.xdata is None or event.ydata is None:
-            return
-
+        i = self.selected_index
         self.was_modified = True
-
-        self.x_data[self.selected_index] = event.xdata
-        self.y_data[self.selected_index] = event.ydata
-
-        self.points.set_data(
-            self.x_data,
-            self.y_data
-        )
-
+        self.x_data[i] = event.xdata
+        self.y_data[i] = event.ydata
+        self.points.set_data(self.x_data, self.y_data)
+        self._line_x[3 * i + 1] = event.xdata
+        self._line_y[3 * i + 1] = event.ydata
+        self.displacement_lines.set_data(self._line_x, self._line_y)
         self.canvas.draw_idle()
 
     def on_release(self, event):
-
         self.selected_index = None
 
     def on_done(self, event):
-
-        # Prevent pressing the button twice
         self.done_button.disabled = True
         self.done_button.description = 'Done ✓'
-
-        if self._future is not None:
-            if not self._future.done():
-
-                self._future.set_result(
-                    self.get_data()
-                )
+        if self._future is not None and not self._future.done():
+            self._future.set_result(self.get_data())
 
     async def wait(self):
-
-        """
-        Wait until the user presses Done.
-
-        This does NOT block the Jupyter event loop.
-        """
-
+        """Suspend this coroutine until Done, without blocking Jupyter events."""
         loop = asyncio.get_running_loop()
-
         self._future = loop.create_future()
-
-        x_data, y_data = await self._future
-
-        return x_data, y_data
+        return await self._future
 
     def get_data(self):
-
-        return (
-            np.asarray(self.x_data),
-            np.asarray(self.y_data)
-        )
+        return self.x_data.copy(), self.y_data.copy()
 
     def disconnect(self):
-
-        self.canvas.mpl_disconnect(
-            self.cid_press
-        )
-
-        self.canvas.mpl_disconnect(
-            self.cid_motion
-        )
-
-        self.canvas.mpl_disconnect(
-            self.cid_release
-        )
+        self.canvas.mpl_disconnect(self.cid_press)
+        self.canvas.mpl_disconnect(self.cid_motion)
+        self.canvas.mpl_disconnect(self.cid_release)
 
 class CropRivers:
     '''
@@ -432,101 +401,79 @@ class CropRivers:
         return shp.concave_hull(shp.geometry.Polygon(self.model_domain), ratio = self.info['buffer domain ratio']).buffer(self.info['land buffer'])
 
     async def crop_rivers_far_from_land_and_close_to_OBC(self, Rivers):
-        """
-        Remove rivers that run off to points outside of the model domain, and that run off very close to the open boundary
-        - note: I believe you have to run matplotlib with the tk backend for the draggable points to work out
-        """
-        # Filter rivers so that we only keep those within the model domain, and within a certain buffer of it
-        i = 0
-        print('- Adjust river positions and remove rivers that do not drain to the model domain')
-        while True:
-            i += 1
-            print(f' - iteration {i}')
-            # Identify which rivers are within the current coverage
-            in_model = self.buffered_domain.contains([shp.geometry.Point(x, y) for (x,y) in zip(Rivers.x, Rivers.y)])
+        """Interactively edit outlets, retain original coordinates and crop rivers."""
+        print('- Adjust river positions and remove rivers outside the model domain')
+        modified = False
+        iteration = 0
 
-            plt.figure(figsize = [10,10])
-            # Reproject since Norgeskart WMS requires that the region we plot are within valid bounds of the UTM coordinate,
-            # and UTM33/32 -- which the river data is stored in -- is not in general valid.
+        while True:
+            iteration += 1
+            print(f' - iteration {iteration}')
             self.M.re_project(self.info['grid_projection'])
             self.M.georeference()
-            ax = plt.gca()
-
-            # Plot the model land
-            #plot_polygon(shp.geometry.Polygon(self.model_domain), ax = ax, facecolor='black', edgecolor='red', alpha=0.5)
-            ax.plot(self.x_land, self.y_land, 'b.', label = 'land nodes', zorder = 1)
-
-            # Plot the buffered domain
-            plot_polygon(self.buffered_domain, ax = ax, facecolor='lightblue', edgecolor='blue', alpha=0.5)
-        
-            self.M.re_project(Rivers.reference)
-
-            ax.set_title('Rivers near the domain scaled with their runoff. Black points are draggable.')
-
-            # Plot rivers that will not be used in the model
-            ax.scatter(
-                Rivers.x[~in_model], Rivers.y[~in_model], 
-                s = Rivers.rivers.areal[~in_model], 
-                color = 'r', 
-                transform = Rivers.crs, 
-                label = 'Will not be used'
-                )
-
-            # Plot rivers that will be used in the model
-            ax.scatter(
-                Rivers.x[in_model], Rivers.y[in_model],
-                s = Rivers.rivers.areal[in_model], 
-                color = 'g', 
-                transform = Rivers.crs, 
-                label = 'Will be used'
-                )
-
-            # Go back to the map projection
-            self.M.re_project(self.info['grid_projection'])
+            # Buffered domain and model coordinates are in the grid projection.
             x, y = self.M.Proj(Rivers.lon, Rivers.lat)
+            in_model = np.asarray(self.buffered_domain.contains(
+                [shp.geometry.Point(a, b) for a, b in zip(x, y)]
+            ), dtype=bool)
 
-            # Modify river positions in Rivers (will not change the database, just the rivers used in the model setup)
-            river_positions = DraggablePoints(ax, x, y)
-            hndl = ax.legend()
-            for h in hndl.legend_handles:
-                try:
-                    h.set_sizes([20.0])
-                except:
-                    pass
-            plt.show()
+            fig, ax = plt.subplots(figsize=(10, 10))
+            ax.plot(self.x_land, self.y_land, 'b.', label='land nodes', zorder=1)
+            plot_polygon(self.buffered_domain, ax=ax, facecolor='lightblue',
+                         edgecolor='blue', alpha=0.5)
+            ax.set_title('Drag black river points, then press Done. Orange lines show original outlets.')
 
-            x_data, y_data = await river_positions.wait()
-
-
-            # Once the figure is closed, we look at all points and update the river position database
-            lon, lat = self.M.Proj(x_data, y_data, inverse = True)
             self.M.re_project(Rivers.reference)
-            
-            # Check if rivers were adjusted. We continue
-            if river_positions.was_modified:
-                print('  - One or more river was modified, making a new river mask and illustrating.')
-                x, y = Rivers.Proj(lon, lat)
-                Rivers.x, Rivers.y = np.array(x), np.array(y)
+            ax.scatter(Rivers.x[~in_model], Rivers.y[~in_model],
+                       s=Rivers.rivers.areal[~in_model], color='r',
+                       transform=Rivers.crs, label='Will not be used')
+            ax.scatter(Rivers.x[in_model], Rivers.y[in_model],
+                       s=Rivers.rivers.areal[in_model], color='g',
+                       transform=Rivers.crs, label='Will be used')
 
-            else:
+            self.M.re_project(self.info['grid_projection'])
+            original_lon, original_lat = Rivers.Proj(
+                Rivers.rivers['x_original'].to_numpy(),
+                Rivers.rivers['y_original'].to_numpy(), inverse=True)
+            xo, yo = self.M.Proj(original_lon, original_lat)
+            editor = DraggablePoints(ax, x, y, xo, yo)
+            ax.legend()
+            plt.show()
+            try:
+                edited_x, edited_y = await editor.wait()
+            finally:
+                editor.disconnect()
+                plt.close(fig)
+
+            if not editor.was_modified:
                 break
 
-        # Remove the unused rivers from the Rivers object
-        Rivers.crop(np.where(in_model)[0])
+            modified = True
+            lon, lat = self.M.Proj(edited_x, edited_y, inverse=True)
+            new_x, new_y = Rivers.Proj(lon, lat)
+            Rivers.x = np.asarray(new_x)
+            Rivers.y = np.asarray(new_y)
+            print('  - River positions updated; recalculating the domain mask')
 
-        # Store the adjusted river database for later use
-        if i > 1:
-            path = self.M.filepath.split(self.M.filepath.split('/')[-1])[0]
-            new_name = f'{path}river_positions_{self.M.casename}.csv'
-            print(f'- The river database was adjusted for this experiment, storing it as {new_name}')
+        # The final mask is calculated from the last confirmed coordinates.
+        self.M.re_project(self.info['grid_projection'])
+        x, y = self.M.Proj(Rivers.lon, Rivers.lat)
+        in_model = np.asarray(self.buffered_domain.contains(
+            [shp.geometry.Point(a, b) for a, b in zip(x, y)]
+        ), dtype=bool)
+        Rivers.crop(np.flatnonzero(in_model))
+
+        if modified:
+            # Save both x/y_outlet and unchanged x/y_original in the case CSV.
+            output_dir = os.path.dirname(self.M.filepath)
+            new_name = os.path.join(output_dir, f'river_positions_{self.M.casename}.csv')
             Rivers.rivers.to_csv(new_name)
+            print(f'- Saved edited river positions and original coordinates to {new_name}')
 
-        # And then we can identify and remove rivers that are too close to the OBC
-        print(f'- Remove rivers that discharge within {self.info["obc buffer"]} m from the open boundary')
-        d, _ = self.obc_tree.query(np.array([Rivers.x, Rivers.y]).T)
-        too_close_to_obc_inds = np.where(d > self.info['obc buffer'])[0]
-        Rivers.crop(too_close_to_obc_inds)
-        
+        self.M.re_project(Rivers.reference)
+        print(f'- Remove rivers within {self.info["obc buffer"]} m of the open boundary')
+        distances, _ = self.obc_tree.query(np.column_stack((Rivers.x, Rivers.y)))
+        Rivers.crop(np.flatnonzero(distances > self.info['obc buffer']))
         return Rivers
 
 class FVCOM_rivers(CropRivers):
