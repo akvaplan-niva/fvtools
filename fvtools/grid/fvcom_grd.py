@@ -1,39 +1,28 @@
 import os
-import fvtools.grid.tge as tge
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
-import progressbar as pb
 import geopandas as gpd
 import shapely as shp
-import networkx as nx
-import cartopy.crs as ccrs
-import cmocean as cmo
 
 from pyproj import Proj, Transformer
-from netCDF4 import Dataset
-from matplotlib.collections import PatchCollection
-from matplotlib.patches import Polygon as mPolygon
 from scipy.spatial import cKDTree as KDTree
 from numba import njit
-from functools import cached_property
-
-import asyncio
-import ipywidgets as widgets
-from IPython.display import display
 
 import warnings
 warnings.filterwarnings("ignore")
 
-from fvtools.grid.depth import setup_sigma
 from fvtools.grid.netcdf_io import FVCOMNetCDFIO
-
 from fvtools.grid._components.grid_loader import GridLoader
-
-
 from fvtools.grid._components.coordinates import InputCoordinates, Coordinates
-
 from fvtools.grid._components.proximity import GridProximity
+from fvtools.grid._components.topology import PropertiesFromTGE
+from fvtools.grid._components.triangulation import CellTriangulation
+from fvtools.grid._components.cropping import CropGrid
+from fvtools.grid._components.coastline import CoastLine
+from fvtools.grid._components.obc import OBC
+from fvtools.grid._components.control_volumes import ControlVolumePlotter
+from fvtools.grid._components.sections import SectionMaker
+from fvtools.grid._components.plotting import PlotFVCOM
+from fvtools.grid._components.physics import AnglesAndPhysics
 
 class LegacyPropertyAliases:
     '''
@@ -46,21 +35,6 @@ class LegacyPropertyAliases:
     @property
     def siglay_center(self):
         return self.siglay_c
-
-from fvtools.grid._components.topology import PropertiesFromTGE
-
-from fvtools.grid._components.triangulation import CellTriangulation
-
-from fvtools.grid._components.cropping import CropGrid
-
-
-from fvtools.grid._components.coastline import CoastLine
-from fvtools.grid._components.obc import OBC
-
-
-from fvtools.grid._components.control_volumes import (
-    ControlVolumePlotter, _find_cv_walls, _connect_cv_walls
-)
 
 class InterpolateToZ:
     def make_interpolation_matrices_TS(self, interpolation_depths=[-5]):
@@ -124,8 +98,6 @@ class InterpolateToZ:
         shallower = (~np.isfinite(upper_depth)) & np.isfinite(lower_depth)
         out[shallower] = lower_value[shallower]
         return out
-
-from fvtools.grid._components.sections import SectionMaker
 
 class ExportGrid:
     '''
@@ -329,10 +301,6 @@ class ExportGrid:
                 pass
         np.save(filename, M)
         print(f'- Wrote {filename}')
-
-from fvtools.grid._components.plotting import PlotFVCOM
-
-from fvtools.grid._components.physics import AnglesAndPhysics
 
 class LegacyFunctions:
     def cell2node(self, fieldin):
