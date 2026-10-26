@@ -30,6 +30,9 @@ def main(folder=None, fname=None, filelist=None, var=None,
          nlevels=20, reference='epsg:32633', output_dir=None, **kwargs):
     """Create FVCOM animations from sigma, z-level, and/or vertical sections.
 
+    When both sigma and z are supplied, create both horizontal movie types:
+    sigma movies ignore z, and z-level movies ignore sigma.
+
     For section normal-flow animations, specify section=... and
     var=['normal_velocity']; optional section_vlim is in m/s.
     """
@@ -90,6 +93,13 @@ def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
         frames, options['var'], sigma=options['sigma'],
         nlevels=options['nlevels'],
     )
+    if options['sigma'] is not None and options['z'] is not None:
+        # A z-level movie must not inherit colour limits calculated from
+        # the requested sigma layer. Estimate its limits across all layers.
+        options['zlevel_cb'] = build_colorbars(
+            frames, options['var'], sigma=None,
+            nlevels=options['nlevels'],
+        )
     print_frame_range(frames)
     return options
 
@@ -97,7 +107,11 @@ def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
 def _validate_movie_options(options):
     """Reject invalid settings before opening model output files."""
     validate_plot_bounds(options['xlim'], options['ylim'])
-    validate_vertical_selection(options['sigma'], options['z'], allow_max=True)
+    # A single load_netCDF call cannot use sigma and z together, but main()
+    # may legitimately request *two separate movies*. Validate each selector
+    # individually; the movie functions pass only their own selector onward.
+    validate_vertical_selection(sigma=options['sigma'], allow_max=True)
+    validate_vertical_selection(z=options['z'], allow_max=True)
     for name in ('fps', 'dpi'):
         value = options[name]
         if not isinstance(value, (int, float, np.number)) or not np.isfinite(value) or value <= 0:
@@ -122,26 +136,30 @@ def _validate_movie_options(options):
 #                                            Movie plotters
 # ----------------------------------------------------------------------------------------------------------------------
 def surface_movie(**kwargs):
-    """Make horizontal contour movies on a specified sigma layer."""
+    """Make a sigma-layer movie, ignoring any simultaneously supplied z."""
     _validate_scalar_fields(kwargs['var'])
-    maker = HorizontalMaker(**kwargs)
+    options = {**kwargs, 'z': None}
+    maker = HorizontalMaker(**options)
     return _write_horizontal_movies(
-        maker, kwargs, callback=maker.contourf_animate,
-        suffix=f'sigma_{kwargs["sigma"]}',
+        maker, options, callback=maker.contourf_animate,
+        suffix=f'sigma_{options["sigma"]}',
     )
 
 
 def zlevel_movie(**kwargs):
-    """Make horizontal contour movies interpolated to constant z levels."""
+    """Make a constant-depth movie, ignoring any supplied sigma layer."""
     _validate_scalar_fields(kwargs['var'])
     unsupported = {'zeta', 'vorticity', 'pv', 'sp'}
     if not any(field not in unsupported for field in kwargs['var']):
         raise ValueError('No plottable fields for z-level movies')
-    maker = HorizontalMaker(**kwargs)
-    maker.sigma = None
+    options = {**kwargs, 'sigma': None}
+    # If main() requested both movie types, use colour limits estimated
+    # across all sigma levels, not the sigma layer used by surface_movie().
+    options['cb'] = kwargs.get('zlevel_cb') or kwargs['cb']
+    maker = HorizontalMaker(**options)
     return _write_horizontal_movies(
-        maker, kwargs, callback=maker.zlevel_animate,
-        suffix=f'{kwargs["z"]}m_depth',
+        maker, options, callback=maker.zlevel_animate,
+        suffix=f'{options["z"]}m_depth',
         excluded=('zeta', 'vorticity', 'pv', 'sp'),
     )
 
