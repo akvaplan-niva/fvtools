@@ -79,5 +79,6 @@ dependencies = [
     "cartopy",
     "ipympl",
     "pykdtree",
-    "f90nml"
+    "f90nml",
+    "pytest>=8.4.2",
 ]
