@@ -2961,7 +2961,7 @@ class NEST_grid(LoadNest, GridProximity, NestROMS2FVCOM, Coordinates, PlotFVCOM,
             self._nest_parameters_npy(['h_mother', 'hc_mother', 'siglev_mother', 'siglay_mother',
                                        'siglev_center_mother', 'siglay_center_mother', 'siglayz_mother',
                                        'siglayz_uv_mother'], add = False)
-            self._nest_parameters_npy(['h', 'siglev', 'siglay', 'nv'], add = False)
+            self._nest_parameters_npy(['h', 'nv'], add = False)
 
         # Add information from full fvcom grid (M), vertical coords and OBC-nodes
         if M is not None:
@@ -3002,6 +3002,10 @@ class NEST_grid(LoadNest, GridProximity, NestROMS2FVCOM, Coordinates, PlotFVCOM,
     def h(self):
         '''Average water column thickness'''
         return self._h
+
+    @property
+    def siglay_center(self):
+        return np.mean(self.siglay[self.tri,:], axis = 1)
     
     @property
     def zeta(self):
