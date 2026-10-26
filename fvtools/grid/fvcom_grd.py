@@ -2977,6 +2977,10 @@ class NEST_grid(LoadNest, GridProximity, NestROMS2FVCOM, Coordinates, PlotFVCOM,
         self.lon, self.lat   = self.Proj(self.x, self.y, inverse=True)
         self.lonc, self.latc = self.Proj(self.xc, self.yc, inverse=True)
 
+        # Inherit sigma coordinates
+        if M is not None:
+            self.inherit_sig(M)
+
     def inherit_sig(self, M):
         '''
         Inherit the vertical layers from the model grid
