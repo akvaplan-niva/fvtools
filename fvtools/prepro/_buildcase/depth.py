@@ -211,23 +211,39 @@ class DepthHandler:
         """
         Setup metrics for secondary connectivity (nodes surrounding nodes). These are needed when smoothing the topography.
         """
-        tri   = Triangulation(self.x, self.y, self.tri)
-        ntsn  = np.zeros((len(self.x))).astype(int)
-        nbsn  = -1*np.ones((len(self.x),12)).astype(int)
-        edges = tri.edges
-        self.nbsn, self.ntsn = self.calculate_nbsn_ntsn(edges, nbsn, ntsn)
-        self.edges = edges
+        # Use TGE's topological connectivity without triggering its full
+        # control-volume/gradient calculation through self.T.
+        from fvtools.grid import tge
 
-    @staticmethod
-    @njit
-    def calculate_nbsn_ntsn(edges, nbsn, ntsn):
-        for edge in edges:
-            lmin = np.min(np.abs(nbsn[edge[0],:]-edge[1]))
-            if lmin != 0:
-                nbsn[edge[0], ntsn[edge[0]]] = edge[1]
-                ntsn[edge[0]] += 1
-            lmin = np.min(np.abs(nbsn[edge[1],:]-edge[0]))
-            if lmin != 0:
-                nbsn[edge[1], ntsn[edge[1]]] = edge[0]
-                ntsn[edge[1]] += 1
-        return nbsn, ntsn
+        n_nodes = len(self.x)
+        nv = tge.check_nv(np.asarray(self.tri), self.x, self.y)
+        n_cells = len(nv)
+        if not n_cells or not n_nodes:
+            raise ValueError('Cannot build smoothing neighbors for an empty mesh')
+
+        nbe = tge.get_NBE(n_cells, n_nodes, nv)
+        _, isonb = tge.get_BOUNDARY(n_cells, n_nodes, nbe, nv)
+        max_elements = int(np.bincount(nv.ravel(), minlength=n_nodes).max(initial=0))
+        nbve, nbvt, ntve = tge.get_NBVE_NBVT(n_nodes, n_cells, nv, max_elements)
+        tge_ntsn, tge_nbsn, _, _, invalid = tge.get_NTSN_NBSN(
+            nbve, ntve, nbvt, nbe, nv, isonb, max_elements, n_nodes
+        )
+        if np.any(invalid):
+            indices = np.flatnonzero(invalid)
+            raise ValueError(f'TGE found invalid boundary topology at {len(indices)} nodes, e.g. {indices[:10].tolist()}')
+
+        # TGE stores a closed ring, not the unique neighbors needed by smoothing.
+        # Interior: [neighbors..., first_neighbor]; boundary: [self, neighbors..., self].
+        boundary = isonb != 0
+        counts = tge_ntsn - np.where(boundary, 2, 1)
+        if np.any(counts <= 0):
+            raise ValueError('Some mesh nodes have no valid neighbors for smoothing')
+        neighbors = np.full((n_nodes, int(counts.max(initial=0))), -1, dtype=np.int64)
+        for node in range(n_nodes):
+            first = 1 if boundary[node] else 0
+            count = int(counts[node])
+            neighbors[node, :count] = tge_nbsn[node, first:first + count]
+
+        self.nbsn, self.ntsn = neighbors, counts
+        # Preserve the existing public edges attribute and its Matplotlib ordering.
+        self.edges = Triangulation(self.x, self.y, self.tri).edges

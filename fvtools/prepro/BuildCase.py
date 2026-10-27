@@ -13,13 +13,8 @@ version_number = 4.0
 
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-
-from pyproj import Proj, transform
-from scipy.interpolate import LinearNDInterpolator
-from matplotlib.tri import Triangulation
+from pyproj import Proj
 from datetime import datetime
-from numba import jit, njit
 from fvtools.grid.fvcom_grd import GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropGrid, ExportGrid, CellTriangulation, PropertiesFromTGE, GridProximity, CoastLine, AnglesAndPhysics
 from functools import cached_property
 from fvtools.prepro._buildcase.depth import DepthHandler
@@ -65,14 +60,21 @@ def main(dmfile = None,
     if sigma_file is None: 
         sigma_file = f'./input/{casename}_sigma.dat'
     
-    # Copy the input to a dictionary
-    vars = dir()
-    kwargs = {}
-    for variable in vars:
-        kwargs[variable] = eval(variable)
-
-    bc = BuildCase(**kwargs)
-    return bc
+    return BuildCase(
+        dmfile=dmfile,
+        depth_file=depth_file,
+        casename=casename,
+        dm_projection=dm_projection,
+        depth_projection=depth_projection,
+        target_projection=target_projection,
+        sigma_file=sigma_file,
+        rx0max=rx0max,
+        SmoothFactor=SmoothFactor,
+        min_depth=min_depth,
+        sponge_radius=sponge_radius,
+        sponge_factor=sponge_factor,
+        latlon=latlon,
+    )
 
 class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropGrid, GridProximity, CoastLine,
                 ExportGrid, DepthHandler, CellTriangulation, PropertiesFromTGE, AnglesAndPhysics):
@@ -128,16 +130,15 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
         and it will run and generate all necessary input files.
         '''
         # Some names are expected by GridLoader and Coordinates - such as filepath and reference
+        if sigma_file is None:
+            sigma_file = f'./input/{casename}_sigma.dat'
         self.latlon = latlon
         self.filepath, self.sigmafile, self.depth_file, self.reference = dmfile, sigma_file, depth_file, dm_projection
         self.verbose = False # defined since FVCOM_grid expects this one, set to False and we don't want to be overwhelmed with messages
         if latlon:
-            print(f'\nBuilding case: {casename} from: {dmfile} with bathymetry from: {depth_file.split("/")[-1]} in spherical coordinates')
+            print(f'\nBuilding case: {casename} from: {dmfile} with bathymetry from: {str(depth_file).split("/")[-1]} in spherical coordinates')
         else:
-            print(f'\nBuilding case: {casename} from: {dmfile} with bathymetry from: {depth_file.split("/")[-1]} in carthesian coordinates')
-
-        # Overwrite
-        if sigma_file is None: sigma_file = f'./input/{casename}_sigma.dat'
+            print(f'\nBuilding case: {casename} from: {dmfile} with bathymetry from: {str(depth_file).split("/")[-1]} in carthesian coordinates')
 
         # read file, update input fields
         self._add_grid_parameters_2dm()
