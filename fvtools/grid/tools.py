@@ -272,6 +272,7 @@ def make_interpolation_matrices(zlevels, depth):
     interp_matrix[mb, :] = np.nan
     interp_matrix[ms, 1:] = 0
     interp_matrix[ms, 0] = 1
+    return interp_matrix
 
 def mask_land_tris(x, y, tri, ctri):
     '''
@@ -291,4 +292,3 @@ def mask_land_tris(x, y, tri, ctri):
 
     # Masked_tri:
     return ctri[mask==False]
-    return interp_matrix
