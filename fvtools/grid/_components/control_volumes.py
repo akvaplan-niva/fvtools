@@ -139,11 +139,21 @@ def _connect_cv_walls(xmid, ymid, xcell, ycell, x, y, nbsnhere, elemshere, node)
             xcv.append(xcell[ind][0])
             ycv.append(ycell[ind][0])
 
-        uxcv    = np.array(xcv)
-        unique  = np.unique(uxcv)
-        nunique = len(unique)
-        ncv     = len(xcv)
-        nunique_lt_ncv = nunique < ncv
-        if boundary and nunique_lt_ncv:
-            break
+        # The original condition was: boundary and
+        # len(np.unique(np.array(xcv))) < len(xcv).
+        # Converting a growing Numba list to an ndarray here can fail during
+        # LLVM lowering on some Numba/llvmlite versions. Compare directly.
+        if boundary:
+            duplicate_x = False
+            for j in range(len(xcv)):
+                for k in range(j):
+                    left = xcv[j]
+                    right = xcv[k]
+                    if left == right or (np.isnan(left) and np.isnan(right)):
+                        duplicate_x = True
+                        break
+                if duplicate_x:
+                    break
+            if duplicate_x:
+                break
     return xcv, ycv
