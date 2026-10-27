@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import perf_counter
 
 import numpy as np
 from scipy.spatial import Delaunay, QhullError
@@ -31,6 +32,59 @@ class _TooManyPoints(Exception):
     pass
 
 
+class _Progress:
+    """Notebook-friendly progress reporting without requiring ipywidgets.
+
+    Reports every 10 percentage points, or approximately every 10 seconds when
+    the current unit of work finishes. Messages are printed on separate lines
+    because carriage-return progress bars are unreliable in Jupyter output.
+    """
+
+    def __init__(self, label, total):
+        self.label = label
+        self.total = int(total)
+        self.started = perf_counter()
+        self.last_report = self.started
+        self.last_milestone = -1
+        self.update(0, force=True)
+
+    @staticmethod
+    def _duration(seconds):
+        seconds = max(0, int(seconds))
+        if seconds >= 3600:
+            return f'{seconds // 3600}h {(seconds // 60) % 60:02d}m'
+        if seconds >= 60:
+            return f'{seconds // 60}m {seconds % 60:02d}s'
+        return f'{seconds}s'
+
+    def update(self, done, *, force=False):
+        now = perf_counter()
+        done = max(0, min(int(done), self.total))
+        percent = 100. * done / self.total if self.total else 100.
+        milestone = int(percent) // 10
+        if (not force and milestone <= self.last_milestone
+                and now - self.last_report < 10.):
+            return
+        self.last_report = now
+        self.last_milestone = max(self.last_milestone, milestone)
+        elapsed = now - self.started
+        msg = (f'  - {self.label}: {percent:.1f}% '
+               f'({done:,}/{self.total:,}) | elapsed {self._duration(elapsed)}')
+        # Approximate ETA for this stage, after a useful sample is available.
+        if 0 < done < self.total and elapsed >= 10.:
+            remaining = elapsed * (self.total - done) / done
+            msg += f' | ETA ~{self._duration(remaining)}'
+        print(msg, flush=True)
+
+    def activity(self, message, *, force=False):
+        """Show activity when a single halo search/triangulation takes a while."""
+        now = perf_counter()
+        if force or now - self.last_report >= 10.:
+            self.last_report = now
+            print(f'    {message} | elapsed {self._duration(now-self.started)}',
+                  flush=True)
+
+
 def _bins_for_xy(x, y, bounds, count):
     xmin, ymin, xmax, ymax = bounds
     dx, dy = max(xmax - xmin, np.finfo(float).eps), max(ymax - ymin, np.finfo(float).eps)
@@ -43,6 +97,7 @@ class _DiskBins:
     """Two-pass on-disk spatial bin index of cropped XYZ points."""
 
     def __init__(self, data, bounds, directory, options):
+        print(f'  - Indexing {len(data):,} bathymetry points on disk (two passes)', flush=True)
         self.data = data
         self.bounds = bounds
         self.count = options.bins_per_axis
@@ -53,12 +108,14 @@ class _DiskBins:
         self.global_extent = [np.inf, np.inf, -np.inf, -np.inf]
         self.nonfinite_rows = 0
 
+        index_pass = _Progress('Index pass 1/2 – counting source points', len(data))
         for start in range(0, len(data), self.chunk_rows):
             stop = min(start + self.chunk_rows, len(data))
             xyz = np.asarray(data[start:stop, :3])
             valid = np.isfinite(xyz).all(axis=1)
             self.nonfinite_rows += int((~valid).sum())
             if not valid.any():
+                index_pass.update(stop)
                 continue
             points = xyz[valid]
             self.global_extent[0] = min(self.global_extent[0], float(points[:, 0].min()))
@@ -70,6 +127,7 @@ class _DiskBins:
             if len(points):
                 ids = _bins_for_xy(points[:, 0], points[:, 1], bounds, self.count)
                 self.counts += np.bincount(ids, minlength=self.nbin)
+            index_pass.update(stop)
 
         total = int(self.counts.sum())
         if total < 3:
@@ -81,6 +139,7 @@ class _DiskBins:
         with self.path.open('wb') as f:
             f.truncate(total * self.record_bytes)
         cursor = self.offsets[:-1].copy()
+        index_pass = _Progress('Index pass 2/2 – writing disk index', len(data))
         with self.path.open('r+b') as dest:
           for start in range(0, len(data), self.chunk_rows):
             stop = min(start + self.chunk_rows, len(data))
@@ -88,6 +147,7 @@ class _DiskBins:
             valid = np.isfinite(xyz).all(axis=1)
             inside = valid & (xyz[:, 0] >= xmin) & (xyz[:, 0] <= xmax) & (xyz[:, 1] >= ymin) & (xyz[:, 1] <= ymax)
             if not inside.any():
+                index_pass.update(stop)
                 continue
             points = xyz[inside]
             bins = _bins_for_xy(points[:, 0], points[:, 1], bounds, self.count)
@@ -100,6 +160,7 @@ class _DiskBins:
                 block = np.ascontiguousarray(points[sorted_order[first_idx:first_idx + size]])
                 dest.write(block.tobytes())
                 cursor[b] += size
+            index_pass.update(stop)
         if not np.array_equal(cursor, self.offsets[1:]):
             raise RuntimeError('Disk index construction incomplete')
         self.total = total
@@ -208,11 +269,14 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
         sl,sb,sr,st = idx.global_extent
         if sr<x1 or sl>x0 or st<y1 or sb>y0:
             raise ValueError('The bathymetry file does not cover the model domain!')
-        print(f'  - Indexed {idx.total:,} bathymetry points on disk ({idx.count}x{idx.count} bins)')
-        print('  - Interpolating bathymetry in memory-limited tiles')
+        print(f'  - Indexed {idx.total:,} bathymetry points on disk ({idx.count}x{idx.count} bins)', flush=True)
+        print(f'  - Interpolating {len(xy):,} grid nodes in memory-limited tiles', flush=True)
+        progress = _Progress('Interpolation of grid nodes', len(xy))
         calls = 0
+        triangulations = 0
+        finished = 0
         def run(nodes):
-            nonlocal calls
+            nonlocal calls, triangulations, finished
             calls += 1
             queries = xy[nodes]
             lo = queries.min(axis=0)
@@ -227,6 +291,7 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
                 if window==last_window:
                     raise RuntimeError('Unable to expand local Delaunay window')
                 last_window=window
+                progress.activity(f'Working on batch {calls:,}: searching bathymetry points for {len(nodes):,} grid nodes')
                 try:
                     cloud = idx.region(window,options.max_triangulation_points)
                 except _TooManyPoints:
@@ -243,6 +308,14 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
                         'Increase max_triangulation_points or check point density.'
                     ) from None
                 if len(cloud)>=3:
+                    # Large Delaunay calls can block in compiled SciPy code.
+                    # Report the impending step so a long pause is intelligible.
+                    progress.activity(
+                        f'Batch {calls:,}: triangulating {len(cloud):,} source points '
+                        f'for {len(nodes):,} grid nodes',
+                        force=(triangulations == 0),
+                    )
+                    triangulations += 1
                     try:
                         tri = Delaunay(np.ascontiguousarray(cloud[:,:2],dtype=np.float64))
                     except QhullError:
@@ -257,9 +330,14 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
                         if certified.all() or is_full:
                             if finite.any():
                                 result[nodes[finite]]=_linear_interpolate(tri,cloud,queries[finite],simplex[finite])
+                            finished += len(nodes)
+                            progress.update(finished)
                             return
                 if is_full:
+                    finished += len(nodes)
+                    progress.update(finished)
                     return
+                progress.activity(f'Batch {calls:,}: expanding search halo (current source points: {len(cloud):,})')
                 halo *= 2
         # Divide mesh nodes into spatially compact groups, without building a tree.
         def partition(nodes):
@@ -272,5 +350,8 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
             split=len(order)//2
             partition(order[:split]);partition(order[split:])
         partition(np.arange(len(xy)))
-        print(f'  - Completed {calls} local triangulation tiles')
+        if finished != len(xy):
+            raise RuntimeError('Incomplete tiled interpolation: not all grid nodes were processed')
+        print(f'  - Finished: {calls:,} node batches, '
+              f'{triangulations:,} local Delaunay triangulations', flush=True)
     return result
