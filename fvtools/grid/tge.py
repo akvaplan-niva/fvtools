@@ -334,26 +334,45 @@ def get_MAXNBR(MT, NT, NV):
     return elems_with_this_node
 
 # Try to rewrite this in a more pythonic way to speed it up
-@jit(nopython = True, parallel = True)
+@jit(nopython=True)
 def get_NBVE_NBVT(MT, NT, NV, MXNBR_ELEMS):
-    '''
-    Determine number of surrounding elements for node I = NTVE(I)
-    '''
-    NBVE = -1*np.ones((MT, MXNBR_ELEMS+1), np.int32) # Indices of neighboring elements of node I
-    NBVT = -1*np.ones((MT, MXNBR_ELEMS+2), np.int32) # index of node I in neighboring element
-    NTVE = np.zeros((MT), np.int32)                  # Counting array, indexes indicate number of elements around each node
+    """Build node-to-cell connectivity in O(NT) time.
 
-    for I in prange(MT):
-        NCNT = -1      # nodecount, negative by default
-        for J in range(NT):
-            if float(NV[J,0] - I)*float(NV[J,1] - I)*float(NV[J,2] - I) == 0:
-                NCNT         += 1
-                NBVE[I,NCNT]  = J
-                for K in range(3):
-                    if NV[J,K]-I == 0:
-                        NBVT[I,NCNT] = K
+    Each triangle (cell J) visits its three corners (K) exactly once.
+    NBVE[node, slot] receives J and NBVT[node, slot] receives K.
+    Iterating J in ascending order preserves the legacy cell ordering.
 
-        NTVE[I]=NCNT+1 # +1 to adjust for the negative initial nodecount
+    Shapes/dtypes and -1 padding are unchanged: downstream
+    get_NTSN_NBSN() reorders these arrays topologically.
+
+    The scan must be serial: distinct cells may share nodes, so a
+    parallel scatter would race on NTVE[node].
+    """
+    if MT < 0 or MXNBR_ELEMS < 0:
+        raise ValueError('MT and MXNBR_ELEMS must be nonnegative')
+    if NV.ndim != 2 or NV.shape[0] != NT or NV.shape[1] != 3:
+        raise ValueError('NV must have shape (NT, 3)')
+
+    NBVE = -np.ones((MT, MXNBR_ELEMS + 1), dtype=np.int32)
+    NBVT = -np.ones((MT, MXNBR_ELEMS + 2), dtype=np.int32)
+    NTVE = np.zeros(MT, dtype=np.int32)
+
+    for J in range(NT):
+        n0, n1, n2 = NV[J, 0], NV[J, 1], NV[J, 2]
+        if (n0 < 0 or n1 < 0 or n2 < 0 or
+                n0 >= MT or n1 >= MT or n2 >= MT):
+            raise ValueError('Triangulation contains a node index outside [0, MT)')
+        if n0 == n1 or n0 == n2 or n1 == n2:
+            raise ValueError('Triangulation contains a triangle with repeated nodes')
+
+        for K in range(3):
+            node = NV[J, K]
+            slot = NTVE[node]
+            if slot >= MXNBR_ELEMS + 1:
+                raise ValueError('Node valence exceeds NBVE capacity (MXNBR_ELEMS + 1)')
+            NBVE[node, slot] = J
+            NBVT[node, slot] = K
+            NTVE[node] = slot + 1
 
     return NBVE, NBVT, NTVE
 
