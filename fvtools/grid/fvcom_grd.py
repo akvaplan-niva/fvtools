@@ -19,12 +19,7 @@ from fvtools.grid._components.compatibility import (
 )
 from fvtools.grid._components.interpolation import InterpolateToZ
 from fvtools.grid._components.export import ExportGrid
-from fvtools.grid._components.nesting import (
-    LegacyNestPropertyAliases, LoadNest, NestROMS2FVCOM, NEST_grid,
-)
-
-
-
+from fvtools.grid._components.nesting import NEST_grid
 
 class FVCOM_grid(GridLoader, InputCoordinates, Coordinates, PropertiesFromTGE, LegacyPropertyAliases, CellTriangulation, OutputLoader,
                  PlotFVCOM, ControlVolumePlotter, InterpolateToZ, LegacyFunctions, SectionMaker, ExportGrid, CropGrid, AnglesAndPhysics,
@@ -297,10 +292,6 @@ Extended features through the mesh-connectivity TGE (.T) class:
         elif len(data.shape) == 3:
             raise InputError('input field can only be provided in 2D arrays or 1D arrays, time must be looped over externally.')
         return sigma
-
-
-
-
-
+    
 class InputError(Exception):
     pass
