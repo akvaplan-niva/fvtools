@@ -11,41 +11,81 @@ from scipy import interpolate
 
 
 class HBVRunoff:
-    def __init__(self, hbvfolder, start = None, stop = None):
-        '''
-        Read all hbv output files in the hbvfolder directory
-        - Assumes that all .var files in the hbv folder are runoff data.
-        - crop to time between start and stop
-        '''
-        # Load data for the full country
-        data = []
-        for i, file in enumerate(os.listdir(hbvfolder)):
-            # Figure out which number this vassdragsområde is
-            vassdragsomraade = int(file.split('.var')[0][-3:])
-        
-            # Load the data
-            _data = pd.read_csv(f'{hbvfolder}{file}', header = None, sep=r'\s+')
-        
-            # Load the dates, will have the same coverage in all files
-            if i == 0:
-                dates = [datetime(int(d[0:4]), int(d[4:6]), int(d[6:8]), int(d[9:11]), tzinfo = timezone.utc) for d in _data[0]]
-        
-            data.append(_data.rename(columns = {1: vassdragsomraade}).drop(columns=0))
-        
-        # Re-scale vassdragsområde 183 (python index 182), as suggested by James Sample at NIVA
-        data[182] = 6/16 * data[181]
-        self.transport = pd.concat(data, axis = 1).T
-        self.dates = np.array(dates)
+    def __init__(self, hbvfolder, start=None, stop=None):
+        """Read HBV .var files, keyed by watershed ID rather than file order.
 
-        assert any(self.dates <= start), f'the database does not cover dates prior to {self.dates[0]}'
-        assert any(self.dates >= stop),  f'the database does not cover dates after {self.dates[-1]}'
-            
-        
-        # Crop to requested time-span
-        crop = np.logical_and(self.dates > start, self.dates < stop)
+        All files must describe the same strictly increasing UTC time axis.
+        The historical correction for watershed 183 is 6/16 of watershed
+        182, regardless of the order in which the files were listed.
+        """
+        import re
+        from pathlib import Path
 
-        self.transport = self.transport.loc[:, crop]
-        self.dates = self.dates[crop]
+        folder = Path(hbvfolder)
+        files = sorted(p for p in folder.iterdir()
+                       if p.is_file() and p.suffix.lower() == '.var')
+        if not files:
+            raise ValueError(f'No HBV .var files found in {folder}')
+
+        series = {}
+        common_dates = None
+        for path in files:
+            match = re.search(r'(\d{3})$', path.stem)
+            if match is None:
+                raise ValueError(f'Cannot determine watershed ID from {path.name}')
+            watershed = int(match.group(1))
+            if watershed in series:
+                raise ValueError(f'Duplicate HBV watershed ID {watershed}')
+
+            values = pd.read_csv(path, header=None, sep=r'\s+', dtype={0: str})
+            if values.shape[1] != 2 or values.empty:
+                raise ValueError(f'{path.name} must have timestamp and runoff columns')
+
+            dates = []
+            for raw in values.iloc[:, 0]:
+                stamp = str(raw).strip()
+                # Both YYYYMMDDHH and YYYYMMDD_HH (single separator) occur.
+                if re.fullmatch(r'\d{10}', stamp):
+                    packed = stamp
+                elif re.fullmatch(r'\d{8}\D\d{2}', stamp):
+                    packed = stamp[:8] + stamp[-2:]
+                else:
+                    raise ValueError(f'Invalid HBV timestamp {stamp!r} in {path.name}')
+                dates.append(datetime.strptime(packed, '%Y%m%d%H').replace(
+                    tzinfo=timezone.utc))
+            dates = np.asarray(dates, dtype=object)
+            if any(left >= right for left, right in zip(dates[:-1], dates[1:])):
+                raise ValueError(f'HBV timestamps must be strictly increasing in {path.name}')
+            if common_dates is None:
+                common_dates = dates
+            elif not np.array_equal(dates, common_dates):
+                raise ValueError(f'HBV dates do not match across files: {path.name}')
+
+            runoff = pd.to_numeric(values.iloc[:, 1], errors='coerce').to_numpy(dtype=float)
+            if not np.isfinite(runoff).all():
+                raise ValueError(f'Invalid HBV runoff values in {path.name}')
+            series[watershed] = runoff
+
+        # Preserve the HBV-specific adjustment by IDs, not arbitrary list indexes.
+        if 183 in series:
+            if 182 not in series:
+                raise ValueError('HBV watershed 183 requires watershed 182 for its 6/16 correction')
+            series[183] = (6.0 / 16.0) * series[182]
+
+        if start is not None and start < common_dates[0]:
+            raise ValueError(f'HBV runoff starts after requested start {start}')
+        if stop is not None and stop > common_dates[-1]:
+            raise ValueError(f'HBV runoff ends before requested stop {stop}')
+        if start is not None and stop is not None and start > stop:
+            raise ValueError('HBV start must not be later than stop')
+
+        keep = np.ones(len(common_dates), dtype=bool)
+        if start is not None:
+            keep &= common_dates > start
+        if stop is not None:
+            keep &= common_dates < stop
+        self.dates = common_dates[keep]
+        self.transport = pd.DataFrame.from_dict(series, orient='index').loc[:, keep]
 
 class RiverPositions:
     def __init__(self, path, vassdrag, epsg_code):
@@ -144,20 +184,27 @@ class RiverTemperatures:
     - Also provides preliminary 
     '''
     def __init__(self, riverpath, start, stop):
-        '''
-        Read observed river temperatures and river climatologies
-        '''
+        """Load temperature climatology and optional observed river temperatures."""
+        from pathlib import Path
+
         self.start, self.stop = start, stop
-        self.climatology = pd.read_csv(f'{riverpath}/temperature_climatology.csv', index_col = 0)
+        root = Path(riverpath)
+        self.climatology = pd.read_csv(root / 'temperature_climatology.csv', index_col=0)
         self.climatology.columns = self.climatology.columns.astype(int)
         self.observations = {}
-        observation_folder = f'{riverpath}/temperature_observations/'
-        
-        for f in os.listdir(observation_folder):
-            if '.csv' in f:
-                _tmp = pd.read_csv(f'{observation_folder}{f}')
-                _tmp['time'] = pd.to_datetime(_tmp.time)
-                self.observations[f.split('.csv')[0]] = _tmp
+        observation_folder = root / 'temperature_observations'
+        if observation_folder.is_dir():
+            for path in sorted(observation_folder.glob('*.csv')):
+                try:
+                    observation = pd.read_csv(path)
+                except pd.errors.EmptyDataError:
+                    continue
+                # Malformed or empty station files cannot replace climatology.
+                if 'time' not in observation:
+                    continue
+                observation['time'] = pd.to_datetime(
+                    observation['time'], errors='coerce', utc=True)
+                self.observations[path.stem] = observation
 
     @property
     def time(self):
@@ -168,7 +215,8 @@ class RiverTemperatures:
 
     @property
     def timestamp(self):
-        return pd.to_datetime([t.timestamp() for t in self.time])
+        """Unix seconds for the forcing time axis, suitable for interpolation."""
+        return np.array([time.timestamp() for time in self.time], dtype=float)
     
     @property
     def day_of_year(self):
@@ -194,34 +242,67 @@ class RiverTemperatures:
         return river_temp.set_index('elv-ID')
 
     def insert_observed_temperature(self, river_temp, vassdrag):
-        '''
-        Use the observed temperature instead of the climatology where we have it
-        '''
-        # Identify which temperature observation are within the model domain
-        within_domain = [key for key in self.observations.keys() if int(key.split('-')[0]) in vassdrag]
-        
-        # Interpolate observations to the forcing time
-        if any(within_domain):
-            for key in within_domain:
-                observation = self.observations[key]
-                
-                # Only use quality controlled data
-                observation = observation[observation.quality > 1]
-        
-                # Check if the observation covers the modelled period, crop the array is so
-                if observation.time.iloc[0] < self.time[0] and observation.time.iloc[-1] > self.time[-1]:
-                    observation = observation[np.logical_and(observation.time >= self.start - timedelta(days = 7), observation.time <= self.stop + timedelta(days = 7))]
-                else:
-                    print(f'  - Station {key} did not cover the simulation period')
-                    continue
-        
-                # Require that the coverage of temperature data (daily) is at least 90% of the model period (to avoid making up too much data)
-                if len(observation)/len(self.time) < 0.9:
-                    print(f'  - Station {key} had too many gaps in the simulation period')
-                    continue
-                    
-                # Interpolate the observed temperature to the forcing data
-                print(f'  - Replacing climatology with observations at {key}')
-                f = interpolate.interp1d([t.timestamp() for t in observation.time], observation.filtered_temperature)
-                river_temp.loc[key] = f(self.timestamp)
+        """Use quality-controlled station data only when coverage is adequate.
+
+        Interpolation uses UTC Unix seconds. Insufficient or malformed station
+        data leave the corresponding climatology untouched.
+        """
+        target_time = np.asarray(self.timestamp, dtype=float)
+        if not len(target_time):
+            return river_temp
+
+        selected = set(np.asarray(vassdrag).tolist())
+        required = {'time', 'quality', 'filtered_temperature'}
+        for key, original in self.observations.items():
+            try:
+                watershed = int(key.split('-', 1)[0])
+            except ValueError:
+                continue
+            if watershed not in selected or key not in river_temp.index:
+                continue
+            if not required.issubset(original.columns):
+                print(f'  - Station {key} is missing required columns')
+                continue
+
+            station = original.copy()
+            station['time'] = pd.to_datetime(
+                station['time'], errors='coerce', utc=True)
+            station['quality'] = pd.to_numeric(station['quality'], errors='coerce')
+            station['filtered_temperature'] = pd.to_numeric(
+                station['filtered_temperature'], errors='coerce')
+            station = station.loc[
+                (station['quality'] > 1)
+                & station['time'].notna()
+                & np.isfinite(station['filtered_temperature'])
+            ].sort_values('time', kind='stable').drop_duplicates('time', keep='last')
+            if len(station) < 2:
+                print(f'  - Station {key} has insufficient valid observations')
+                continue
+
+            # No extrapolation; stations must span the requested forcing axis.
+            first, last = station['time'].iloc[0], station['time'].iloc[-1]
+            model_start = pd.Timestamp(self.time[0])
+            model_stop = pd.Timestamp(self.time[-1])
+            if model_start.tzinfo is None:
+                model_start = model_start.tz_localize('UTC')
+            if model_stop.tzinfo is None:
+                model_stop = model_stop.tz_localize('UTC')
+            if first > model_start or last < model_stop:
+                print(f'  - Station {key} did not cover the simulation period')
+                continue
+
+            valid_days = station.loc[
+                (station['time'] >= model_start) &
+                (station['time'] <= model_stop), 'time'
+            ].dt.floor('D').nunique()
+            if valid_days / len(self.time) < 0.9:
+                print(f'  - Station {key} had too many gaps in the simulation period')
+                continue
+
+            sample_time = station['time'].astype('int64').to_numpy(dtype=float) / 1e9
+            sample_temp = station['filtered_temperature'].to_numpy(dtype=float)
+            # Explicit seconds, not pd.to_datetime(seconds) interpreted as ns.
+            out = np.interp(target_time, sample_time, sample_temp)
+            print(f'  - Replacing climatology with observations at {key}')
+            river_temp.loc[key] = out
         return river_temp
