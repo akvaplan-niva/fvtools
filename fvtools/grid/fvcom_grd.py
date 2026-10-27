@@ -19,7 +19,9 @@ from fvtools.grid._components.compatibility import (
 )
 from fvtools.grid._components.interpolation import InterpolateToZ
 from fvtools.grid._components.export import ExportGrid
-from fvtools.grid._components.nesting import NEST_grid
+from fvtools.grid._components.nesting import (
+    NEST_grid, LegacyNestPropertyAliases, LoadNest, NestROMS2FVCOM,
+)
 
 class FVCOM_grid(GridLoader, InputCoordinates, Coordinates, PropertiesFromTGE, LegacyPropertyAliases, CellTriangulation, OutputLoader,
                  PlotFVCOM, ControlVolumePlotter, InterpolateToZ, LegacyFunctions, SectionMaker, ExportGrid, CropGrid, AnglesAndPhysics,
