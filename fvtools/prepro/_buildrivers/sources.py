@@ -44,15 +44,21 @@ class HBVRunoff:
             dates = []
             for raw in values.iloc[:, 0]:
                 stamp = str(raw).strip()
-                # Both YYYYMMDDHH and YYYYMMDD_HH (single separator) occur.
-                if re.fullmatch(r'\d{10}', stamp):
-                    packed = stamp
-                elif re.fullmatch(r'\d{8}\D\d{2}', stamp):
-                    packed = stamp[:8] + stamp[-2:]
-                else:
+                # Accept both original hourly HBV timestamps and HHMM formats,
+                # including YYYYMMDD/HHMM used by the Norwegian HBV .var files.
+                match = re.fullmatch(r'(\d{8})[/_]?(\d{2})(\d{2})?', stamp)
+                if match is None:
                     raise ValueError(f'Invalid HBV timestamp {stamp!r} in {path.name}')
-                dates.append(datetime.strptime(packed, '%Y%m%d%H').replace(
-                    tzinfo=timezone.utc))
+                day, hour, minute = match.groups()
+                packed = day + hour + (minute or '')
+                fmt = '%Y%m%d%H%M' if minute is not None else '%Y%m%d%H'
+                try:
+                    parsed = datetime.strptime(packed, fmt)
+                except ValueError as error:
+                    raise ValueError(
+                        f'Invalid HBV timestamp {stamp!r} in {path.name}'
+                    ) from error
+                dates.append(parsed.replace(tzinfo=timezone.utc))
             dates = np.asarray(dates, dtype=object)
             if any(left >= right for left, right in zip(dates[:-1], dates[1:])):
                 raise ValueError(f'HBV timestamps must be strictly increasing in {path.name}')
