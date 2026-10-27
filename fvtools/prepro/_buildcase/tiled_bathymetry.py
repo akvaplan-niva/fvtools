@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 from time import perf_counter
 
 import numpy as np
-from scipy.spatial import Delaunay, QhullError
+from scipy.spatial import Delaunay, ConvexHull, QhullError, cKDTree
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ class TilingOptions:
 
     source_chunk_rows: int = 250_000
     max_triangulation_points: int = 350_000
-    nodes_per_tile: int = 128
+    nodes_per_tile: int = 4096
     bins_per_axis: int = 64
     initial_halo_fraction: float = 0.15
 
@@ -85,6 +85,32 @@ class _Progress:
                   flush=True)
 
 
+def _hull_vertices(points):
+    """Vertices of a streamed subset, preserving the exact global hull."""
+    xy = np.asarray(points, dtype=np.float64)
+    if len(xy) < 3:
+        return xy.copy()
+    try:
+        return xy[ConvexHull(xy).vertices]
+    except QhullError:
+        # Collinear chunks have only two extreme points; keep both.
+        axis = int(np.argmax(np.ptp(xy, axis=0)))
+        return xy[[np.argmin(xy[:, axis]), np.argmax(xy[:, axis])]]
+
+
+def _outside_convex_hull(xy, equations, extent):
+    """Mask nodes outside the global source hull, with boundary tolerance."""
+    if equations is None:
+        return np.zeros(len(xy), dtype=bool)
+    tol = 64 * np.finfo(float).eps * max(float(extent), 1.)
+    # Hull equations are affine halfplanes; evaluate each separately to
+    # avoid an N_query x N_hull temporary allocation.
+    outside = np.zeros(len(xy), dtype=bool)
+    for a, b, c in equations:
+        outside |= a * xy[:, 0] + b * xy[:, 1] + c > tol
+    return outside
+
+
 def _bins_for_xy(x, y, bounds, count):
     xmin, ymin, xmax, ymax = bounds
     dx, dy = max(xmax - xmin, np.finfo(float).eps), max(ymax - ymin, np.finfo(float).eps)
@@ -107,6 +133,8 @@ class _DiskBins:
         xmin, ymin, xmax, ymax = bounds
         self.global_extent = [np.inf, np.inf, -np.inf, -np.inf]
         self.nonfinite_rows = 0
+        # Maintain the exact convex hull incrementally without storing the cloud.
+        hull_points = np.empty((0, 2), dtype=np.float64)
 
         index_pass = _Progress('Index pass 1/2 – counting source points', len(data))
         for start in range(0, len(data), self.chunk_rows):
@@ -125,11 +153,21 @@ class _DiskBins:
             inside = (points[:, 0] >= xmin) & (points[:, 0] <= xmax) & (points[:, 1] >= ymin) & (points[:, 1] <= ymax)
             points = points[inside]
             if len(points):
+                # hull(A union B) == hull(hull(A) union hull(B)); using
+                # vertices from each streamed chunk is exact, not a sample.
+                chunk_hull = _hull_vertices(points[:, :2])
+                hull_points = _hull_vertices(np.concatenate((hull_points, chunk_hull)))
                 ids = _bins_for_xy(points[:, 0], points[:, 1], bounds, self.count)
                 self.counts += np.bincount(ids, minlength=self.nbin)
             index_pass.update(stop)
 
         total = int(self.counts.sum())
+        self.hull_equations = None
+        if len(hull_points) >= 3:
+            try:
+                self.hull_equations = ConvexHull(hull_points).equations
+            except QhullError:
+                pass
         if total < 3:
             raise ValueError('Fewer than 3 finite bathymetry points are inside the mesh crop area')
         self.offsets = np.r_[0, np.cumsum(self.counts)]
@@ -226,6 +264,37 @@ def _circumcircles_certified(tri, simplex_ids, window, whole):
                  & ((centers[:,1]+radii <= top-tol) | (top>=wt)))
 
 
+
+def _certify_no_omitted_points(tri, simplex_ids, full_tree):
+    """Prove the candidate Delaunay triangle is empty in the FULL local cloud.
+
+    Sparse triangulation uses only a union of k-NN points. Its circumcircle
+    must contain no other bathymetry point, including those omitted from the
+    sparse triangulation. The full local cKDTree provides this exact test.
+    """
+    vertices = tri.points[tri.simplices[simplex_ids]]
+    a = vertices[:, 1] - vertices[:, 0]
+    b = vertices[:, 2] - vertices[:, 0]
+    a2 = (a*a).sum(axis=1) * 0.5
+    b2 = (b*b).sum(axis=1) * 0.5
+    det = a[:, 0]*b[:, 1] - a[:, 1]*b[:, 0]
+    safe = np.abs(det) > 64 * np.finfo(float).eps * np.maximum(2*(a2+b2), 1.)
+    passed = np.zeros(len(simplex_ids), dtype=bool)
+    if not safe.any():
+        return passed
+    center = np.empty((safe.sum(),2), dtype=float)
+    center[:, 0] = vertices[safe, 0, 0] + (
+        a2[safe]*b[safe,1] - a[safe,1]*b2[safe])/det[safe]
+    center[:, 1] = vertices[safe, 0, 1] + (
+        a[safe,0]*b2[safe] - a2[safe]*b[safe,0])/det[safe]
+    radius = np.linalg.norm(center - vertices[safe, 0], axis=1)
+    dist, _ = full_tree.query(center, k=1)
+    # Slack is on the scale of the local simplex, not the entire domain.
+    tol = 5e-12 * np.maximum(radius,1.)
+    passed[safe] = dist >= radius-tol
+    return passed
+
+
 def _linear_interpolate(tri, xyz, xy, simplex_ids):
     """SciPy's barycentric transform, equivalent to LinearNDInterpolator."""
     transforms = tri.transform[simplex_ids]
@@ -275,32 +344,54 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
         calls = 0
         triangulations = 0
         finished = 0
+        # Nodes outside the global convex hull must be NaN, independently of
+        # tile layout. Classifying them first avoids pathological halo expansion.
+        outside = _outside_convex_hull(
+            xy, idx.hull_equations, max(x1-x0, y1-y0))
+        if np.any(outside):
+            finished = int(outside.sum())
+            print(f'  - {finished:,} grid nodes outside bathymetry convex hull '
+                  '(will remain NaN)', flush=True)
+            progress.update(finished)
+
         def run(nodes):
+            """One or more adaptive local Delaunay triangulations."""
             nonlocal calls, triangulations, finished
+            if not len(nodes):
+                return
             calls += 1
             queries = xy[nodes]
             lo = queries.min(axis=0)
             hi = queries.max(axis=0)
-            domain_width = max(x1-x0,y1-y0,1.)
-            halo = max(float(max(hi-lo))*options.initial_halo_fraction, domain_width/10000., 0.1)
+            domain_width = max(x1-x0, y1-y0, 1.)
+            halo = max(float(max(hi-lo))*options.initial_halo_fraction,
+                       domain_width/10000., 0.1)
             last_window = None
-            while True:
+            pending = np.arange(len(nodes))
+            while len(pending):
                 window = (max(whole[0],lo[0]-halo),max(whole[1],lo[1]-halo),
                           min(whole[2],hi[0]+halo),min(whole[3],hi[1]+halo))
                 is_full = window==whole
                 if window==last_window:
                     raise RuntimeError('Unable to expand local Delaunay window')
                 last_window=window
-                progress.activity(f'Working on batch {calls:,}: searching bathymetry points for {len(nodes):,} grid nodes')
+                progress.activity(f'Working on batch {calls:,}: searching bathymetry points '
+                                  f'for {len(pending):,} unresolved grid nodes')
                 try:
                     cloud = idx.region(window,options.max_triangulation_points)
                 except _TooManyPoints:
                     if len(nodes)>1:
-                        # Reduce target area rather than exceeding memory cap.
-                        axis = int(np.argmax(hi-lo))
-                        order = nodes[np.argsort(xy[nodes,axis],kind='stable')]
+                        # Restart with a smaller bounding box, even if there
+                        # is only one outstanding node in the current group.
+                        work = nodes[pending]
+                        if len(work) == 1:
+                            run(work)
+                            return
+                        pts = xy[work]
+                        axis = int(np.argmax(np.ptp(pts, axis=0)))
+                        order = work[np.argsort(pts[:, axis],kind='stable')]
                         middle=len(order)//2
-                        run(order[:middle]);run(order[middle:])
+                        run(order[:middle]); run(order[middle:])
                         return
                     raise MemoryError(
                         'Even a single bathymetry query requires more than '
@@ -308,39 +399,98 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
                         'Increase max_triangulation_points or check point density.'
                     ) from None
                 if len(cloud)>=3:
-                    # Large Delaunay calls can block in compiled SciPy code.
-                    # Report the impending step so a long pause is intelligible.
-                    progress.activity(
-                        f'Batch {calls:,}: triangulating {len(cloud):,} source points '
-                        f'for {len(nodes):,} grid nodes',
-                        force=(triangulations == 0),
-                    )
-                    triangulations += 1
-                    try:
-                        tri = Delaunay(np.ascontiguousarray(cloud[:,:2],dtype=np.float64))
-                    except QhullError:
-                        if is_full:
-                            raise ValueError('Bathymetry coordinates are degenerate; cannot triangulate') from None
-                    else:
-                        simplex = tri.find_simplex(queries)
-                        finite = simplex>=0
-                        certified = np.zeros(len(nodes),dtype=bool)
-                        if finite.any():
-                            certified[finite]=_circumcircles_certified(tri,simplex[finite],window,whole)
-                        if certified.all() or is_full:
-                            if finite.any():
-                                result[nodes[finite]]=_linear_interpolate(tri,cloud,queries[finite],simplex[finite])
-                            finished += len(nodes)
-                            progress.update(finished)
+                    cloud_xy = np.ascontiguousarray(cloud[:, :2], dtype=np.float64)
+                    tree = cKDTree(cloud_xy)
+                    # Start with 16 nearest source points per query. Increase
+                    # to 32/64/128 ONLY for unresolved mesh nodes. A circle
+                    # emptiness test against the FULL source tree guarantees
+                    # that the selected simplex is globally Delaunay-valid.
+                    last_k = 0
+                    for wanted in (16, 32, 64, 128):
+                        if not len(pending):
+                            break
+                        max_k = max(3, options.max_triangulation_points // len(pending))
+                        k = min(wanted, len(cloud), max_k)
+                        if k <= last_k:
+                            continue
+                        last_k = k
+                        pending_xy = xy[nodes[pending]]
+                        _, near = tree.query(pending_xy, k=k)
+                        sparse_ids = np.unique(np.asarray(near).reshape(-1))
+                        if len(sparse_ids) > options.max_triangulation_points:
+                            # A custom nodes_per_tile may be unusually large.
+                            # Never violate the configured Delaunay RAM cap.
+                            del tree
+                            work = nodes[pending]
+                            if len(work) <= 1:
+                                raise MemoryError('Sparse point cap exceeded for one node')
+                            pts = xy[work]
+                            axis = int(np.argmax(np.ptp(pts, axis=0)))
+                            ordered = work[np.argsort(pts[:, axis], kind='stable')]
+                            middle = len(ordered)//2
+                            run(ordered[:middle]);run(ordered[middle:])
                             return
+                        sparse = cloud[sparse_ids]
+                        progress.activity(
+                            f'Batch {calls:,}: triangulating {len(sparse):,} selected '
+                            f'points (from {len(cloud):,}) for {len(pending):,} '
+                            f'grid nodes (k={k})', force=(triangulations == 0))
+                        triangulations += 1
+                        try:
+                            tri = Delaunay(np.ascontiguousarray(
+                                sparse[:, :2], dtype=np.float64))
+                        except QhullError:
+                            continue
+                        simplex = tri.find_simplex(pending_xy)
+                        finite = simplex >= 0
+                        certified = np.zeros(len(pending), dtype=bool)
+                        if finite.any():
+                            candidates = np.flatnonzero(finite)
+                            within_window = _circumcircles_certified(
+                                tri, simplex[finite], window, whole)
+                            candidates = candidates[within_window]
+                            if len(candidates):
+                                valid = _certify_no_omitted_points(
+                                    tri, simplex[candidates], tree)
+                                certified[candidates[valid]] = True
+                        if certified.any():
+                            solved_indices = pending[certified]
+                            result[nodes[solved_indices]] = _linear_interpolate(
+                                tri, sparse, pending_xy[certified], simplex[certified])
+                            finished += len(solved_indices)
+                            progress.update(finished)
+                            pending = pending[~certified]
+                        del tri
+                    del tree
+                    if not len(pending):
+                        return
                 if is_full:
-                    finished += len(nodes)
+                    # Fall back to the full local cloud only when sparse
+                    # certification failed. This path also handles points
+                    # genuinely outside the hull if there was no precomputed
+                    # hull (degenerate source data).
+                    progress.activity(f'Batch {calls:,}: full Delaunay fallback '
+                                      f'for {len(pending):,} unresolved nodes', force=True)
+                    triangulations += 1
+                    tri = Delaunay(np.ascontiguousarray(cloud[:, :2], dtype=np.float64))
+                    unresolved_xy = xy[nodes[pending]]
+                    simplex = tri.find_simplex(unresolved_xy)
+                    good = simplex >= 0
+                    if good.any():
+                        result[nodes[pending[good]]] = _linear_interpolate(
+                            tri, cloud, unresolved_xy[good], simplex[good])
+                    finished += len(pending)
                     progress.update(finished)
                     return
-                progress.activity(f'Batch {calls:,}: expanding search halo (current source points: {len(cloud):,})')
+                progress.activity(f'Batch {calls:,}: expanding search halo '
+                                  f'({len(pending):,} unresolved nodes; '
+                                  f'{len(cloud):,} source points)')
                 halo *= 2
-        # Divide mesh nodes into spatially compact groups, without building a tree.
+
         def partition(nodes):
+            # Start with a much larger spatial group (4096 instead of 128
+            # nodes). The source point cap, not this node count, controls RAM.
+            # Subdivide only when a local triangulation would exceed the cap.
             if len(nodes)<=options.nodes_per_tile:
                 run(nodes)
                 return
@@ -349,7 +499,7 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
             order=nodes[np.argsort(pts[:,axis],kind='stable')]
             split=len(order)//2
             partition(order[:split]);partition(order[split:])
-        partition(np.arange(len(xy)))
+        partition(np.flatnonzero(~outside))
         if finished != len(xy):
             raise RuntimeError('Incomplete tiled interpolation: not all grid nodes were processed')
         print(f'  - Finished: {calls:,} node batches, '
