@@ -200,10 +200,9 @@ def _find_nearby_elements_and_identify_boundaries(out, M, verbose):
     return out
 
 def _find_node_connectivity(out, M, verbose):
-    # Get max number of surrounding elements
-    #MAXNBR                 = np.max(get_MAXNBR(out.MT, out.NT, out.NV))
-    #if verbose: print(f'- Found max number of surrounding elements: {MAXNBR}')
-    MAXNBR = 20
+    # One triangle contributes one incidence to each of its three nodes.
+    # Use the true maximum valence; no hardcoded minimum/capacity.
+    MAXNBR = int(np.bincount(out.NV.ravel(), minlength=out.MT).max(initial=0))
 
     # Get number of surrounding triangles to a given node
     NBVE, NBVT, out.NTVE   = get_NBVE_NBVT(out.MT, out.NT, out.NV, MAXNBR)
