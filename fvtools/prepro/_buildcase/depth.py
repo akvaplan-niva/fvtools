@@ -41,14 +41,22 @@ class DepthHandler:
         if type(self.depth_file) == int or type(self.depth_file) == float:
             h_raw = self.depth_file*np.ones((self.x.shape)) # in case you need flat bathymetry
         else:
-            if self.depth_file.split('.')[-1] == 'npy':
-                depth = self.load_numpybath(self.depth_file)
+            if str(self.depth_file).lower().endswith('.npy'):
+                # Stream source data and build a temporary disk-based spatial
+                # index; never construct a global Delaunay triangulation in RAM.
+                from fvtools.prepro._buildcase.tiled_bathymetry import interpolate_unstructured_npy
+                print('  - Memory-limited unstructured bathymetry interpolation')
+                h_raw = interpolate_unstructured_npy(
+                    self.depth_file, self.xy_grid_at_depth_points
+                )
             else:
                 depth = self.load_textbath(self.depth_file)
+                depth = self.crop(depth)
+                h_raw = self.interpolate_to_mesh(depth)
 
-            # Crop the data so that we only have data covering the FVCOM domain
-            depth = self.crop(depth)
-            h_raw = self.interpolate_to_mesh(depth)
+            # Keep the original minimum-depth rule for interpolated bathymetry.
+            # In place to avoid allocating a second bathymetry array.
+            np.maximum(h_raw, self.min_depth, out=h_raw)
 
         if np.argwhere(np.isnan(h_raw)).size > 0:
             print(f'Nan found in h_raw. Nans are set to {self.min_depth} m. '+\
