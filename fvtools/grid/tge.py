@@ -243,48 +243,48 @@ def _find_shape_coefficients_for_gradient_calculations(out, verbose):
     if verbose: print('- Found shape coefficients for gradient calculation')
     return out
 
-@jit(nopython = True, parallel = True)
+@jit(nopython=True)
 def get_NBE(NT, MT, NV):
-    '''
-    Determine NBE
-    '''
-    NBE     = -1*np.ones((NT,3),  dtype = np.int64)
-    CELLS   = -1*np.ones((NT,50), dtype = np.int64)
-    CELLCNT = np.zeros((MT), dtype = np.int64)
+    """Find triangle neighbours by their shared undirected edges, O(NT).
 
-    # Store a structure where node N is associated with the cells that connect to it
-    for I in range(NT):
-        for J in range(3):
-            N = NV[I,J]
-            CELLS[N, CELLCNT[N]] = I # Index of triangles connected to this node
-            CELLCNT[N] += 1          # Number of triangles connected to this node
+    NBE[cell, k] is the neighbouring cell across the edge opposite
+    NV[cell, k], or -1 on an exterior boundary. This is the original
+    FVCOM/TGE column convention and is required by downstream routines.
 
-    # CELLS contain the CELLS associated with any NODE.
-    # In this loop we loop over cells associated with node N for all nodes in a triangle.
-    # If the cells in two neighboring nodes are the same, they must be at each others boundary.
-    for I in range(NT):
-        N1 = NV[I,0]
-        N2 = NV[I,1]
-        N3 = NV[I,2]
+    An edge is identified by the two node IDs in ascending order.
+    The first occurrence is stored in a local Numba dictionary; the
+    second connects the cells symmetrically. A third is non-manifold.
+    No fixed node-valence limit or parallel writes are needed.
+    """
+    if NT < 0 or MT < 0 or NV.ndim != 2 or NV.shape != (NT, 3):
+        raise ValueError('NV must have shape (NT, 3); MT/NT must be nonnegative')
 
-        # If two cells connected to these nodes are the same, and
-        # not the cell we're considering - then these share a side with cell I
+    NBE = np.full((NT, 3), -1, dtype=np.int64)
+    edges = {}  # (smaller node ID, larger node ID) -> (cell, opposite corner)
 
-        # First nodes connected to the line segment N1, N2
-        for J1 in range(CELLCNT[N1]):         # Loop over number of cells connected to node 1
-            for J2 in range(CELLCNT[N2]):     # Loop over number of cells connected to node 2
-                if (CELLS[N1, J1] == CELLS[N2,J2]) and (CELLS[N1, J1] != I):
-                    NBE[I,2] = CELLS[N1, J1]
+    for cell in range(NT):
+        n0, n1, n2 = NV[cell, 0], NV[cell, 1], NV[cell, 2]
+        if (n0 < 0 or n1 < 0 or n2 < 0 or
+                n0 >= MT or n1 >= MT or n2 >= MT):
+            raise ValueError('NV contains a node index outside [0, MT)')
+        if n0 == n1 or n1 == n2 or n2 == n0:
+            raise ValueError('NV contains a triangle with repeated nodes')
 
-        for J2 in range(CELLCNT[N2]):
-            for J3 in range(CELLCNT[N3]):
-                if (CELLS[N2, J2] == CELLS[N3,J3]) and (CELLS[N2, J2] != I):
-                    NBE[I,0] = CELLS[N2, J2]
+        for corner in range(3):
+            a = NV[cell, (corner + 1) % 3]
+            b = NV[cell, (corner + 2) % 3]
+            if a > b:
+                a, b = b, a
+            edge = (a, b)
 
-        for J1 in range(CELLCNT[N1]):
-            for J3 in range(CELLCNT[N3]):
-                if (CELLS[N3, J3] == CELLS[N1,J1]) and (CELLS[N3, J3] != I):
-                    NBE[I,1] = CELLS[N3, J3]
+            if edge in edges:
+                other_cell, other_corner = edges[edge]
+                if NBE[other_cell, other_corner] != -1:
+                    raise ValueError('Non-manifold edge shared by more than two triangles')
+                NBE[other_cell, other_corner] = cell
+                NBE[cell, corner] = other_cell
+            else:
+                edges[edge] = (cell, corner)
 
     return NBE
 
