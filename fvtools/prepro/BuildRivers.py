@@ -13,6 +13,7 @@ from fvtools.prepro._buildrivers.constants import version
 from fvtools.prepro._buildrivers.sources import HBVRunoff, RiverPositions, RiverTemperatures
 from fvtools.prepro._buildrivers.interaction import DraggablePoints, CropRivers
 from fvtools.prepro._buildrivers.forcing import FVCOM_rivers
+from fvtools.prepro._buildrivers.output import show_forcing, write_forcing_files
 
 async def main(start, stop, vassdrag, mesh_dict, info = None):
     '''
@@ -88,14 +89,16 @@ async def main(start, stop, vassdrag, mesh_dict, info = None):
 
     # - Write to netCDF, write RiverNamelist.nml
     print('\nWrite forcing to file')
-    Forcing.dump()
-    Forcing.write_namelist()
+    write_forcing_files(Forcing, info.get('output_dir', 'input'))
 
     # Do a simple quality control, and write the necessary forcing files
     # - Show the rivers we'll use, and the values they will force FVCOM with
     print('\nFinished, plotting the forcing')
     M.re_project(info['grid_projection'])
-    show_forcing(Forcing, M, Positions)
+    if info.get('qc_plot_dir') is None:
+        show_forcing(Forcing, M, Positions)
+    else:
+        show_forcing(Forcing, M, Positions, save_dir=info['qc_plot_dir'])
     M.re_project(info['river_projection'])
 
 def get_input(river_data_path = '/nird/datapeak/NS9067K/store/fvcom-setup/Rivers'):
@@ -115,6 +118,8 @@ def get_input(river_data_path = '/nird/datapeak/NS9067K/store/fvcom-setup/Rivers
     SmallRivers: File containing info about the small rivers in Norway
     minrcoef:    Tunable parameter to determine the maximum volume of a CV we will let a river fill over a timestep
     river_projection: Coordinate system the river positions are stored in (UTM33)
+    output_dir: Folder for riverdata.nc and RiverNamelist.nml (default: input)
+    qc_plot_dir: Optional folder for saved QC PNGs (default: no files saved)
     """
     info = {
         'iloc': 'edge',
@@ -128,7 +133,9 @@ def get_input(river_data_path = '/nird/datapeak/NS9067K/store/fvcom-setup/Rivers
         'runoff': f'{river_data_path}/Niva_2025_2018v20.05/',
         'riverpositions': f'{river_data_path}/RiverPositions/river_positions.csv',
         'minrcoef': 0.3,
-        'river_projection': 'epsg:32633'
+        'river_projection': 'epsg:32633',
+        'output_dir': 'input',  # FVCOM riverdata.nc and RiverNamelist.nml
+        'qc_plot_dir': None,  # Optional directory for two QC PNG figures
     }
     return info
 
@@ -140,31 +147,5 @@ def get_input(river_data_path = '/nird/datapeak/NS9067K/store/fvcom-setup/Rivers
 
 # Show what we will write to the riverdata forcing
 # ----
-def show_forcing(obj, M, Rivers):
-    """
-    Simple figures to see that the routine got the basics right
-    """
-    plt.figure()
-    M.georeference()
-    plt.plot(obj.x_land, obj.y_land, 'k.', label = 'land nodes', zorder = 1)
-    plt.scatter(
-        obj.xriv, obj.yriv, 
-        s = np.mean(obj.RiverTransport, axis = 0), 
-        c = np.mean(obj.RiverTransport, axis = 0), 
-        zorder = 5, 
-        transform = Rivers.crs
-        )
-    plt.title('Average transport')
-    plt.axis('equal')
-    plt.colorbar(label = r'm$^3$ s$^{-1}$')
-    plt.show(block = False)
-
-    plt.figure()
-    M.georeference()
-    plt.scatter(obj.xriv, obj.yriv, obj.RiverTemp.max(axis = 0), c = obj.RiverTemp.max(axis = 0), cmap = 'inferno', zorder = 5, transform = Rivers.crs)
-    plt.title('Max temperature in model period')
-    plt.axis('equal')
-    plt.colorbar(label = 'degrees celcius')
-    plt.show(block = False)
 
 class InputError(Exception): pass
