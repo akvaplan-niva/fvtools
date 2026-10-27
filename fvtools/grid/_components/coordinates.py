@@ -14,6 +14,9 @@ class InputCoordinates:
     def tri(self, var):
         self._tri = np.array(var)
         self._invalidate_spatial_cache()
+        # Saved nodestrings refer to the old mesh connectivity. Coordinates
+        # alone do not change connectivity, so this belongs in the tri setter.
+        self.__dict__.pop('_nodestrings', None)
 
     def _invalidate_spatial_cache(self):
         """Discard geometry-dependent lookups after coordinate/topology changes.

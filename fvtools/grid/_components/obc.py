@@ -26,6 +26,12 @@ class OBC:
     @obc_nodes.setter 
     def obc_nodes(self, var):
         self._obc_nodes = var
+        # Invalidate derived boundaries when the selected OBC nodes change.
+        # In-place modifications of the user-supplied list cannot be detected;
+        # assign via this setter after changing the list.
+        self.__dict__.pop('_nodestrings', None)
+        self.__dict__.pop('cellstrings', None)
+        self.__dict__.pop('coastline_nodes', None)
 
     @property
     def nodestrings(self):
@@ -43,6 +49,8 @@ class OBC:
     @nodestrings.setter
     def nodestrings(self, var):
         self._nodestrings = var
+        self.__dict__.pop('cellstrings', None)
+        self.__dict__.pop('coastline_nodes', None)
 
     @cached_property
     def cellstrings(self):

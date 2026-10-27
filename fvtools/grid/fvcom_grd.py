@@ -1,16 +1,6 @@
-import os
 import numpy as np
-import geopandas as gpd
-import shapely as shp
-
-from pyproj import Proj, Transformer
-from scipy.spatial import cKDTree as KDTree
 from numba import njit
 
-import warnings
-warnings.filterwarnings("ignore")
-
-from fvtools.grid.netcdf_io import FVCOMNetCDFIO
 from fvtools.grid._components.grid_loader import GridLoader
 from fvtools.grid._components.coordinates import InputCoordinates, Coordinates
 from fvtools.grid._components.proximity import GridProximity
@@ -24,11 +14,14 @@ from fvtools.grid._components.sections import SectionMaker
 from fvtools.grid._components.plotting import PlotFVCOM
 from fvtools.grid._components.physics import AnglesAndPhysics
 
-from fvtools.grid._components.compatibility import LegacyPropertyAliases, LegacyFunctions, OutputLoader
-
+from fvtools.grid._components.compatibility import (
+    LegacyPropertyAliases, LegacyFunctions, OutputLoader,
+)
 from fvtools.grid._components.interpolation import InterpolateToZ
-
 from fvtools.grid._components.export import ExportGrid
+from fvtools.grid._components.nesting import (
+    LegacyNestPropertyAliases, LoadNest, NestROMS2FVCOM, NEST_grid,
+)
 
 
 
@@ -172,6 +165,7 @@ Extended features through the mesh-connectivity TGE (.T) class:
           constant over the simulation period. When plotting section movies, however, it is convenient to force it to be stationary, not to confuse 
           people unfamiliar with sigma layer discretizations too much.
         '''
+        self._casename      = 'FVCOM experiment'
         self.filepath       = pathToFile
         self.reference      = reference
         self.verbose        = verbose
@@ -205,35 +199,45 @@ Extended features through the mesh-connectivity TGE (.T) class:
         self._project_xy()
 
     def __repr__(self):
-        repr_start = f'''{self.casename} FVCOM grid object
+        lines = [
+            f'{self.casename} FVCOM grid object',
+            '',
+            f'Grid read from:         {self.filepath}',
+            f'Number of nodes:        {self.node_number}',
+            f'Number of triangles:    {self.cell_number}',
+        ]
 
-Grid read from:         {self.filepath}
-Number of nodes:        {len(self.x)}
-Number of triangles:    {len(self.xc)}
-'''
-        repr_end = f'''
-Grid resolution:   min: {np.min(self.grid_res):.2f} m, max: {np.max(self.grid_res):.2f} m
-Grid angles (deg): min: {np.min(self.grid_angles):.2f}, max: {np.max(self.grid_angles):.2f}
-Reference:              {self.reference}
-'''     
-        
-        try:
-            repr_sig = f'''
-Number of sigma layers: {self.siglay.shape[1]}
-Number of sigma levels: {self.siglev.shape[1]}
-'''
-            repr = repr_start + repr_sig + repr_end
-        except:
-            repr = repr_start + repr_end
+        # Directly initialized and 2DM grids do not necessarily have sigma data.
+        siglay = getattr(self, '_siglay', None)
+        siglev = getattr(self, '_siglev', None)
+        if siglay is not None and np.ndim(siglay) == 2:
+            lines.append(f'Number of sigma layers: {siglay.shape[1]}')
+        if siglev is not None and np.ndim(siglev) == 2:
+            lines.append(f'Number of sigma levels: {siglev.shape[1]}')
 
-        return repr
+        resolution = np.asarray(self.grid_res)
+        angles = np.asarray(self.grid_angles)
+        lines.append('')
+        if resolution.size:
+            lines.append(
+                f'Grid resolution:   min: {np.min(resolution):.2f} m, '
+                f'max: {np.max(resolution):.2f} m'
+            )
+        if angles.size:
+            lines.append(
+                f'Grid angles (deg): min: {np.min(angles):.2f}, '
+                f'max: {np.max(angles):.2f}'
+            )
+        lines.append(f'Reference:              {self.reference}')
+        return '\n'.join(lines) + '\n'
 
     @property
     def casename(self):
-        if self.cropped_nodes.any():
+        # An uncropped grid uses a 0-D sentinel; a cropped grid stores
+        # a 1-D array of original node indices (possibly containing only 0).
+        if np.asarray(self.cropped_nodes).ndim == 1:
             return f'Cropped {self._casename}'
-        else:
-            return self._casename
+        return self._casename
     
     @casename.setter
     def casename(self, var):
@@ -294,7 +298,6 @@ Number of sigma levels: {self.siglev.shape[1]}
             raise InputError('input field can only be provided in 2D arrays or 1D arrays, time must be looped over externally.')
         return sigma
 
-from fvtools.grid._components.nesting import LegacyNestPropertyAliases, LoadNest, NestROMS2FVCOM, NEST_grid
 
 
 
