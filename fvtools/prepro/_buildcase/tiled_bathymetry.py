@@ -9,6 +9,9 @@ No globally sized point tree or Delaunay triangulation is created in RAM.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
@@ -26,6 +29,7 @@ class TilingOptions:
     nodes_per_tile: int = 4096
     bins_per_axis: int = 64
     initial_halo_fraction: float = 0.15
+    workers: int | None = None
 
 
 class _TooManyPoints(Exception):
@@ -304,12 +308,216 @@ def _linear_interpolate(tri, xyz, xy, simplex_ids):
     return (xyz[tri.simplices[simplex_ids],2] * weights).sum(axis=1)
 
 
-def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
-    """Interpolate (N,3) unstructured .npy to mesh nodes with bounded RAM.
+# The worker entry points are module-level functions: Windows and notebooks use
+# multiprocessing spawn, which cannot pickle functions nested inside a method.
+_WORKER_STATE = None
 
-    Returns NaN for queries outside the global data convex hull, matching
-    scipy.interpolate.LinearNDInterpolator. The caller handles the minimum-depth
-    replacement as in existing BuildCase.make_depth().
+
+def _init_worker(index_info, mesh_path, options, whole, limits):
+    """Open shared *read-only* disk files once per spawned process.
+
+    No bathymetry source array or large mesh-coordinate array is pickled.
+    The spatial index is constructed by the parent exactly once.
+    """
+    global _WORKER_STATE
+    idx = object.__new__(_DiskBins)
+    idx.path = Path(index_info['path'])
+    idx.offsets = index_info['offsets']
+    idx.bounds = index_info['bounds']
+    idx.count = index_info['count']
+    idx.record_bytes = index_info['record_bytes']
+    idx.dtype = np.dtype(index_info['dtype'])
+    _WORKER_STATE = (idx, np.load(mesh_path, mmap_mode='r'), options, whole, limits)
+
+
+def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
+    """Interpolate one disjoint group of mesh-node indices.
+
+    The original sparse-Delaunay + two circumcircle certifications and the
+    adaptive halo logic are preserved. Results are returned in `nodes` order;
+    workers never mutate arrays owned by the parent process.
+    """
+    nodes = np.asarray(nodes, dtype=np.int64)
+    piece_result = np.full(len(nodes), np.nan, dtype=np.float64)
+    x0, y0, x1, y1 = limits
+    calls = 0
+    triangulations = 0
+
+    def report(message, *, force=False):
+        if activity is not None:
+            activity(message, force=force)
+
+    def run(positions):
+        nonlocal calls, triangulations
+        if not len(positions):
+            return
+        calls += 1
+        queries = xy[nodes[positions]]
+        lo = queries.min(axis=0)
+        hi = queries.max(axis=0)
+        domain_width = max(x1-x0, y1-y0, 1.)
+        halo = max(float(max(hi-lo))*options.initial_halo_fraction,
+                   domain_width/10000., 0.1)
+        last_window = None
+        pending = np.arange(len(positions))
+        while len(pending):
+            window = (max(whole[0], lo[0]-halo), max(whole[1], lo[1]-halo),
+                      min(whole[2], hi[0]+halo), min(whole[3], hi[1]+halo))
+            is_full = window == whole
+            if window == last_window:
+                raise RuntimeError('Unable to expand local Delaunay window')
+            last_window = window
+            report(f'Searching bathymetry points for {len(pending):,} unresolved grid nodes')
+            try:
+                cloud = idx.region(window, options.max_triangulation_points)
+            except _TooManyPoints:
+                if len(positions) > 1:
+                    work = positions[pending]
+                    if len(work) == 1:
+                        run(work)
+                        return
+                    pts = xy[nodes[work]]
+                    axis = int(np.argmax(np.ptp(pts, axis=0)))
+                    order = work[np.argsort(pts[:,axis], kind='stable')]
+                    middle = len(order)//2
+                    run(order[:middle]); run(order[middle:])
+                    return
+                raise MemoryError(
+                    'Even a single bathymetry query requires more than '
+                    f'{options.max_triangulation_points:,} local points. '
+                    'Increase max_triangulation_points or check point density.'
+                ) from None
+            if len(cloud) >= 3:
+                cloud_xy = np.ascontiguousarray(cloud[:, :2], dtype=np.float64)
+                tree = cKDTree(cloud_xy)
+                last_k = 0
+                for wanted in (16, 32, 64, 128):
+                    if not len(pending):
+                        break
+                    max_k = max(3, options.max_triangulation_points // len(pending))
+                    k = min(wanted, len(cloud), max_k)
+                    if k <= last_k:
+                        continue
+                    last_k = k
+                    pending_xy = xy[nodes[positions[pending]]]
+                    _, near = tree.query(pending_xy, k=k)
+                    sparse_ids = np.unique(np.asarray(near).reshape(-1))
+                    if len(sparse_ids) > options.max_triangulation_points:
+                        del tree
+                        work = positions[pending]
+                        if len(work) <= 1:
+                            raise MemoryError('Sparse point cap exceeded for one node')
+                        pts = xy[nodes[work]]
+                        axis = int(np.argmax(np.ptp(pts, axis=0)))
+                        ordered = work[np.argsort(pts[:,axis], kind='stable')]
+                        middle = len(ordered)//2
+                        run(ordered[:middle]);run(ordered[middle:])
+                        return
+                    sparse = cloud[sparse_ids]
+                    report(f'triangulating {len(sparse):,} selected points '
+                           f'for {len(pending):,} nodes (k={k})',
+                           force=(triangulations == 0))
+                    triangulations += 1
+                    try:
+                        tri = Delaunay(np.ascontiguousarray(
+                            sparse[:, :2], dtype=np.float64))
+                    except QhullError:
+                        continue
+                    simplex = tri.find_simplex(pending_xy)
+                    finite = simplex >= 0
+                    certified = np.zeros(len(pending), dtype=bool)
+                    if finite.any():
+                        candidates = np.flatnonzero(finite)
+                        within_window = _circumcircles_certified(
+                            tri, simplex[finite], window, whole)
+                        candidates = candidates[within_window]
+                        if len(candidates):
+                            valid = _certify_no_omitted_points(
+                                tri, simplex[candidates], tree)
+                            certified[candidates[valid]] = True
+                    if certified.any():
+                        solved_indices = pending[certified]
+                        piece_result[positions[solved_indices]] = _linear_interpolate(
+                            tri, sparse, pending_xy[certified], simplex[certified])
+                        pending = pending[~certified]
+                    del tri
+                del tree
+                if not len(pending):
+                    return
+            if is_full:
+                report(f'Full Delaunay fallback for {len(pending):,} unresolved nodes', force=True)
+                triangulations += 1
+                tri = Delaunay(np.ascontiguousarray(cloud[:, :2], dtype=np.float64))
+                unresolved_xy = xy[nodes[positions[pending]]]
+                simplex = tri.find_simplex(unresolved_xy)
+                good = simplex >= 0
+                if good.any():
+                    piece_result[positions[pending[good]]] = _linear_interpolate(
+                        tri, cloud, unresolved_xy[good], simplex[good])
+                return
+            report(f'Expanding halo ({len(pending):,} unresolved nodes; '
+                   f'{len(cloud):,} source points)')
+            halo *= 2
+
+    run(np.arange(len(nodes), dtype=np.int64))
+    return nodes, piece_result, calls, triangulations
+
+
+def _worker_piece(nodes):
+    """Picklable worker function imported by spawned Python interpreters."""
+    if _WORKER_STATE is None:
+        raise RuntimeError('Bathymetry worker has not been initialized')
+    idx, xy, options, whole, limits = _WORKER_STATE
+    return _interpolate_piece(nodes, xy, idx, options, whole, limits)
+
+
+def _partition_nodes(xy, nodes, max_nodes):
+    """Produce disjoint spatially contiguous work packets."""
+    if len(nodes) <= max_nodes:
+        if len(nodes):
+            yield nodes
+        return
+    pts = xy[nodes]
+    axis = int(np.argmax(np.ptp(pts, axis=0)))
+    order = nodes[np.argsort(pts[:,axis],kind='stable')]
+    middle = len(order)//2
+    yield from _partition_nodes(xy, order[:middle], max_nodes)
+    yield from _partition_nodes(xy, order[middle:], max_nodes)
+
+
+def _cpu_slots():
+    """Respect CPU affinity and a SLURM allocation where available."""
+    slots = max(1, os.cpu_count() or 1)
+    if hasattr(os, 'sched_getaffinity'):
+        try:
+            slots = min(slots, len(os.sched_getaffinity(0)))
+        except OSError:
+            pass
+    env = os.environ.get('SLURM_CPUS_PER_TASK')
+    if env:
+        try:
+            slots = min(slots, max(1, int(env)))
+        except ValueError:
+            pass
+    return slots
+
+
+def _num_workers(options, ntasks):
+    count = options.workers
+    if count is None:
+        env = os.environ.get('FVTOOLS_BATHY_WORKERS')
+        count = int(env) if env is not None else 2
+    if count < 1:
+        raise ValueError('bathymetry workers must be at least 1')
+    return min(count, _cpu_slots(), max(1, ntasks))
+
+
+def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
+    """Memory-limited unstructured linear interpolation; optionally CPU-parallel.
+
+    Worker processes read the same disk bin index and a read-only `.npy` file
+    of mesh coordinates. The source .npy is never pickled or sent to workers.
+    Use FVTOOLS_BATHY_WORKERS=1 to disable multiprocessing; default is 2.
     """
     options = options or TilingOptions()
     for key in ('source_chunk_rows','max_triangulation_points','nodes_per_tile','bins_per_axis'):
@@ -319,7 +527,7 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
         raise ValueError('max_triangulation_points must be at least 3')
     if not (0 < options.initial_halo_fraction <= 1):
         raise ValueError('initial_halo_fraction must be between 0 and 1')
-    xy = np.asarray(mesh_xy,dtype=np.float64)
+    xy = np.asarray(mesh_xy, dtype=np.float64)
     if xy.ndim != 2 or xy.shape[1] != 2 or not np.isfinite(xy).all() or len(xy) < 1:
         raise ValueError('mesh_xy must be a nonempty, finite (nodes,2) array')
     src = np.load(filename, mmap_mode='r', allow_pickle=False)
@@ -327,179 +535,85 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
         raise ValueError('Expected an unstructured numeric .npy array with at least columns [x,y,depth]')
     x0,y0 = xy.min(axis=0)
     x1,y1 = xy.max(axis=0)
-    # Matches existing DepthHandler.crop(): points within mesh bbox +/- 5000 m.
-    whole = (float(x0-5000.), float(y0-5000.), float(x1+5000.),float(y1+5000.))
-    result = np.full(len(xy),np.nan,dtype=np.float64)
+    whole = (float(x0-5000.),float(y0-5000.),float(x1+5000.),float(y1+5000.))
+    limits = (float(x0),float(y0),float(x1),float(y1))
+    result = np.full(len(xy), np.nan, dtype=np.float64)
     with TemporaryDirectory(prefix='fvtools_bathymetry_') as temp:
         idx = _DiskBins(src, whole, temp, options)
         if idx.nonfinite_rows:
-            print(f'  - Ignoring {idx.nonfinite_rows} bathymetry rows with non-finite data')
-        # Preserve the old crop() coverage check before expensive triangulations.
+            print(f'  - Ignoring {idx.nonfinite_rows} bathymetry rows with non-finite data', flush=True)
         sl,sb,sr,st = idx.global_extent
-        if sr<x1 or sl>x0 or st<y1 or sb>y0:
+        if sr < x1 or sl > x0 or st < y1 or sb > y0:
             raise ValueError('The bathymetry file does not cover the model domain!')
         print(f'  - Indexed {idx.total:,} bathymetry points on disk ({idx.count}x{idx.count} bins)', flush=True)
         print(f'  - Interpolating {len(xy):,} grid nodes in memory-limited tiles', flush=True)
         progress = _Progress('Interpolation of grid nodes', len(xy))
-        calls = 0
-        triangulations = 0
-        finished = 0
-        # Nodes outside the global convex hull must be NaN, independently of
-        # tile layout. Classifying them first avoids pathological halo expansion.
-        outside = _outside_convex_hull(
-            xy, idx.hull_equations, max(x1-x0, y1-y0))
-        if np.any(outside):
-            finished = int(outside.sum())
-            print(f'  - {finished:,} grid nodes outside bathymetry convex hull '
-                  '(will remain NaN)', flush=True)
+        outside = _outside_convex_hull(xy, idx.hull_equations, max(x1-x0,y1-y0))
+        finished = int(outside.sum())
+        if finished:
+            print(f'  - {finished:,} grid nodes outside bathymetry convex hull (remain NaN)',flush=True)
             progress.update(finished)
-
-        def run(nodes):
-            """One or more adaptive local Delaunay triangulations."""
-            nonlocal calls, triangulations, finished
-            if not len(nodes):
-                return
-            calls += 1
-            queries = xy[nodes]
-            lo = queries.min(axis=0)
-            hi = queries.max(axis=0)
-            domain_width = max(x1-x0, y1-y0, 1.)
-            halo = max(float(max(hi-lo))*options.initial_halo_fraction,
-                       domain_width/10000., 0.1)
-            last_window = None
-            pending = np.arange(len(nodes))
-            while len(pending):
-                window = (max(whole[0],lo[0]-halo),max(whole[1],lo[1]-halo),
-                          min(whole[2],hi[0]+halo),min(whole[3],hi[1]+halo))
-                is_full = window==whole
-                if window==last_window:
-                    raise RuntimeError('Unable to expand local Delaunay window')
-                last_window=window
-                progress.activity(f'Working on batch {calls:,}: searching bathymetry points '
-                                  f'for {len(pending):,} unresolved grid nodes')
-                try:
-                    cloud = idx.region(window,options.max_triangulation_points)
-                except _TooManyPoints:
-                    if len(nodes)>1:
-                        # Restart with a smaller bounding box, even if there
-                        # is only one outstanding node in the current group.
-                        work = nodes[pending]
-                        if len(work) == 1:
-                            run(work)
-                            return
-                        pts = xy[work]
-                        axis = int(np.argmax(np.ptp(pts, axis=0)))
-                        order = work[np.argsort(pts[:, axis],kind='stable')]
-                        middle=len(order)//2
-                        run(order[:middle]); run(order[middle:])
-                        return
-                    raise MemoryError(
-                        'Even a single bathymetry query requires more than '
-                        f'{options.max_triangulation_points:,} local points. '
-                        'Increase max_triangulation_points or check point density.'
-                    ) from None
-                if len(cloud)>=3:
-                    cloud_xy = np.ascontiguousarray(cloud[:, :2], dtype=np.float64)
-                    tree = cKDTree(cloud_xy)
-                    # Start with 16 nearest source points per query. Increase
-                    # to 32/64/128 ONLY for unresolved mesh nodes. A circle
-                    # emptiness test against the FULL source tree guarantees
-                    # that the selected simplex is globally Delaunay-valid.
-                    last_k = 0
-                    for wanted in (16, 32, 64, 128):
-                        if not len(pending):
-                            break
-                        max_k = max(3, options.max_triangulation_points // len(pending))
-                        k = min(wanted, len(cloud), max_k)
-                        if k <= last_k:
-                            continue
-                        last_k = k
-                        pending_xy = xy[nodes[pending]]
-                        _, near = tree.query(pending_xy, k=k)
-                        sparse_ids = np.unique(np.asarray(near).reshape(-1))
-                        if len(sparse_ids) > options.max_triangulation_points:
-                            # A custom nodes_per_tile may be unusually large.
-                            # Never violate the configured Delaunay RAM cap.
-                            del tree
-                            work = nodes[pending]
-                            if len(work) <= 1:
-                                raise MemoryError('Sparse point cap exceeded for one node')
-                            pts = xy[work]
-                            axis = int(np.argmax(np.ptp(pts, axis=0)))
-                            ordered = work[np.argsort(pts[:, axis], kind='stable')]
-                            middle = len(ordered)//2
-                            run(ordered[:middle]);run(ordered[middle:])
-                            return
-                        sparse = cloud[sparse_ids]
-                        progress.activity(
-                            f'Batch {calls:,}: triangulating {len(sparse):,} selected '
-                            f'points (from {len(cloud):,}) for {len(pending):,} '
-                            f'grid nodes (k={k})', force=(triangulations == 0))
-                        triangulations += 1
-                        try:
-                            tri = Delaunay(np.ascontiguousarray(
-                                sparse[:, :2], dtype=np.float64))
-                        except QhullError:
-                            continue
-                        simplex = tri.find_simplex(pending_xy)
-                        finite = simplex >= 0
-                        certified = np.zeros(len(pending), dtype=bool)
-                        if finite.any():
-                            candidates = np.flatnonzero(finite)
-                            within_window = _circumcircles_certified(
-                                tri, simplex[finite], window, whole)
-                            candidates = candidates[within_window]
-                            if len(candidates):
-                                valid = _certify_no_omitted_points(
-                                    tri, simplex[candidates], tree)
-                                certified[candidates[valid]] = True
-                        if certified.any():
-                            solved_indices = pending[certified]
-                            result[nodes[solved_indices]] = _linear_interpolate(
-                                tri, sparse, pending_xy[certified], simplex[certified])
-                            finished += len(solved_indices)
-                            progress.update(finished)
-                            pending = pending[~certified]
-                        del tri
-                    del tree
-                    if not len(pending):
-                        return
-                if is_full:
-                    # Fall back to the full local cloud only when sparse
-                    # certification failed. This path also handles points
-                    # genuinely outside the hull if there was no precomputed
-                    # hull (degenerate source data).
-                    progress.activity(f'Batch {calls:,}: full Delaunay fallback '
-                                      f'for {len(pending):,} unresolved nodes', force=True)
-                    triangulations += 1
-                    tri = Delaunay(np.ascontiguousarray(cloud[:, :2], dtype=np.float64))
-                    unresolved_xy = xy[nodes[pending]]
-                    simplex = tri.find_simplex(unresolved_xy)
-                    good = simplex >= 0
-                    if good.any():
-                        result[nodes[pending[good]]] = _linear_interpolate(
-                            tri, cloud, unresolved_xy[good], simplex[good])
-                    finished += len(pending)
-                    progress.update(finished)
-                    return
-                progress.activity(f'Batch {calls:,}: expanding search halo '
-                                  f'({len(pending):,} unresolved nodes; '
-                                  f'{len(cloud):,} source points)')
-                halo *= 2
-
-        def partition(nodes):
-            # Start with a much larger spatial group (4096 instead of 128
-            # nodes). The source point cap, not this node count, controls RAM.
-            # Subdivide only when a local triangulation would exceed the cap.
-            if len(nodes)<=options.nodes_per_tile:
-                run(nodes)
-                return
-            pts=xy[nodes]
-            axis=int(np.argmax(np.ptp(pts,axis=0)))
-            order=nodes[np.argsort(pts[:,axis],kind='stable')]
-            split=len(order)//2
-            partition(order[:split]);partition(order[split:])
-        partition(np.flatnonzero(~outside))
+        batches = list(_partition_nodes(xy, np.flatnonzero(~outside), options.nodes_per_tile))
+        workers = _num_workers(options, len(batches))
+        print(f'  - {workers} CPU worker(s), {len(batches):,} work batches '
+              f'(up to {options.nodes_per_tile:,} nodes/batch)',flush=True)
+        if batches:
+            print(f'    Batch 1: processing {len(batches[0]):,} grid nodes', flush=True)
+        if workers == 1:
+            calls = triangulations = 0
+            for i, nodes in enumerate(batches,1):
+                done, vals, c, t = _interpolate_piece(
+                    nodes, xy, idx, options, whole, limits,
+                    activity=progress.activity)
+                result[done] = vals
+                calls += c
+                triangulations += t
+                finished += len(done)
+                progress.update(finished)
+        else:
+            # Allocate once, share through filesystem. On Windows `spawn` is
+            # required; it is also safer than fork from a Jupyter kernel.
+            meshfile = Path(temp) / 'mesh_nodes.npy'
+            np.save(meshfile, xy)
+            index_info = dict(path=str(idx.path), offsets=idx.offsets,
+                              bounds=idx.bounds, count=idx.count,
+                              record_bytes=idx.record_bytes, dtype=str(idx.dtype))
+            print('  - Parallel workers triangulating selected points in independent tiles', flush=True)
+            ctx = mp.get_context('spawn')
+            calls = triangulations = 0
+            finished_batches = 0
+            with ProcessPoolExecutor(
+                max_workers=workers, mp_context=ctx,
+                initializer=_init_worker,
+                initargs=(index_info, str(meshfile), options, whole, limits),
+            ) as pool:
+                batch_iter = iter(batches)
+                # Bound queued work; if a worker encounters a failure we don't
+                # need to wait for hundreds of unnecessary queued batches.
+                pending = {}
+                for _ in range(min(len(batches),2*workers)):
+                    nodes = next(batch_iter)
+                    pending[pool.submit(_worker_piece,nodes)] = len(nodes)
+                while pending:
+                    completed, _ = wait(pending,timeout=10,return_when=FIRST_COMPLETED)
+                    if not completed:
+                        progress.activity(f'{len(pending):,} batches running/queued '
+                                          f'with {workers} CPU workers; '
+                                          f'{finished_batches:,}/{len(batches):,} batches complete',
+                                          force=True)
+                        continue
+                    for future in completed:
+                        pending.pop(future)
+                        done, vals, c, t = future.result()  # propagate worker exceptions
+                        result[done] = vals
+                        calls += c
+                        triangulations += t
+                        finished += len(done)
+                        finished_batches += 1
+                        progress.update(finished)
+                        nodes = next(batch_iter,None)
+                        if nodes is not None:
+                            pending[pool.submit(_worker_piece,nodes)] = len(nodes)
         if finished != len(xy):
             raise RuntimeError('Incomplete tiled interpolation: not all grid nodes were processed')
         print(f'  - Finished: {calls:,} node batches, '

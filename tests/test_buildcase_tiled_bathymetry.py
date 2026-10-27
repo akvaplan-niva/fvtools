@@ -88,7 +88,7 @@ def test_hard_cap_on_triangulation_size(tmp_path, monkeypatch):
     path = tmp_path / 'large.npy'
     np.save(path, source)
     options = tiled.TilingOptions(source_chunk_rows=800, bins_per_axis=29,
-                                  nodes_per_tile=25, max_triangulation_points=2400)
+                                  nodes_per_tile=25, max_triangulation_points=2400, workers=1)
     original = tiled.Delaunay
     sampled = []
 

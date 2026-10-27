@@ -44,7 +44,7 @@ def test_high_source_density_matches_global_delaunay_with_fewer_triangles(tmp_pa
     q = rng.uniform(25,375,(200,2))
     # This case exercises k-nearest expansion beyond the initial k=16.
     opts=tiled.TilingOptions(source_chunk_rows=800,bins_per_axis=29,
-                            nodes_per_tile=25,max_triangulation_points=2400)
+                            nodes_per_tile=25,max_triangulation_points=2400,workers=1)
     orig=tiled.Delaunay
     calls=[]
     def counted(x):
@@ -86,7 +86,7 @@ def test_large_target_group_reuses_local_source_triangulations(tmp_path,monkeypa
     z=np.sin(xy[:,0]*0.02)+np.cos(xy[:,1]*0.04)
     q=rng.uniform(12,288,(2500,2))
     opts=tiled.TilingOptions(nodes_per_tile=4096,bins_per_axis=32,
-                            max_triangulation_points=50_000,source_chunk_rows=10_000)
+                            max_triangulation_points=50_000,source_chunk_rows=10_000,workers=1)
     orig=tiled.Delaunay
     counts=[]
     def counted(x):
