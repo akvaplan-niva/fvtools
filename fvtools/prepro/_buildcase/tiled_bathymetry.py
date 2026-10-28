@@ -824,21 +824,46 @@ def _partition_nodes(xy, nodes, max_nodes):
     yield from _partition_nodes(xy, order[middle:], max_nodes)
 
 
-def _cpu_slots():
-    """Respect CPU affinity and a SLURM allocation where available."""
-    slots = max(1, os.cpu_count() or 1)
+def _cpu_resources():
+    """CPU limits for BuildCase's bathymetry threads/processes.
+
+    Default: honor SLURM_CPUS_PER_TASK even if affinity exposes more CPUs.
+    FVTOOLS_BATHY_CPU_POLICY=affinity is an EXPLICIT opt-in to use the
+    affinity mask instead. Only enable it when the Slurm allocation permits
+    those CPUs; affinity alone does not prove the job has that allocation.
+    """
+    logical = max(1, os.cpu_count() or 1)
+    affinity = None
     if hasattr(os, 'sched_getaffinity'):
         try:
-            slots = min(slots, len(os.sched_getaffinity(0)))
-        except OSError:
+            affinity = len(os.sched_getaffinity(0))
+        except (OSError, NotImplementedError):
             pass
-    env = os.environ.get('SLURM_CPUS_PER_TASK')
-    if env:
+    allowed = min(logical, affinity) if affinity else logical
+
+    raw_slurm = os.environ.get('SLURM_CPUS_PER_TASK')
+    slurm = None
+    if raw_slurm:
         try:
-            slots = min(slots, max(1, int(env)))
+            n = int(raw_slurm)
+            if n > 0:
+                slurm = n
         except ValueError:
             pass
-    return slots
+
+    policy = os.environ.get('FVTOOLS_BATHY_CPU_POLICY', 'slurm').strip().lower()
+    if policy not in ('slurm', 'affinity'):
+        raise ValueError(
+            'FVTOOLS_BATHY_CPU_POLICY must be "slurm" or "affinity"'
+        )
+    slots = min(allowed, slurm) if policy == 'slurm' and slurm else allowed
+    return dict(logical=logical, affinity=affinity, slurm=slurm,
+                raw_slurm=raw_slurm, policy=policy, slots=max(1, slots))
+
+
+def _cpu_slots():
+    """Return usable worker slots according to explicit CPU allocation policy."""
+    return _cpu_resources()['slots']
 
 
 def _num_workers(options, ntasks):
@@ -894,6 +919,17 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
             progress.update(finished)
         batches = list(_partition_nodes(xy, np.flatnonzero(~outside), options.nodes_per_tile))
         workers = _num_workers(options, len(batches))
+        cpu = _cpu_resources()
+        affinity_label = str(cpu['affinity']) if cpu['affinity'] else 'unknown'
+        slurm_label = cpu['raw_slurm'] or 'not set'
+        print(f"  - CPU selection: affinity={affinity_label}, "
+              f"SLURM_CPUS_PER_TASK={slurm_label}, "
+              f"policy={cpu['policy']}, limit={cpu['slots']}", flush=True)
+        if (cpu['policy'] == 'slurm' and cpu['slurm'] is not None and
+                cpu['affinity'] is not None and cpu['slurm'] < cpu['affinity']):
+            print('  - Slurm per-task CPU limit is lower than process affinity. '
+                  'Use FVTOOLS_BATHY_CPU_POLICY=affinity only after '
+                  'verifying that the extra CPUs belong to this job.', flush=True)
         print(f'  - {workers} CPU worker(s), {len(batches):,} work batches '
               f'(up to {options.nodes_per_tile:,} nodes/batch)',flush=True)
         if batches:
