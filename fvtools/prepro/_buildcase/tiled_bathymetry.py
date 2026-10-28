@@ -487,7 +487,45 @@ def _hull_support_for_query(idx, target):
     return np.empty((0,3),dtype=idx.dtype)
 
 
-def _interpolate_dense_single(target, idx, options, activity=None):
+
+def _cached_simplex_values(triangle_xyz, queries):
+    """Return barycentric values for queries inside an already certified simplex.
+
+    An empty global circumcircle certifies the whole triangle, not just the
+    query where it was first found. Relative coordinates avoid cancellation
+    for high UTM eastings/northings.
+    """
+    tri = np.asarray(triangle_xyz, dtype=np.float64)
+    xy = np.asarray(queries, dtype=np.float64)
+    a = tri[0, :2]
+    u = tri[1, :2] - a
+    v = tri[2, :2] - a
+    determinant = u[0] * v[1] - u[1] * v[0]
+    result = np.full(len(xy), np.nan, dtype=np.float64)
+    accepted = np.zeros(len(xy), dtype=bool)
+    if abs(determinant) < 64 * np.finfo(float).eps * max(u @ u + v @ v, 1.):
+        return accepted, result
+    # Cheap extent test before evaluating barycentric coordinates.
+    in_box = np.where((xy[:, 0] >= tri[:, 0].min()) &
+                      (xy[:, 0] <= tri[:, 0].max()) &
+                      (xy[:, 1] >= tri[:, 1].min()) &
+                      (xy[:, 1] <= tri[:, 1].max()))[0]
+    if len(in_box) == 0:
+        return accepted, result
+    d = xy[in_box] - a
+    w1 = (d[:, 0] * v[1] - d[:, 1] * v[0]) / determinant
+    w2 = (u[0] * d[:, 1] - u[1] * d[:, 0]) / determinant
+    w0 = 1. - w1 - w2
+    good = (w0 >= 0.) & (w1 >= 0.) & (w2 >= 0.)
+    which = in_box[good]
+    accepted[which] = True
+    result[which] = (w0[good] * tri[0, 2] +
+                     w1[good] * tri[1, 2] +
+                     w2[good] * tri[2, 2])
+    return accepted, result
+
+
+def _interpolate_dense_single(target, idx, options, activity=None, *, return_triangle=False):
     """Exact, bounded-memory fallback when even one node exceeds the halo cap.
 
     Select a small exact k-nearest neighborhood straight from disk. Check the
@@ -497,7 +535,7 @@ def _interpolate_dense_single(target, idx, options, activity=None):
     a guessed or approximate depth value.
     """
     report = activity or (lambda *args, **kwargs: None)
-    report('Dense bathymetry: switching to disk-streamed single-node interpolation', force=True)
+    report('Dense bathymetry: using disk-streamed interpolation', force=False)
     limit = options.max_triangulation_points
     k = min(32, max(3, limit - 3))
     cloud = _nearest_on_disk(idx, target, k)
@@ -529,6 +567,8 @@ def _interpolate_dense_single(target, idx, options, activity=None):
                     value = float(_linear_interpolate(
                         tri, cloud, np.zeros((1, 2), dtype=np.float64),
                         np.array([simplex],dtype=np.int64))[0])
+                    if return_triangle:
+                        return value, total_steps, np.asarray(cloud[tri.simplices[simplex]], dtype=np.float64).copy()
                     return value, total_steps
                 new = [point for point in intruders if tuple(point[:2]) not in seen]
                 if new:
@@ -563,13 +603,35 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
     x0, y0, x1, y1 = limits
     calls = 0
     triangulations = 0
+    # A verified global Delaunay simplex is valid for EVERY grid node it
+    # encloses. Keep a small per-batch cache so neighboring hard queries do
+    # not repeat expensive disk scans and independent triangulations.
+    cached_triangles = []
+    cache_hits = 0
+    dense_calls = 0
+
+    def reuse_certified(positions):
+        nonlocal cache_hits
+        if not cached_triangles or not len(positions):
+            return positions
+        remaining = positions
+        for triangle in reversed(cached_triangles):
+            if not len(remaining):
+                break
+            found, values = _cached_simplex_values(triangle, xy[nodes[remaining]])
+            if found.any():
+                piece_result[remaining[found]] = values[found]
+                cache_hits += int(found.sum())
+                remaining = remaining[~found]
+        return remaining
 
     def report(message, *, force=False):
         if activity is not None:
             activity(message, force=force)
 
     def run(positions):
-        nonlocal calls, triangulations
+        nonlocal calls, triangulations, dense_calls
+        positions = reuse_certified(positions)
         if not len(positions):
             return
         calls += 1
@@ -641,10 +703,15 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
                     run(order[:middle]); run(order[middle:])
                     return
                 if cloud is None:
-                    value, refinements = _interpolate_dense_single(
-                        xy[nodes[positions[0]]], idx, options, activity=activity)
+                    value, refinements, validated_simplex = _interpolate_dense_single(
+                        xy[nodes[positions[0]]], idx, options,
+                        activity=activity, return_triangle=True)
+                    dense_calls += 1
                     piece_result[positions[0]] = value
                     triangulations += refinements
+                    cached_triangles.append(validated_simplex)
+                    if len(cached_triangles) > 64:
+                        cached_triangles.pop(0)
                     return
             if len(cloud) >= 3:
                 # The same local-coordinate convention as the exact dense
@@ -728,6 +795,10 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
             halo *= 2
 
     run(np.arange(len(nodes), dtype=np.int64))
+    if dense_calls or cache_hits:
+        report(f'Dense-node work: {dense_calls:,} disk fallbacks, '
+               f'{cache_hits:,} nodes solved from verified cached triangles',
+               force=True)
     return nodes, piece_result, calls, triangulations
 
 
