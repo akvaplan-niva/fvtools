@@ -1,6 +1,7 @@
 # ==================================================================================================================
 #                                Routines to access specific ROMS models
 # =================================================================================================================
+from contextlib import contextmanager
 import numpy as np
 import time as time_mod
 import os
@@ -447,6 +448,68 @@ class RomsDownloader:
     '''
     Routine that downloads data. It will automatically stop and wait if the thredds server goes down / the data we need is temporarily unavailable
     '''
+    # Phase 6A: explicit single-handle ROMS NetCDF reuse in serial mode.
+    @contextmanager
+    def reuse_roms_datasets(self):
+        """Scope a *single* open source Dataset to one serial nesting pass.
+
+        There is no global cache, and a Dataset is never placed on an MPI/worker
+        queue or persisted as a pickled attribute between tasks. All other
+        RomsDownloader use remains one open/close per read_timestep call.
+        """
+        if getattr(self, '_roms_reader_cache', None) is not None:
+            raise RuntimeError('Nested ROMS Dataset reuse scopes are not supported')
+        cache = {'path': None, 'dataset': None}
+        self._roms_reader_cache = cache
+        try:
+            yield self
+        finally:
+            self._roms_reader_cache = None
+            dataset = cache['dataset']
+            cache['dataset'] = None
+            cache['path'] = None
+            if dataset is not None:
+                dataset.close()
+
+    @contextmanager
+    def _roms_dataset(self, filepath):
+        """Use exactly one open source file in the optional serial read scope.
+
+        Switch and close on a changed path; discard the current handle on a
+        transient I/O failure so that read_timestep's existing bounded retry
+        reopens the file rather than retrying against a broken connection.
+        """
+        cache = getattr(self, '_roms_reader_cache', None)
+        if cache is None:
+            with Dataset(filepath) as nc:
+                yield nc
+            return
+
+        if cache['dataset'] is None or cache['path'] != filepath:
+            old = cache['dataset']
+            cache['dataset'] = None
+            cache['path'] = None
+            if old is not None:
+                old.close()
+            nc = Dataset(filepath)
+            cache['dataset'] = nc
+            cache['path'] = filepath
+
+        try:
+            yield cache['dataset']
+        except (OSError, TimeoutError, ConnectionError):
+            # A transient failure should not leave a stale OPeNDAP connection
+            # in the cache. Preserve the original read exception for retries.
+            failed = cache['dataset']
+            cache['dataset'] = None
+            cache['path'] = None
+            if failed is not None:
+                try:
+                    failed.close()
+                except Exception:
+                    pass
+            raise
+
     def read_timestep(self, index_here, filepath, variables=None, sigma=None,
                       *, max_retries=5, retry_delay=30):
         """Read ROMS data; retry only temporary I/O errors, never coding errors.
@@ -481,7 +544,7 @@ class RomsDownloader:
         supported = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']
         timestep = ROMSTimeStep(index_here)
  
-        with Dataset(filepath) as nc:
+        with self._roms_dataset(filepath) as nc:
             for var in variables:
                 if var not in supported:
                     raise InputError(f'The variable: "{var}" is not supported by RomsDownloader')

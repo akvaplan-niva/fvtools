@@ -224,7 +224,8 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         widget = [f'  - Interpolating and dumping timesteps to nest: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.path))
         bar.start()
-        with netCDF4.Dataset(self.outfile, 'r+') as self.out:
+        # Phase 6A: the serial reader keeps only the current ROMS file open.
+        with self.reuse_roms_datasets(), netCDF4.Dataset(self.outfile, 'r+') as self.out:
             for counter, (path_here, index_here) in enumerate(zip(self.path, self.index)):
                 bar.update(counter)
                 timestep = self._prepare_timestep(counter, path_here, index_here)
