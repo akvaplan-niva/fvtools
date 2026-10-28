@@ -37,13 +37,19 @@ class DepthHandler:
         self._h_raw = var    
 
     def make_depth(self):
-        """Interpolate data from a "depth.txt" file to a FVCOM mesh, adds 'h_raw' to the mesh"""
-        if type(self.depth_file) == int or type(self.depth_file) == float:
-            h_raw = self.depth_file*np.ones((self.x.shape)) # in case you need flat bathymetry
+        """Interpolate bathymetry and report where source coverage is missing.
+
+        Numerical behavior for finite input is unchanged.  Invalid interpolated
+        depths are still replaced by ``min_depth``, but their original locations
+        are retained for interactive quality control.
+        """
+        constant_depth = type(self.depth_file) in (int, float)
+        if constant_depth:
+            # Preserve the legacy constant-depth path, including its treatment
+            # of values below min_depth.
+            h_raw = self.depth_file * np.ones(self.x.shape)
         else:
             if str(self.depth_file).lower().endswith('.npy'):
-                # Stream source data and build a temporary disk-based spatial
-                # index; never construct a global Delaunay triangulation in RAM.
                 from fvtools.prepro._buildcase.tiled_bathymetry import interpolate_unstructured_npy
                 print('  - Memory-limited unstructured bathymetry interpolation')
                 h_raw = interpolate_unstructured_npy(
@@ -54,15 +60,35 @@ class DepthHandler:
                 depth = self.crop(depth)
                 h_raw = self.interpolate_to_mesh(depth)
 
-            # Keep the original minimum-depth rule for interpolated bathymetry.
-            # In place to avoid allocating a second bathymetry array.
-            np.maximum(h_raw, self.min_depth, out=h_raw)
+        h_raw = np.asarray(h_raw)
+        if h_raw.ndim != 1 or len(h_raw) != len(self.x):
+            raise ValueError('Interpolated bathymetry must have one value per grid node')
 
-        if np.argwhere(np.isnan(h_raw)).size > 0:
-            print(f'Nan found in h_raw. Nans are set to {self.min_depth} m. '+\
-                  'Consider using a better bathymetry that has good coverage of the entire domain.'+\
-                  f'Number of nans found: {np.argwhere(np.isnan(h_raw)).size}')
-            h_raw[np.argwhere(np.isnan(h_raw))] = self.min_depth
+        # Take the mask BEFORE replacing missing values.  A node whose real
+        # bathymetry happens to equal min_depth must not be labelled missing.
+        missing_mask = ~np.isfinite(h_raw)
+        missing_count = int(np.count_nonzero(missing_mask))
+        if not constant_depth:
+            # Same in-place minimum-depth rule as the previous BuildCase.
+            np.maximum(h_raw, self.min_depth, out=h_raw)
+        if missing_count:
+            h_raw[missing_mask] = self.min_depth
+
+        total = len(h_raw)
+        at_min_depth_count = int(np.count_nonzero(h_raw == self.min_depth))
+        self.bathymetry_missing_mask = missing_mask
+        self.bathymetry_qc = {
+            'total_nodes': total,
+            'missing_nodes': missing_count,
+            'missing_percent': 100.0 * missing_count / total if total else 0.0,
+            'at_min_depth_nodes': at_min_depth_count,
+            'min_depth': float(self.min_depth),
+        }
+        print(f'  - Bathymetry coverage: {missing_count:,}/{total:,} nodes '
+              f'({self.bathymetry_qc["missing_percent"]:.2f}%) missing source depth')
+        if missing_count:
+            print(f'  - Replaced missing bathymetry at {missing_count:,} nodes '
+                  f'with min_depth={self.min_depth:g} m; locations are shown on the QC map')
         self.h_raw = h_raw
 
     @staticmethod

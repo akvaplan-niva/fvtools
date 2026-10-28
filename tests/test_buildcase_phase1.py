@@ -162,11 +162,18 @@ def test_mellor_ezer_oey_keeps_depth_sum_and_target_rx0():
     np.testing.assert_array_equal(h, [80., 10.])
 
 
-def test_plotting_still_has_same_no_figure_for_shallow_grid():
-    obj = SimpleNamespace(h_raw=np.array([5., 8.]))
+def test_plotting_shows_shallow_grid_in_three_panels():
+    obj = SimpleNamespace(
+        x=np.array([0., 1., 1., 0.]), y=np.array([0., 0., 1., 1.]),
+        tri=np.array([[0, 1, 2], [0, 2, 3]]),
+        h_raw=np.array([5., 6., 7., 8.]),
+        h=np.array([5., 6., 7., 8.]),
+    )
     before = set(plt.get_fignums())
     assert BathymetryPlotter.show_depth(obj) is None
-    assert set(plt.get_fignums()) == before
+    newer = set(plt.get_fignums()) - before
+    assert len(newer) == 1
+    assert len(plt.figure(next(iter(newer))).axes) == 6
 
 
 def test_mesh_validator_does_not_modify_valid_grid():
