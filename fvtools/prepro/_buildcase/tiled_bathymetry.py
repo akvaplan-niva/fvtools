@@ -416,7 +416,7 @@ def _simplex_circle(tri, simplex_id):
     return center, radius
 
 
-def _intruders_on_disk(idx, center, radius, max_points=12):
+def _intruders_on_disk(idx, center, radius, max_points=12, *, origin=None):
     """Search the exact circumcircle on disk, returning a few interior points.
 
     Zero results certifies the simplex against *every* cropped source point;
@@ -426,15 +426,29 @@ def _intruders_on_disk(idx, center, radius, max_points=12):
     threshold = max(0., radius-tol)**2
     if not threshold:
         return np.empty((0, 3), dtype=idx.dtype)
-    bins, minimum_dist2 = _ordered_bins_for_point(idx, center)
+    # A Delaunay triangulation on UTM coordinates can lose precision if its
+    # circumcenter is formed in the full projected coordinate system.
+    # In the dense fallback, both the triangulation and circumcenter use a
+    # query-centered frame. Keep all circle tests in that same frame.
+    origin = (np.zeros(2, dtype=np.float64) if origin is None
+              else np.asarray(origin, dtype=np.float64))
+    absolute_center = center + origin
+    bins, minimum_dist2 = _ordered_bins_for_point(idx, absolute_center)
+    # Rounding the local center back to UTM units can shift it by a few ulps.
+    # The slack affects which bins are visited, NOT the point-in-circle test.
+    slack = 8 * float(np.max(np.spacing(np.abs(absolute_center))))
+    search_threshold = (max(0., radius - tol) + slack)**2
     found = []
     total = 0
     with idx.path.open('rb') as handle:
         for bin_id, bound2 in zip(bins, minimum_dist2):
-            if bound2 >= threshold:
+            if bound2 >= search_threshold:
                 break
             for points in _read_bin_chunks(handle, idx, int(bin_id)):
-                dist2 = np.sum((points[:, :2].astype(np.float64) - center)**2, axis=1)
+                # Subtract the same origin from each stored point BEFORE
+                # comparing its distance with the local circumcenter.
+                local_xy = points[:, :2].astype(np.float64) - origin
+                dist2 = np.sum((local_xy - center)**2, axis=1)
                 inside = np.flatnonzero(dist2 < threshold)
                 if len(inside):
                     take = min(max_points-total, len(inside))
@@ -499,18 +513,21 @@ def _interpolate_dense_single(target, idx, options, activity=None):
         if total_steps > limit:
             raise RuntimeError('Disk-streamed bathymetry refinement did not converge')
         try:
-            tri = Delaunay(np.ascontiguousarray(cloud[:, :2], dtype=np.float64))
-            simplex = int(tri.find_simplex(np.asarray(target, dtype=float)[None,:])[0])
+            # Query-centered geometry avoids Qhull/circumcenter roundoff
+            # when bathymetry spacing is tiny compared with UTM east/north.
+            local_xy = np.ascontiguousarray(cloud[:, :2] - target, dtype=np.float64)
+            tri = Delaunay(local_xy)
+            simplex = int(tri.find_simplex(np.zeros((1, 2), dtype=np.float64))[0])
         except QhullError:
             simplex = -1
             tri = None
         if simplex >= 0:
             circle = _simplex_circle(tri, simplex)
             if circle is not None:
-                intruders = _intruders_on_disk(idx, *circle)
+                intruders = _intruders_on_disk(idx, *circle, origin=target)
                 if not len(intruders):
                     value = float(_linear_interpolate(
-                        tri, cloud, np.asarray(target,dtype=float).reshape(1,2),
+                        tri, cloud, np.zeros((1, 2), dtype=np.float64),
                         np.array([simplex],dtype=np.int64))[0])
                     return value, total_steps
                 new = [point for point in intruders if tuple(point[:2]) not in seen]
@@ -529,7 +546,8 @@ def _interpolate_dense_single(target, idx, options, activity=None):
         seen.update(tuple(point[:2]) for point in new)
     raise RuntimeError(
         'Could not certify the exact Delaunay interpolation of a dense bathymetry node '
-        f'within the {limit:,}-point cap; no approximate value was substituted.'
+        f'at x={target[0]:.3f}, y={target[1]:.3f} within the {limit:,}-point cap; '
+        'no approximate value was substituted.'
     )
 
 
