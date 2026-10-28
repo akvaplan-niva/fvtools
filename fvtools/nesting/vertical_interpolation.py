@@ -40,76 +40,72 @@ def prepare_z_dimensions(z_roms, z_fvcom):
         z_fvcom = z_fvcom[:, None]
     return z_roms, z_fvcom
     
-@njit
+@njit(cache=True)
 def calc_interp_matrices(z1, z2):
-    '''
-    Calculate matrices for linear interpolation.
-    
-    Parameters
-    ----------
-    z1: array (m x n) 
-       The x-coordinate of the data points.
+    """Fast, allocation-light equivalent of the legacy nearest-level interpolation.
 
-    z2: array (k x n) 
-       The coordinates at which to evaluate the interpolated values. 
-
-    Returns
-    -------
-    Indices of the data on both sides of xi. 
-    ind1: First array of indices.
-    ind2: Second array of indices.
-
-    Weigths to multiply with the values given by indices.
-    weigths1: First array of weigths.
-    weigths2: Second array of indices.
-
-
-    Notes
-    -----
-    For values in xi outside the range of x, the highest/lowest values 
-    in x are used. No extrapolation is carried out.  
-
-    Example
-    --------
-    x = np.arange(0, 2*np.pi, 0.5)
-    y = np.sin(x)
-    
-    # Interpolate to twice the resolution
-    new_x = np.arange(0, 2*np.pi, 0.25)
-    ind1, ind2, weigths1, weigths2 = calc_interp_indices(x, new_x)
-    new_y = y[ind1]*weigths1 + y[ind2]*weigths2 
-    '''
-    indices1 = np.zeros(z2.shape, dtype = np.int64)
-    indices2 = np.zeros(z2.shape, dtype = np.int64)
-    weigths1 = np.zeros(z2.shape, dtype = np.float64)
-    weigths2 = np.zeros(z2.shape, dtype = np.float64)
-
-    # z1 must be ordered from shallowest to deepest (positive down).
-    # Repeated levels are permitted, but nonfinite or descending profiles are not.
+    Inputs are (ROMS levels, points) and (FVCOM levels, points), with
+    shallow-to-deep nonnegative depths; output shapes follow FVCOM levels.
+    The nearest ROMS level is chosen using strict '<' to preserve np.argmin
+    tie-breaking (first occurrence). No extrapolation, repeated levels OK.
+    """
     if z1.ndim != 2 or z2.ndim != 2 or z1.shape[1] != z2.shape[1] or z1.shape[0] == 0:
         raise ValueError('Vertical interpolation requires two 2-D arrays with matching columns and at least one ROMS level')
+    indices1 = np.zeros(z2.shape, dtype=np.int64)
+    indices2 = np.zeros(z2.shape, dtype=np.int64)
+    weights1 = np.zeros(z2.shape, dtype=np.float64)
+    weights2 = np.zeros(z2.shape, dtype=np.float64)
+    nlevels = z1.shape[0]
+    nfvlayers = z2.shape[0]
+    npoints = z1.shape[1]
 
-    for n in range(0, z2.shape[-1]):
-        # look at the depth in this FVCOM grid point
-        z1_n = z1[:, n]
-        z2_n = z2[:, n]
-        if not np.all(np.isfinite(z1_n)) or not np.all(np.isfinite(z2_n)):
-            raise ValueError('Vertical interpolation depths must be finite')
-        for level in range(1, len(z1_n)):
-            if z1_n[level] < z1_n[level - 1]:
+    for n in range(npoints):
+        for j in range(nlevels):
+            if not np.isfinite(z1[j, n]):
+                raise ValueError('Vertical interpolation depths must be finite')
+        for k in range(nfvlayers):
+            if not np.isfinite(z2[k, n]):
+                raise ValueError('Vertical interpolation depths must be finite')
+        for j in range(1, nlevels):
+            if z1[j, n] < z1[j - 1, n]:
                 raise ValueError('ROMS vertical levels must be sorted shallow-to-deep')
-        
-        # Difference between each sigma layer
-        absdiff = numba_absdiff(z2_n, z1_n)
-        ind1    = np.argmin(absdiff, axis=1)
-        ind1, ind2, w1, w2 = find_inds_and_weights(ind1, z1_n, z2_n)
 
-        indices1[:, n] = ind1
-        indices2[:, n] = ind2
-        weigths1[:, n] = w1
-        weigths2[:, n] = w2
-
-    return indices1, indices2, weigths1, weigths2
+        first = z1[0, n]
+        last = z1[nlevels - 1, n]
+        for k in range(nfvlayers):
+            target = z2[k, n]
+            nearest = 0
+            nearest_dist = abs(target - first)
+            for j in range(1, nlevels):
+                dist = abs(target - z1[j, n])
+                if dist < nearest_dist:  # np.argmin breaks ties at first index
+                    nearest = j
+                    nearest_dist = dist
+            indices1[k, n] = nearest
+            z_nearest = z1[nearest, n]
+            if target <= first or target >= last or target == z_nearest:
+                weights1[k, n] = 1.0
+            elif z_nearest > target:
+                other = nearest - 1
+                while other >= 0 and z1[other, n] == z_nearest:
+                    other -= 1
+                if other < 0:
+                    raise ValueError('Cannot bracket FVCOM depth with ROMS sigma levels')
+                indices2[k, n] = other
+                dz = z_nearest - z1[other, n]
+                weights2[k, n] = (z_nearest - target) / dz
+                weights1[k, n] = (target - z1[other, n]) / dz
+            else:
+                other = nearest + 1
+                while other < nlevels and z1[other, n] == z_nearest:
+                    other += 1
+                if other == nlevels:
+                    raise ValueError('Cannot bracket FVCOM depth with ROMS sigma levels')
+                indices2[k, n] = other
+                dz = z1[other, n] - z_nearest
+                weights2[k, n] = (target - z_nearest) / dz
+                weights1[k, n] = (z1[other, n] - target) / dz
+    return indices1, indices2, weights1, weights2
 
 @njit
 def numba_absdiff(z2_n, z1_n):
