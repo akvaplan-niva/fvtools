@@ -154,10 +154,12 @@ class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropG
 
         # Re-project so that xy has same coordinates as it will in operational mode
         self.re_project(self.target_projection)
-        if not updated_grid:
-            self.main()
-        else:
-            print('- The grid was changed, you may want to inspect it before running .main(). Writing changed grid to auto_cleaned_grid.2dm')
+
+        
+        #if not updated_grid:
+        #    self.main()
+        #else:
+        #    print('- The grid was changed, you may want to inspect it before running .main(). Writing changed grid to auto_cleaned_grid.2dm')
 
     def __str__(self):
         str_grid = f'''
