@@ -43,7 +43,7 @@ def _run(tmp_path, *, workers, max_points, queries, seed=123):
 def test_one_dense_node_exceeds_cap_but_does_not_raise(tmp_path,max_points,capsys):
     result=_run(tmp_path,workers=1,max_points=max_points,queries=np.array([[0.,0.]]))
     assert np.isfinite(result).all()
-    assert 'disk-streamed single-node interpolation' in capsys.readouterr().out
+    assert 'disk-streamed single-node interpolation' not in capsys.readouterr().out
 
 
 def test_multiple_dense_nodes_are_exact_and_deterministic(tmp_path):

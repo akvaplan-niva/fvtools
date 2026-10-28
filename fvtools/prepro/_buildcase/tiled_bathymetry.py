@@ -581,6 +581,10 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
                    domain_width/10000., 0.1)
         last_window = None
         pending = np.arange(len(positions))
+        # The source density, not the number of mesh nodes, often causes a
+        # too-large halo. Try a smaller spatial window once before dividing
+        # the queries or initiating one-node disk-streamed fallback.
+        tried_compact_halo = False
         while len(pending):
             window = (max(whole[0], lo[0]-halo), max(whole[1], lo[1]-halo),
                       min(whole[2], hi[0]+halo), min(whole[3], hi[1]+halo))
@@ -589,10 +593,43 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
                 raise RuntimeError('Unable to expand local Delaunay window')
             last_window = window
             report(f'Searching bathymetry points for {len(pending):,} unresolved grid nodes')
+            cloud = None
             try:
                 cloud = idx.region(window, options.max_triangulation_points)
             except _TooManyPoints:
-                if len(positions) > 1:
+                if not tried_compact_halo:
+                    tried_compact_halo = True
+                    # Geographic shrinkage can work where bisecting the mesh
+                    # nodes cannot: the smallest original halo is 0.1 m or
+                    # domain_width/10000, often huge for dense source data.
+                    # Keep the node bounding box intact and shrink only the halo.
+                    smaller = halo
+                    for _ in range(18):
+                        smaller *= 0.5
+                        if smaller <= np.finfo(np.float64).eps * domain_width:
+                            break
+                        compact = (max(whole[0], lo[0]-smaller),
+                                   max(whole[1], lo[1]-smaller),
+                                   min(whole[2], hi[0]+smaller),
+                                   min(whole[3], hi[1]+smaller))
+                        try:
+                            candidate = idx.region(compact, options.max_triangulation_points)
+                        except _TooManyPoints:
+                            continue
+                        if len(candidate) < 3:
+                            # For very sparse sources, a smaller window cannot
+                            # enclose a query; keep the original fallback.
+                            break
+                        cloud = candidate
+                        window = compact
+                        halo = smaller
+                        is_full = window == whole
+                        last_window = window
+                        report(f'Compact halo: {halo:.5g} m around '
+                               f'{len(positions):,} grid nodes; '
+                               f'{len(cloud):,} source points')
+                        break
+                if cloud is None and len(positions) > 1:
                     work = positions[pending]
                     if len(work) == 1:
                         run(work)
@@ -603,14 +640,24 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
                     middle = len(order)//2
                     run(order[:middle]); run(order[middle:])
                     return
-                value, refinements = _interpolate_dense_single(
-                    xy[nodes[positions[0]]], idx, options, activity=activity)
-                piece_result[positions[0]] = value
-                triangulations += refinements
-                return
+                if cloud is None:
+                    value, refinements = _interpolate_dense_single(
+                        xy[nodes[positions[0]]], idx, options, activity=activity)
+                    piece_result[positions[0]] = value
+                    triangulations += refinements
+                    return
             if len(cloud) >= 3:
-                cloud_xy = np.ascontiguousarray(cloud[:, :2], dtype=np.float64)
+                # The same local-coordinate convention as the exact dense
+                # fallback. A sparse Delaunay and its circumcircle tests are
+                # otherwise ill-conditioned for small spacings at UTM northings.
+                origin = queries[0].copy()
+                cloud_xy = np.ascontiguousarray(cloud[:, :2] - origin,
+                                                 dtype=np.float64)
                 tree = cKDTree(cloud_xy)
+                local_window = (window[0]-origin[0], window[1]-origin[1],
+                                window[2]-origin[0], window[3]-origin[1])
+                local_whole = (whole[0]-origin[0], whole[1]-origin[1],
+                               whole[2]-origin[0], whole[3]-origin[1])
                 last_k = 0
                 for wanted in (16, 32, 64, 128):
                     if not len(pending):
@@ -620,7 +667,7 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
                     if k <= last_k:
                         continue
                     last_k = k
-                    pending_xy = xy[nodes[positions[pending]]]
+                    pending_xy = xy[nodes[positions[pending]]] - origin
                     _, near = tree.query(pending_xy, k=k)
                     sparse_ids = np.unique(np.asarray(near).reshape(-1))
                     if len(sparse_ids) > options.max_triangulation_points:
@@ -641,7 +688,7 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
                     triangulations += 1
                     try:
                         tri = Delaunay(np.ascontiguousarray(
-                            sparse[:, :2], dtype=np.float64))
+                            sparse[:, :2] - origin, dtype=np.float64))
                     except QhullError:
                         continue
                     simplex = tri.find_simplex(pending_xy)
@@ -650,7 +697,7 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
                     if finite.any():
                         candidates = np.flatnonzero(finite)
                         within_window = _circumcircles_certified(
-                            tri, simplex[finite], window, whole)
+                            tri, simplex[finite], local_window, local_whole)
                         candidates = candidates[within_window]
                         if len(candidates):
                             valid = _certify_no_omitted_points(
@@ -668,8 +715,8 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
             if is_full:
                 report(f'Full Delaunay fallback for {len(pending):,} unresolved nodes', force=True)
                 triangulations += 1
-                tri = Delaunay(np.ascontiguousarray(cloud[:, :2], dtype=np.float64))
-                unresolved_xy = xy[nodes[positions[pending]]]
+                tri = Delaunay(cloud_xy)
+                unresolved_xy = xy[nodes[positions[pending]]] - origin
                 simplex = tri.find_simplex(unresolved_xy)
                 good = simplex >= 0
                 if good.any():
