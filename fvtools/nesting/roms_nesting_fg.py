@@ -77,6 +77,15 @@ def main(fvcom_grd,
     print('\nMake the filelist\n---')
     time, path, index = make_fileList(start, stop, ROMS)
 
+    N4R, M, NEST = _prepare_nesting_interpolator(ROMS, M, NEST, latlon)
+    _publish_nesting_file(outfile, NEST, mother, time, latlon,
+                          M.reference, path, index, N4R, nprocs)
+
+    print('\n--> Fin.')
+
+# Phase 4: shared ROMS timestep and output orchestration.
+def _prepare_nesting_interpolator(ROMS, M, NEST, latlon):
+    """Prepare horizontal, bathymetry and static sigma weights in legacy order."""
     print('\nFind the nearest 4 interpolation coefficients for the nestingzone\n---')
     N4R = N4ROMSNESTING(ROMS, x = NEST.x, y = NEST.y, tri = NEST.tri, uv = True)
     N4R.nearest4(M)
@@ -89,12 +98,18 @@ def main(fvcom_grd,
     print('\nAdd vertical interpolation method\n---')
     N4R.FV  = NEST # to let vertical_interpolation know which FVCOM grid to find vertical interpolation coeficients for
     N4R     = vi.add_vertical_interpolation2N4(N4R)
+    return N4R, M, NEST
+
+
+def _publish_nesting_file(outfile, NEST, mother, time, latlon, epsg,
+                          path, index, N4R, nprocs):
+    """Write a complete forcing file atomically, retaining the previous file on failure."""
     # Write to a sibling temporary file, publishing only a complete product.
     # The preexisting nesting file remains intact if an input fails.
     target = Path(outfile)
     temporary = target.with_name(f'.{target.name}.{os.getpid()}.{uuid4().hex}.partial')
     try:
-        create_nc_forcing_file(str(temporary), NEST, mother, time, latlon, M.reference)
+        create_nc_forcing_file(str(temporary), NEST, mother, time, latlon, epsg)
         print('\nInterpolate data from ROMS to the nesting zone\n---')
         R2F = Roms2FVCOMNest(str(temporary), path, index, N4R, latlon)
         if nprocs == 1:
@@ -106,7 +121,7 @@ def main(fvcom_grd,
     finally:
         temporary.unlink(missing_ok=True)
 
-    print('\n--> Fin.')
+
 
 # ===============================================================================================
 #                                        fileList
@@ -192,6 +207,16 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         self.N4 = N4.dump()
         self.latlon = latlon
 
+    def _prepare_timestep(self, counter, path_here, index_here):
+        """Run exactly the same interpolation stages in serial and parallel mode."""
+        timestep = self.read_timestep(index_here, path_here)
+        timestep = self.crop_and_transpose(timestep)
+        timestep = self.horizontal_interpolation(timestep)
+        timestep = self.vertical_interpolation(timestep)
+        timestep = self.adjust_uv(timestep)
+        timestep.counter = counter    # Referencing where in the nestingfile we will store this timestep
+        return timestep
+
     def dump_single(self):
         '''
         Mostly for debug/illustration of the downloading/interpolation/writing process
@@ -202,12 +227,7 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         with netCDF4.Dataset(self.outfile, 'r+') as self.out:
             for counter, (path_here, index_here) in enumerate(zip(self.path, self.index)):
                 bar.update(counter)
-                timestep = self.read_timestep(index_here, path_here)
-                timestep = self.crop_and_transpose(timestep)
-                timestep = self.horizontal_interpolation(timestep)
-                timestep = self.vertical_interpolation(timestep)
-                timestep = self.adjust_uv(timestep) 
-                timestep.counter = counter
+                timestep = self._prepare_timestep(counter, path_here, index_here)
                 self.dump_timestep_to_nest(timestep)
         bar.finish()
 
@@ -269,12 +289,7 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         '''
         Workers download data and interpolate it to the FVCOM grid
         '''
-        timestep = self.read_timestep(index_here, path_here)
-        timestep = self.crop_and_transpose(timestep)
-        timestep = self.horizontal_interpolation(timestep)
-        timestep = self.vertical_interpolation(timestep)
-        timestep = self.adjust_uv(timestep)
-        timestep.counter = counter    # Referencing where in the nestingfile we will store this timestep
+        timestep = self._prepare_timestep(counter, path_here, index_here)
         if q is None:
             return timestep
         q.put(timestep, timeout=10)
@@ -328,110 +343,125 @@ def create_nc_forcing_file(name, NEST, mother, timesteps, latlon, epsg):
     Creates empty nc file formatted to fit FVCOM open boundary ocean forcing
     '''
     with netCDF4.Dataset(name, 'w', format='NETCDF4') as nc:
+        _write_global_attributes(nc, mother, latlon, epsg)
+        _create_dimensions(nc, NEST)
+        _create_nesting_variables(nc)
+        _write_grid_metadata(nc, NEST)
+        _write_nesting_times(nc, timesteps)
 
-        # Write global attributes
-        # ----
-        nc.title        = 'FVCOM Nesting File'
-        nc.institution  = 'Akvaplan-niva AS'
-        nc.source       = 'FVCOM grid (unstructured) nesting file'
-        nc.created      = f'{strftime("%Y-%m-%d %H:%M:%S", gmtime())} using roms_nesting_fg.py'
-        nc.mother_model = f'Using data nested from {mother}'
 
-        if latlon:
-            nc.interpolation_projection = 'degrees'
-        else:
-            nc.interpolation_projection = epsg
+def _write_global_attributes(nc, mother, latlon, epsg):
+    # Write global attributes
+    # ----
+    nc.title        = 'FVCOM Nesting File'
+    nc.institution  = 'Akvaplan-niva AS'
+    nc.source       = 'FVCOM grid (unstructured) nesting file'
+    nc.created      = f'{strftime("%Y-%m-%d %H:%M:%S", gmtime())} using roms_nesting_fg.py'
+    nc.mother_model = f'Using data nested from {mother}'
 
-        # Create dimensions
-        # ----
-        nc.createDimension('time', 0)
-        nc.createDimension('node', len(NEST.xn))
-        nc.createDimension('nele', len(NEST.xc))
-        nc.createDimension('three', 3)
-        nc.createDimension('siglay', len(NEST.siglay[0,:]))
-        nc.createDimension('siglev', len(NEST.siglev[0,:]))
+    if latlon:
+        nc.interpolation_projection = 'degrees'
+    else:
+        nc.interpolation_projection = epsg
 
-        # Create variables and variable attributes
-        # ----------------------------------------------------------
-        time               = nc.createVariable('time', 'single', ('time',))
-        time.units         = 'days since 1858-11-17 00:00:00'
-        time.format        = 'modified julian day (MJD)'
-        time.time_zone     = 'UTC'
 
-        Itime              = nc.createVariable('Itime', 'int32', ('time',))
-        Itime.units        = 'days since 1858-11-17 00:00:00'
-        Itime.format       = 'modified julian day (MJD)'
-        Itime.time_zone    = 'UTC'
+def _create_dimensions(nc, NEST):
+    # Create dimensions
+    # ----
+    nc.createDimension('time', 0)
+    nc.createDimension('node', len(NEST.xn))
+    nc.createDimension('nele', len(NEST.xc))
+    nc.createDimension('three', 3)
+    nc.createDimension('siglay', len(NEST.siglay[0,:]))
+    nc.createDimension('siglev', len(NEST.siglev[0,:]))
 
-        Itime2             = nc.createVariable('Itime2', 'int32', ('time',))
-        Itime2.units       = 'msec since 00:00:00'
-        Itime2.time_zone   = 'UTC'
 
-        # positions
-        # ----
-        # node
-        lon                = nc.createVariable('lon', 'single', ('node',))
-        lat                = nc.createVariable('lat', 'single', ('node',))
-        x                  = nc.createVariable('x', 'single', ('node',))
-        y                  = nc.createVariable('y', 'single', ('node',))
-        h                  = nc.createVariable('h', 'single', ('node',))
+def _create_nesting_variables(nc):
+    # Create variables and variable attributes
+    # ----------------------------------------------------------
+    time               = nc.createVariable('time', 'single', ('time',))
+    time.units         = 'days since 1858-11-17 00:00:00'
+    time.format        = 'modified julian day (MJD)'
+    time.time_zone     = 'UTC'
 
-        # center
-        lonc               = nc.createVariable('lonc', 'single', ('nele',))
-        latc               = nc.createVariable('latc', 'single', ('nele',))
-        xc                 = nc.createVariable('xc', 'single', ('nele',))
-        yc                 = nc.createVariable('yc', 'single', ('nele',))
-        hc                 = nc.createVariable('h_center', 'single', ('nele',))
+    Itime              = nc.createVariable('Itime', 'int32', ('time',))
+    Itime.units        = 'days since 1858-11-17 00:00:00'
+    Itime.format       = 'modified julian day (MJD)'
+    Itime.time_zone    = 'UTC'
 
-        # grid parameters
-        # ----
-        nv                 = nc.createVariable('nv', 'int32', ('three', 'nele',))
+    Itime2             = nc.createVariable('Itime2', 'int32', ('time',))
+    Itime2.units       = 'msec since 00:00:00'
+    Itime2.time_zone   = 'UTC'
 
-        # node
-        lay                = nc.createVariable('siglay','single',('siglay','node',))
-        lev                = nc.createVariable('siglev','single',('siglev','node',))
+    # positions
+    # ----
+    # node
+    lon                = nc.createVariable('lon', 'single', ('node',))
+    lat                = nc.createVariable('lat', 'single', ('node',))
+    x                  = nc.createVariable('x', 'single', ('node',))
+    y                  = nc.createVariable('y', 'single', ('node',))
+    h                  = nc.createVariable('h', 'single', ('node',))
 
-        # center
-        lay_center         = nc.createVariable('siglay_center','single',('siglay','nele',))
-        lev_center         = nc.createVariable('siglev_center','single',('siglev','nele',))
+    # center
+    lonc               = nc.createVariable('lonc', 'single', ('nele',))
+    latc               = nc.createVariable('latc', 'single', ('nele',))
+    xc                 = nc.createVariable('xc', 'single', ('nele',))
+    yc                 = nc.createVariable('yc', 'single', ('nele',))
+    hc                 = nc.createVariable('h_center', 'single', ('nele',))
 
-        # Weight coefficients (since we are nesting from ROMS)
-        # ----
-        wc                 = nc.createVariable('weight_cell','single',('time','nele',))
-        wn                 = nc.createVariable('weight_node','single',('time','node',))
+    # grid parameters
+    # ----
+    nv                 = nc.createVariable('nv', 'int32', ('three', 'nele',))
 
-        # time dependent variables
-        # ----
-        zeta               = nc.createVariable('zeta', 'single', ('time', 'node',))
-        ua                 = nc.createVariable('ua', 'single', ('time', 'nele',))
-        va                 = nc.createVariable('va', 'single', ('time', 'nele',))
-        u                  = nc.createVariable('u', 'single', ('time', 'siglay', 'nele',))
-        v                  = nc.createVariable('v', 'single', ('time', 'siglay', 'nele',))
-        temp               = nc.createVariable('temp', 'single', ('time', 'siglay', 'node',))
-        salt               = nc.createVariable('salinity', 'single', ('time', 'siglay', 'node',))
-        hyw                = nc.createVariable('hyw', 'single', ('time', 'siglev', 'node',))
+    # node
+    lay                = nc.createVariable('siglay','single',('siglay','node',))
+    lev                = nc.createVariable('siglev','single',('siglev','node',))
 
-        # dump the grid metrics
-        # ----
-        nc.variables['lat'][:]           = NEST.lat
-        nc.variables['lon'][:]           = NEST.lon
-        nc.variables['latc'][:]          = NEST.latc
-        nc.variables['lonc'][:]          = NEST.lonc
-        nc.variables['x'][:]             = NEST.xn
-        nc.variables['y'][:]             = NEST.yn
-        nc.variables['xc'][:]            = NEST.xc
-        nc.variables['yc'][:]            = NEST.yc
-        nc.variables['h'][:]             = NEST.h
-        nc.variables['h_center'][:]      = NEST.hc
-        tris                             = NEST.nv+1
-        nc.variables['nv'][:]            = tris.transpose()
-        nc.variables['siglev'][:]        = NEST.siglev.transpose()
-        nc.variables['siglay'][:]        = NEST.siglay.transpose()
-        nc.variables['siglev_center'][:] = NEST.siglev_center.transpose()
-        nc.variables['siglay_center'][:] = NEST.siglay_center.transpose()
+    # center
+    lay_center         = nc.createVariable('siglay_center','single',('siglay','nele',))
+    lev_center         = nc.createVariable('siglev_center','single',('siglev','nele',))
 
-        # Initialize the time (so that we can multiprocess the download)
-        for counter, fvcom_time in enumerate(timesteps):
-            nc.variables['time'][counter] = fvcom_time
-            nc.variables['Itime'][counter] = np.floor(fvcom_time)
-            nc.variables['Itime2'][counter] = np.round((fvcom_time - np.floor(fvcom_time)) * 60 * 60 * 1000, decimals = 0)*24
+    # Weight coefficients (since we are nesting from ROMS)
+    # ----
+    wc                 = nc.createVariable('weight_cell','single',('time','nele',))
+    wn                 = nc.createVariable('weight_node','single',('time','node',))
+
+    # time dependent variables
+    # ----
+    zeta               = nc.createVariable('zeta', 'single', ('time', 'node',))
+    ua                 = nc.createVariable('ua', 'single', ('time', 'nele',))
+    va                 = nc.createVariable('va', 'single', ('time', 'nele',))
+    u                  = nc.createVariable('u', 'single', ('time', 'siglay', 'nele',))
+    v                  = nc.createVariable('v', 'single', ('time', 'siglay', 'nele',))
+    temp               = nc.createVariable('temp', 'single', ('time', 'siglay', 'node',))
+    salt               = nc.createVariable('salinity', 'single', ('time', 'siglay', 'node',))
+    hyw                = nc.createVariable('hyw', 'single', ('time', 'siglev', 'node',))
+
+
+def _write_grid_metadata(nc, NEST):
+    # dump the grid metrics
+    # ----
+    nc.variables['lat'][:]           = NEST.lat
+    nc.variables['lon'][:]           = NEST.lon
+    nc.variables['latc'][:]          = NEST.latc
+    nc.variables['lonc'][:]          = NEST.lonc
+    nc.variables['x'][:]             = NEST.xn
+    nc.variables['y'][:]             = NEST.yn
+    nc.variables['xc'][:]            = NEST.xc
+    nc.variables['yc'][:]            = NEST.yc
+    nc.variables['h'][:]             = NEST.h
+    nc.variables['h_center'][:]      = NEST.hc
+    tris                             = NEST.nv+1
+    nc.variables['nv'][:]            = tris.transpose()
+    nc.variables['siglev'][:]        = NEST.siglev.transpose()
+    nc.variables['siglay'][:]        = NEST.siglay.transpose()
+    nc.variables['siglev_center'][:] = NEST.siglev_center.transpose()
+    nc.variables['siglay_center'][:] = NEST.siglay_center.transpose()
+
+
+def _write_nesting_times(nc, timesteps):
+    # Initialize the time (so that we can multiprocess the download)
+    for counter, fvcom_time in enumerate(timesteps):
+        nc.variables['time'][counter] = fvcom_time
+        nc.variables['Itime'][counter] = np.floor(fvcom_time)
+        nc.variables['Itime2'][counter] = np.round((fvcom_time - np.floor(fvcom_time)) * 60 * 60 * 1000, decimals = 0)*24
