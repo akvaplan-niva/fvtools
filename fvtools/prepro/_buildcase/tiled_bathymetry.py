@@ -167,6 +167,7 @@ class _DiskBins:
 
         total = int(self.counts.sum())
         self.hull_equations = None
+        self.hull_vertices = hull_points  # Disk fallback can enclose sparse-gap queries.
         if len(hull_points) >= 3:
             try:
                 self.hull_equations = ConvexHull(hull_points).equations
@@ -327,7 +328,209 @@ def _init_worker(index_info, mesh_path, options, whole, limits):
     idx.count = index_info['count']
     idx.record_bytes = index_info['record_bytes']
     idx.dtype = np.dtype(index_info['dtype'])
+    idx.hull_vertices = index_info.get('hull_vertices')
     _WORKER_STATE = (idx, np.load(mesh_path, mmap_mode='r'), options, whole, limits)
+
+
+def _ordered_bins_for_point(idx, target):
+    """Occupied disk bins in increasing *minimum possible* distance to target.
+
+    The bounding-box distance is a rigorous lower bound for all points in a
+    bin. It lets k-NN stop without reading the rest of a large source file.
+    """
+    xmin, ymin, xmax, ymax = idx.bounds
+    n = idx.count
+    ids = np.flatnonzero(np.diff(idx.offsets))
+    ix, iy = ids // n, ids % n
+    dx = (xmax - xmin) / n
+    dy = (ymax - ymin) / n
+    lx = xmin + ix * dx
+    ly = ymin + iy * dy
+    ux = lx + dx
+    uy = ly + dy
+    distance2 = np.maximum(np.maximum(lx - target[0], target[0] - ux), 0.)**2
+    distance2 += np.maximum(np.maximum(ly - target[1], target[1] - uy), 0.)**2
+    order = np.argsort(distance2, kind='stable')
+    return ids[order], distance2[order]
+
+
+def _read_bin_chunks(file, idx, bin_id):
+    """Read a disk bin in bounded chunks (never a whole dense bin at once)."""
+    lo, hi = int(idx.offsets[bin_id]), int(idx.offsets[bin_id + 1])
+    for start in range(lo, hi, 65_536):
+        size = min(65_536, hi - start)
+        file.seek(start * idx.record_bytes)
+        yield np.fromfile(file, dtype=idx.dtype, count=3 * size).reshape(size, 3)
+
+
+def _nearest_on_disk(idx, target, k):
+    """Exact k-nearest source points using RAM bounded by one disk chunk.
+
+    Crucially, this routine does not construct a KDTree of the full window.
+    """
+    target = np.asarray(target, dtype=np.float64)
+    bins, lower_bounds2 = _ordered_bins_for_point(idx, target)
+    best = np.empty((0, 3), dtype=idx.dtype)
+    dist2_best = np.empty(0, dtype=np.float64)
+    with idx.path.open('rb') as handle:
+        for bin_id, lower2 in zip(bins, lower_bounds2):
+            if len(dist2_best) >= k and lower2 > dist2_best.max():
+                break
+            for points in _read_bin_chunks(handle, idx, int(bin_id)):
+                dist2 = np.sum((points[:, :2].astype(np.float64) - target)**2, axis=1)
+                if len(dist2_best) >= k:
+                    consider = dist2 <= dist2_best.max()
+                    if not np.any(consider):
+                        continue
+                    points, dist2 = points[consider], dist2[consider]
+                if len(points) == 0:
+                    continue
+                if len(points) > k:
+                    selected = np.argpartition(dist2, k - 1)[:k]
+                    points, dist2 = points[selected], dist2[selected]
+                together = np.concatenate((best, points), axis=0)
+                distances = np.concatenate((dist2_best, dist2))
+                if len(together) > k:
+                    selected = np.argpartition(distances, k - 1)[:k]
+                    best, dist2_best = together[selected], distances[selected]
+                else:
+                    best, dist2_best = together, distances
+    if not len(best):
+        return best
+    return best[np.argsort(dist2_best, kind='stable')]
+
+
+def _simplex_circle(tri, simplex_id):
+    """Return circumcenter and radius for a triangle or None if degenerate."""
+    p = tri.points[tri.simplices[simplex_id]]
+    a, b = p[1] - p[0], p[2] - p[0]
+    aa, bb = a @ a / 2., b @ b / 2.
+    det = a[0]*b[1] - a[1]*b[0]
+    if abs(det) <= 64 * np.finfo(float).eps * max(a@a+b@b, 1.):
+        return None
+    center = p[0] + np.array([(aa*b[1]-a[1]*bb)/det,
+                              (a[0]*bb-aa*b[0])/det])
+    radius = float(np.linalg.norm(center-p[0]))
+    if not np.isfinite(radius):
+        return None
+    return center, radius
+
+
+def _intruders_on_disk(idx, center, radius, max_points=12):
+    """Search the exact circumcircle on disk, returning a few interior points.
+
+    Zero results certifies the simplex against *every* cropped source point;
+    the scan never materializes the circle's potentially huge contents.
+    """
+    tol = 5e-12 * max(radius, 1.)
+    threshold = max(0., radius-tol)**2
+    if not threshold:
+        return np.empty((0, 3), dtype=idx.dtype)
+    bins, minimum_dist2 = _ordered_bins_for_point(idx, center)
+    found = []
+    total = 0
+    with idx.path.open('rb') as handle:
+        for bin_id, bound2 in zip(bins, minimum_dist2):
+            if bound2 >= threshold:
+                break
+            for points in _read_bin_chunks(handle, idx, int(bin_id)):
+                dist2 = np.sum((points[:, :2].astype(np.float64) - center)**2, axis=1)
+                inside = np.flatnonzero(dist2 < threshold)
+                if len(inside):
+                    take = min(max_points-total, len(inside))
+                    found.append(points[inside[:take]])
+                    total += take
+                    if total >= max_points:
+                        return np.concatenate(found, axis=0)
+    return (np.concatenate(found, axis=0) if found
+            else np.empty((0, 3), dtype=idx.dtype))
+
+
+def _hull_support_for_query(idx, target):
+    """Select just three global hull vertices enclosing a sparse-gap query.
+
+    The cropped hull is computed exactly during disk indexing. A convex fan
+    from its first vertex covers the hull without building another Delaunay.
+    Hull vertices' XYZ values are recovered using the bounded disk k-NN lookup.
+    """
+    polygon = getattr(idx, 'hull_vertices', None)
+    if polygon is None or len(polygon) < 3:
+        return np.empty((0,3),dtype=idx.dtype)
+    origin = polygon[0]
+    q = np.asarray(target,dtype=np.float64)-origin
+    tol = 1e-12 * max(np.ptp(polygon, axis=0).max(), 1.)**2
+    for i in range(1,len(polygon)-1):
+        a = polygon[i] - origin
+        b = polygon[i+1] - origin
+        cross = a[0]*b[1]-a[1]*b[0]
+        if abs(cross) < tol:
+            continue
+        v = (q[0]*b[1]-q[1]*b[0])/cross
+        w = (a[0]*q[1]-a[1]*q[0])/cross
+        if v>=-1e-12 and w>=-1e-12 and v+w<=1+1e-12:
+            return np.concatenate([_nearest_on_disk(idx, vxy, 1)
+                                   for vxy in (origin,polygon[i],polygon[i+1])])
+    return np.empty((0,3),dtype=idx.dtype)
+
+
+def _interpolate_dense_single(target, idx, options, activity=None):
+    """Exact, bounded-memory fallback when even one node exceeds the halo cap.
+
+    Select a small exact k-nearest neighborhood straight from disk. Check the
+    containing Delaunay triangle against *all* on-disk bathymetry points, then
+    add any circle intruders to the triangulation. No full-cloud Delaunay and
+    no enlarged memory cap. An unresolved query fails explicitly, never with
+    a guessed or approximate depth value.
+    """
+    report = activity or (lambda *args, **kwargs: None)
+    report('Dense bathymetry: switching to disk-streamed single-node interpolation', force=True)
+    limit = options.max_triangulation_points
+    k = min(32, max(3, limit - 3))
+    cloud = _nearest_on_disk(idx, target, k)
+    support = _hull_support_for_query(idx,target) if limit >= 6 else np.empty((0,3),dtype=idx.dtype)
+    seen = {tuple(point[:2]) for point in cloud}
+    additional = [point for point in support if tuple(point[:2]) not in seen]
+    if additional:
+        cloud = np.concatenate((cloud,np.asarray(additional,dtype=cloud.dtype)))
+        seen.update(tuple(point[:2]) for point in additional)
+    total_steps = 0
+    while len(cloud) <= limit:
+        total_steps += 1
+        if total_steps > limit:
+            raise RuntimeError('Disk-streamed bathymetry refinement did not converge')
+        try:
+            tri = Delaunay(np.ascontiguousarray(cloud[:, :2], dtype=np.float64))
+            simplex = int(tri.find_simplex(np.asarray(target, dtype=float)[None,:])[0])
+        except QhullError:
+            simplex = -1
+            tri = None
+        if simplex >= 0:
+            circle = _simplex_circle(tri, simplex)
+            if circle is not None:
+                intruders = _intruders_on_disk(idx, *circle)
+                if not len(intruders):
+                    value = float(_linear_interpolate(
+                        tri, cloud, np.asarray(target,dtype=float).reshape(1,2),
+                        np.array([simplex],dtype=np.int64))[0])
+                    return value, total_steps
+                new = [point for point in intruders if tuple(point[:2]) not in seen]
+                if new:
+                    cloud = np.concatenate((cloud, np.asarray(new,dtype=cloud.dtype)))
+                    seen.update(tuple(point[:2]) for point in new)
+                    continue
+        # The query lies outside the current subset hull or simplex is nearly
+        # degenerate. Expand the exact nearest subset, without a global tree.
+        k = min(limit, max(k * 2, len(cloud) + 32))
+        neighbors = _nearest_on_disk(idx, target, k)
+        new = [point for point in neighbors if tuple(point[:2]) not in seen]
+        if not new:
+            break
+        cloud = np.concatenate((cloud,np.asarray(new,dtype=cloud.dtype)))
+        seen.update(tuple(point[:2]) for point in new)
+    raise RuntimeError(
+        'Could not certify the exact Delaunay interpolation of a dense bathymetry node '
+        f'within the {limit:,}-point cap; no approximate value was substituted.'
+    )
 
 
 def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
@@ -382,11 +585,11 @@ def _interpolate_piece(nodes, xy, idx, options, whole, limits, activity=None):
                     middle = len(order)//2
                     run(order[:middle]); run(order[middle:])
                     return
-                raise MemoryError(
-                    'Even a single bathymetry query requires more than '
-                    f'{options.max_triangulation_points:,} local points. '
-                    'Increase max_triangulation_points or check point density.'
-                ) from None
+                value, refinements = _interpolate_dense_single(
+                    xy[nodes[positions[0]]], idx, options, activity=activity)
+                piece_result[positions[0]] = value
+                triangulations += refinements
+                return
             if len(cloud) >= 3:
                 cloud_xy = np.ascontiguousarray(cloud[:, :2], dtype=np.float64)
                 tree = cKDTree(cloud_xy)
@@ -577,7 +780,8 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
             np.save(meshfile, xy)
             index_info = dict(path=str(idx.path), offsets=idx.offsets,
                               bounds=idx.bounds, count=idx.count,
-                              record_bytes=idx.record_bytes, dtype=str(idx.dtype))
+                              record_bytes=idx.record_bytes, dtype=str(idx.dtype),
+                              hull_vertices=idx.hull_vertices)
             print('  - Parallel workers triangulating selected points in independent tiles', flush=True)
             ctx = mp.get_context('spawn')
             calls = triangulations = 0
