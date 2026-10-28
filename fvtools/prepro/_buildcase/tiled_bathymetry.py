@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
@@ -898,7 +898,70 @@ def interpolate_unstructured_npy(filename, mesh_xy, *, options=None):
               f'(up to {options.nodes_per_tile:,} nodes/batch)',flush=True)
         if batches:
             print(f'    Batch 1: processing {len(batches[0]):,} grid nodes', flush=True)
-        if workers == 1:
+        # A memory-budgeted GLOBAL nearest-neighbour tree is dramatically
+        # cheaper than a global Delaunay triangulation. It replaces redundant
+        # per-node disk searches with shared kNN batches and exact global
+        # empty-circumcircle tests. For tiny test datasets, retain the original
+        # disk-based routine unless explicitly requested.
+        from fvtools.prepro._buildcase.fast_kdtree import FastNearestIndex, _query_piece
+        fast_budget_mb = int(os.environ.get('FVTOOLS_BATHY_FAST_INDEX_MB', '3072'))
+        fast_min_sources = int(os.environ.get('FVTOOLS_BATHY_FAST_INDEX_MIN_POINTS', '100000'))
+        fast_index = None
+        if batches and fast_budget_mb > 0 and idx.total >= fast_min_sources:
+            try:
+                print('  - Building global kNN index (no global Delaunay); '
+                      f'memory budget {fast_budget_mb:,} MiB', flush=True)
+                fast_index = FastNearestIndex(idx, temp, budget_mb=fast_budget_mb)
+                fast_index.disk = idx
+                fast_index.options = options
+            except (MemoryError, ValueError) as exc:
+                print(f'  - Fast index unavailable ({exc}); using disk-only mode', flush=True)
+        if fast_index is not None:
+            try:
+                print(f'  - Fast global kNN / local Delaunay with {workers} CPU worker(s)', flush=True)
+                calls = triangulations = dense = 0
+                def fast_piece(nodes):
+                    return _query_piece(nodes, xy, fast_index,
+                                        options.max_triangulation_points)
+                if workers == 1:
+                    for nodes in batches:
+                        done, vals, t, f = fast_piece(nodes)
+                        result[done] = vals
+                        calls += 1
+                        triangulations += t
+                        dense += f
+                        finished += len(done)
+                        progress.update(finished)
+                else:
+                    # Read-only global KDTree shared between THREADS: processes
+                    # would duplicate the large index, defeating the RAM budget.
+                    with ThreadPoolExecutor(max_workers=workers) as pool:
+                        batch_iter = iter(batches)
+                        pending = {}
+                        for _ in range(min(len(batches), 2*workers)):
+                            nodes = next(batch_iter)
+                            pending[pool.submit(fast_piece,nodes)] = len(nodes)
+                        while pending:
+                            completed, _ = wait(pending,timeout=10,return_when=FIRST_COMPLETED)
+                            if not completed:
+                                progress.activity(f'{len(pending)} kNN batches running/queued',force=True)
+                                continue
+                            for future in completed:
+                                pending.pop(future)
+                                done, vals, t, f = future.result()
+                                result[done] = vals
+                                calls += 1
+                                triangulations += t
+                                dense += f
+                                finished += len(done)
+                                progress.update(finished)
+                                nodes = next(batch_iter,None)
+                                if nodes is not None:
+                                    pending[pool.submit(fast_piece,nodes)] = len(nodes)
+                print(f'  - Fast kNN: {dense:,} hard nodes needed disk fallback', flush=True)
+            finally:
+                fast_index.close()
+        elif workers == 1:
             calls = triangulations = 0
             for i, nodes in enumerate(batches,1):
                 done, vals, c, t = _interpolate_piece(
