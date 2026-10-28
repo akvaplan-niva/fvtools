@@ -447,23 +447,31 @@ class RomsDownloader:
     '''
     Routine that downloads data. It will automatically stop and wait if the thredds server goes down / the data we need is temporarily unavailable
     '''
-    def read_timestep(self, index_here, filepath, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va'], sigma = None):
-        '''
-        Reads a timestep
-        '''
-        unavailable = True
-        while unavailable:
-            try:
-                timestep = self._load_roms_data(index_here, filepath, variables, sigma)
-                unavailable = False
+    def read_timestep(self, index_here, filepath, variables=None, sigma=None,
+                      *, max_retries=5, retry_delay=30):
+        """Read ROMS data; retry only temporary I/O errors, never coding errors.
 
-            except:
-                print("\n--------------------------------------\n"\
-                      + "The data is unavailable at the moment.\n"\
-                      + "We wait thirty seconds and try again.\n"\
-                      + "--------------------------------------\n")
-                time_mod.sleep(30)
-        return timestep
+        A finite retry limit prevents endless loops on unavailable files.
+        Numeric/shape/indexing errors propagate immediately with traceback.
+        """
+        if variables is None:
+            variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']
+        if not isinstance(max_retries, int) or max_retries < 0:
+            raise ValueError('max_retries must be a nonnegative integer')
+        if retry_delay < 0:
+            raise ValueError('retry_delay must be nonnegative')
+        for attempt in range(max_retries + 1):
+            try:
+                return self._load_roms_data(index_here, filepath, variables, sigma)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                if attempt == max_retries:
+                    raise RuntimeError(
+                        f'Could not read ROMS timestep {index_here} from {filepath!s} '
+                        f'after {attempt + 1} attempts'
+                    ) from exc
+                print(f'  - ROMS I/O error for {filepath}: {exc!s}. '
+                      f'Retrying ({attempt + 1}/{max_retries}) in {retry_delay}s', flush=True)
+                time_mod.sleep(retry_delay)
 
     def _load_roms_data(self, index_here, filepath, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va'], sigma = None):
         '''

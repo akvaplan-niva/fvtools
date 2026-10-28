@@ -82,12 +82,12 @@ class N4Coefficients(N4, DomainMasks):
         # Check that the coarse grid covers the FVCOM grid
         print('- Compute interpolation coefficients')
         self.nindex, self.ncoef = self.get_interpolation_matrices(xy_source = self.xy_coarse,
-                                                                  xy_source_center = self.xy_coarse_center,
+                                                                  source_mask = self.fv_domain_mask,
                                                                   xy_fvcom = self.fv_nodes,
                                                                   widget_title = 'node')
 
         self.cindex, self.ccoef = self.get_interpolation_matrices(xy_source = self.xy_coarse,
-                                                                  xy_source_center = self.xy_coarse_center,
+                                                                  source_mask = self.fv_domain_mask,
                                                                   xy_fvcom = self.fv_cells,
                                                                   widget_title = 'cell')
 

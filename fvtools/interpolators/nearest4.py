@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import progressbar as pb
 from scipy.spatial import cKDTree as KDTree
 from numba import njit
+from .structured_bilinear import structured_bilinear_weights
 
 class Nearest4Points:
     '''
@@ -60,15 +61,20 @@ class N4(Nearest4Points):
     def get_interpolation_matrices(
             self, 
             xy_source=None, xy_source_center=None, xy_fvcom=None, 
-            widget_title = None
+            widget_title = None, source_mask = None
             ):
         '''
         Find the 4 source indices around this fvcom point, compute bi-linear interpolation coefficients to get *there*
         '''
         assert xy_source is not None
-        assert xy_source_center is not None
+        assert source_mask is not None or xy_source_center is not None
         assert xy_fvcom is not None
 
+        if source_mask is not None:
+            print(f'  - Finding structured {widget_title} interpolation weights')
+            return structured_bilinear_weights(xy_source, source_mask, xy_fvcom)
+
+        # Legacy behavior for external clients without structured source masks.
         self.xy_source = xy_source
         self.xy_source_center = xy_source_center
         self.xy_fvcom = xy_fvcom

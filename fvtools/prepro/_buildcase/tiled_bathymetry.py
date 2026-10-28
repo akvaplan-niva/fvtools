@@ -127,7 +127,6 @@ class _DiskBins:
     """Two-pass on-disk spatial bin index of cropped XYZ points."""
 
     def __init__(self, data, bounds, directory, options):
-        print(f'  - Indexing {len(data):,} bathymetry points on disk (two passes)', flush=True)
         self.data = data
         self.bounds = bounds
         self.count = options.bins_per_axis
@@ -140,14 +139,12 @@ class _DiskBins:
         # Maintain the exact convex hull incrementally without storing the cloud.
         hull_points = np.empty((0, 2), dtype=np.float64)
 
-        index_pass = _Progress('Index pass 1/2 – counting source points', len(data))
         for start in range(0, len(data), self.chunk_rows):
             stop = min(start + self.chunk_rows, len(data))
             xyz = np.asarray(data[start:stop, :3])
             valid = np.isfinite(xyz).all(axis=1)
             self.nonfinite_rows += int((~valid).sum())
             if not valid.any():
-                index_pass.update(stop)
                 continue
             points = xyz[valid]
             self.global_extent[0] = min(self.global_extent[0], float(points[:, 0].min()))
@@ -163,7 +160,6 @@ class _DiskBins:
                 hull_points = _hull_vertices(np.concatenate((hull_points, chunk_hull)))
                 ids = _bins_for_xy(points[:, 0], points[:, 1], bounds, self.count)
                 self.counts += np.bincount(ids, minlength=self.nbin)
-            index_pass.update(stop)
 
         total = int(self.counts.sum())
         self.hull_equations = None
@@ -182,7 +178,6 @@ class _DiskBins:
         with self.path.open('wb') as f:
             f.truncate(total * self.record_bytes)
         cursor = self.offsets[:-1].copy()
-        index_pass = _Progress('Index pass 2/2 – writing disk index', len(data))
         with self.path.open('r+b') as dest:
           for start in range(0, len(data), self.chunk_rows):
             stop = min(start + self.chunk_rows, len(data))
@@ -190,7 +185,6 @@ class _DiskBins:
             valid = np.isfinite(xyz).all(axis=1)
             inside = valid & (xyz[:, 0] >= xmin) & (xyz[:, 0] <= xmax) & (xyz[:, 1] >= ymin) & (xyz[:, 1] <= ymax)
             if not inside.any():
-                index_pass.update(stop)
                 continue
             points = xyz[inside]
             bins = _bins_for_xy(points[:, 0], points[:, 1], bounds, self.count)
@@ -203,7 +197,6 @@ class _DiskBins:
                 block = np.ascontiguousarray(points[sorted_order[first_idx:first_idx + size]])
                 dest.write(block.tobytes())
                 cursor[b] += size
-            index_pass.update(stop)
         if not np.array_equal(cursor, self.offsets[1:]):
             raise RuntimeError('Disk index construction incomplete')
         self.total = total

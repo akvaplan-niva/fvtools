@@ -84,10 +84,20 @@ def calc_interp_matrices(z1, z2):
     weigths1 = np.zeros(z2.shape, dtype = np.float64)
     weigths2 = np.zeros(z2.shape, dtype = np.float64)
 
+    # z1 must be ordered from shallowest to deepest (positive down).
+    # Repeated levels are permitted, but nonfinite or descending profiles are not.
+    if z1.ndim != 2 or z2.ndim != 2 or z1.shape[1] != z2.shape[1] or z1.shape[0] == 0:
+        raise ValueError('Vertical interpolation requires two 2-D arrays with matching columns and at least one ROMS level')
+
     for n in range(0, z2.shape[-1]):
         # look at the depth in this FVCOM grid point
         z1_n = z1[:, n]
-        z2_n = z2[:, n] 
+        z2_n = z2[:, n]
+        if not np.all(np.isfinite(z1_n)) or not np.all(np.isfinite(z2_n)):
+            raise ValueError('Vertical interpolation depths must be finite')
+        for level in range(1, len(z1_n)):
+            if z1_n[level] < z1_n[level - 1]:
+                raise ValueError('ROMS vertical levels must be sorted shallow-to-deep')
         
         # Difference between each sigma layer
         absdiff = numba_absdiff(z2_n, z1_n)
@@ -140,10 +150,24 @@ def find_inds_and_weights(ind1, z1_n, z2_n):
     # Handle values in between
     between_ind = (~shallow_ind) & (~deep_ind) & (~zero_ind)
     smaller_ind = (z1_n[ind1] > z2_n) & between_ind
-    ind2[smaller_ind] = ind1[smaller_ind] - 1
-    
     larger_ind = (z1_n[ind1] < z2_n) & between_ind
-    ind2[larger_ind] = ind1[larger_ind] + 1
+    # Skip equal-depth neighbours. A collapsed sigma layer must not cause a
+    # zero denominator or NaN weights; keep the legacy nearest-level choice.
+    for i in range(len(ind1)):
+        if smaller_ind[i]:
+            j = ind1[i] - 1
+            while j >= 0 and z1_n[j] == z1_n[ind1[i]]:
+                j -= 1
+            if j < 0:
+                raise ValueError('Cannot bracket FVCOM depth with ROMS sigma levels')
+            ind2[i] = j
+        elif larger_ind[i]:
+            j = ind1[i] + 1
+            while j < len(z1_n) and z1_n[j] == z1_n[ind1[i]]:
+                j += 1
+            if j == len(z1_n):
+                raise ValueError('Cannot bracket FVCOM depth with ROMS sigma levels')
+            ind2[i] = j
     
     dz1 = z1_n[ind1[smaller_ind]] - z1_n[ind2[smaller_ind]]
     dz2 = z1_n[ind2[larger_ind]] - z1_n[ind1[larger_ind]]

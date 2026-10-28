@@ -7,6 +7,10 @@ import numpy as np
 import pandas as pd
 import progressbar as pb
 import multiprocessing as mp
+import os
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+from pathlib import Path
+from uuid import uuid4
 
 from time import gmtime, strftime
 
@@ -85,15 +89,22 @@ def main(fvcom_grd,
     print('\nAdd vertical interpolation method\n---')
     N4R.FV  = NEST # to let vertical_interpolation know which FVCOM grid to find vertical interpolation coeficients for
     N4R     = vi.add_vertical_interpolation2N4(N4R)
-    create_nc_forcing_file(outfile, NEST, mother, time, latlon, M.reference)
-
-    print('\nInterpolate data from ROMS to the nesting zone\n---')
-    R2F = Roms2FVCOMNest(outfile, path, index, N4R, latlon)
-    if nprocs == 1:
-        print(f'  - Running in single mode')
-        R2F.dump_single()
-    else:
-        R2F.dump(nprocs = nprocs)
+    # Write to a sibling temporary file, publishing only a complete product.
+    # The preexisting nesting file remains intact if an input fails.
+    target = Path(outfile)
+    temporary = target.with_name(f'.{target.name}.{os.getpid()}.{uuid4().hex}.partial')
+    try:
+        create_nc_forcing_file(str(temporary), NEST, mother, time, latlon, M.reference)
+        print('\nInterpolate data from ROMS to the nesting zone\n---')
+        R2F = Roms2FVCOMNest(str(temporary), path, index, N4R, latlon)
+        if nprocs == 1:
+            print('  - Running in single mode')
+            R2F.dump_single()
+        else:
+            R2F.dump(nprocs=nprocs)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
     print('\n--> Fin.')
 
@@ -129,9 +140,12 @@ def make_fileList(start, stop, ROMS):
             continue
 
         print(f'  - checking: {file}')
-        d        = netCDF4.Dataset(file)
-        t_roms   = netCDF4.num2date(d.variables['ocean_time'][:], units = d.variables['ocean_time'].units, only_use_cftime_datetimes=False)
-        t_fvcom  = netCDF4.date2num(t_roms, units = 'days since 1858-11-17 00:00:00')
+        with netCDF4.Dataset(file) as d:
+            ocean_time = d.variables['ocean_time']
+            t_roms = netCDF4.num2date(ocean_time[:], units=ocean_time.units,
+                                       only_use_cftime_datetimes=False)
+            t_fvcom = np.atleast_1d(netCDF4.date2num(
+                t_roms, units='days since 1858-11-17 00:00:00'))
 
         # Append the timesteps, paths and indices to a fileList
         # ----
@@ -142,19 +156,16 @@ def make_fileList(start, stop, ROMS):
     if len(index)==0:
         raise NoAvailableData('We did not find data for your period of interest')
 
-    # Remove overlap
-    # ----
-    time_no_overlap  = [time[-1]]
-    path_no_overlap  = [path[-1]]
-    index_no_overlap = [index[-1]]
-
-    for n in range(len(time)-1, 0, -1):
-        if time[n-1] < time_no_overlap[0]:
-            time_no_overlap.insert(0, time[n-1])
-            path_no_overlap.insert(0, path[n-1])
-            index_no_overlap.insert(0, index[n-1])
-
-    return np.array(time_no_overlap), path_no_overlap, index_no_overlap
+    # Files may overlap *and* contain out-of-order forecasts. The reverse
+    # scan used previously discarded valid intermediate timesteps after overlap.
+    # Keep the last file occurrence for duplicate timestamps, as before.
+    if not np.isfinite(time).all():
+        raise ValueError('ROMS file list contains non-finite timestamps')
+    latest = {float(t): (p, int(k)) for t, p, k in zip(time, path, index)}
+    ordered = sorted(latest)
+    return (np.asarray(ordered, dtype=np.float64),
+            [latest[t][0] for t in ordered],
+            [latest[t][1] for t in ordered])
 
 # --------------------------------------------------------------------------------------
 #                             Grid and interpolation objects
@@ -200,41 +211,61 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
                 self.dump_timestep_to_nest(timestep)
         bar.finish()
 
-    def dump(self, nprocs = None):
-        '''
-        loop over all timesteps and interpolate them to the FVCOM nesting file
-        '''
-        manager = mp.Manager() # We need a manager since all processes (minus one) will communicate with the writer
-        q = manager.Queue()    # q is convey messages from the workers to the listener
+    def dump(self, nprocs=None):
+        """Process steps in parallel, but write all NetCDF data in this process.
+
+        Only up to 2*workers future results are outstanding; workers do not
+        open the output file. Exceptions propagate instead of leaving a
+        separate writer waiting forever on a queue.
+        """
         if nprocs is None:
-            pool = mp.Pool(mp.cpu_count() + 2)
+            # Respect CPU affinity where supported rather than spawning 256
+            # workers from a constrained Jupyter/Slurm process.
+            workers = (len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
+                       else mp.cpu_count())
         else:
-            pool = mp.Pool(nprocs+2) # +2 to make sure that the listener and the watcher does not overpopulate the list
+            workers = int(nprocs)
+            if workers != nprocs:
+                raise ValueError('nprocs must be an integer')
+        if workers < 1:
+            raise ValueError('nprocs must be at least 1')
+        bar = pb.ProgressBar(
+            widgets=['  - Interpolating and dumping timesteps to nest: ',
+                     pb.Percentage(), pb.BouncingBar(), pb.ETA()],
+            maxval=len(self.path))
+        bar.start()
+        # Spawn is safer after NetCDF/HDF5 access, and works on Windows.
+        ctx = mp.get_context('spawn')
+        count = 0
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+            source = iter(enumerate(zip(self.path, self.index)))
+            pending = {}
+            def submit_next():
+                item = next(source, None)
+                if item is None:
+                    return False
+                counter, (path_here, index_here) = item
+                future = pool.submit(self._worker, counter, path_here, index_here)
+                pending[future] = counter
+                return True
 
-        # Put listener to work
-        # ----
-        watcher = pool.apply_async(self._listener, (q,))
-
-        # Fire off workers
-        # ----
-        jobs = []
-        for counter, (path_here, index_here) in enumerate(zip(self.path, self.index)):
-            job = pool.apply_async(self._worker, (counter, path_here, index_here, q))
-            jobs.append(job)
-
-        # Collect results from the workers through the pool result queue
-        # ----
-        for job in jobs: 
-            job.get()
-
-        #now we are done, kill the listener
-        q.put('kill')
-        pool.close()
-        pool.join()
+            for _ in range(min(len(self.path), workers * 2)):
+                submit_next()
+            with netCDF4.Dataset(self.outfile, 'r+') as self.out:
+                while pending:
+                    ready, _ = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in ready:
+                        pending.pop(future)
+                        timestep = future.result()  # raises worker errors in parent
+                        self.dump_timestep_to_nest(timestep)
+                        count += 1
+                        bar.update(count)
+                        submit_next()
+        bar.finish()
 
     # Multi processing workers, listeners and managers
     # ----
-    def _worker(self, counter, path_here, index_here, q):
+    def _worker(self, counter, path_here, index_here, q=None):
         '''
         Workers download data and interpolate it to the FVCOM grid
         '''
@@ -244,7 +275,9 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         timestep = self.vertical_interpolation(timestep)
         timestep = self.adjust_uv(timestep)
         timestep.counter = counter    # Referencing where in the nestingfile we will store this timestep
-        q.put(timestep, timeout = 10)
+        if q is None:
+            return timestep
+        q.put(timestep, timeout=10)
         return ''
 
     def _listener(self, q):
@@ -276,7 +309,7 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         self.out.variables['v'][timestep.counter, :, :]   = timestep.v
         self.out.variables['ua'][timestep.counter, :]     = timestep.ua
         self.out.variables['va'][timestep.counter, :]     = timestep.va
-        self.out.variables['hyw'][timestep.counter, :, :] = np.zeros((1, len(self.N4.siglev[:,0]), len(self.N4.siglev[0,:]))) # assume h/L << 1 in the nestingzone
+        self.out.variables['hyw'][timestep.counter, :, :] = 0.0  # keep legacy h/L << 1 approximation
 
         # Hydrography
         self.out.variables['zeta'][timestep.counter, :]        = timestep.zeta

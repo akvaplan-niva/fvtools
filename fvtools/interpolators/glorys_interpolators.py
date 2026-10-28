@@ -86,7 +86,7 @@ class N4GLORYS(N4):
         try:
             self.rho_index, self.rho_coef = self.get_interpolation_matrices(
                 xy_source = self.data_points,
-                xy_source_center = self.center_points,
+                source_mask = np.ones(self.GLORYS.lon.shape, dtype=bool),
                 xy_fvcom = self.fv_nodes,
                 widget_title = 'rho'
                 )
@@ -94,7 +94,7 @@ class N4GLORYS(N4):
             if self.uv:
                 self.uv_index, self.uv_coef = self.get_interpolation_matrices(
                     xy_source = self.data_points,
-                    xy_source_center = self.center_points,
+                    source_mask = np.ones(self.GLORYS.lon.shape, dtype=bool),
                     xy_fvcom = self.fv_cells,
                     widget_title = 'uv'
                     )
@@ -116,7 +116,7 @@ class N4GLORYS(N4):
             return
 
         error_occured = False
-        for field in ['scalar', 'uv']:
+        for field in (['rho', 'uv'] if self.uv else ['rho']):
             indices = self.GLORYS.land_mask.ravel()[getattr(self, f'{field}_index')]
             if indices.any():
                 # First plot, this one is just to plot the fvcom and GLORYS grid

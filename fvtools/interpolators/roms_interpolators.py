@@ -103,23 +103,17 @@ class N4ROMS(N4):
         '''
         # Compute interpolation coefficients for nearest4 interpolation
         try:
-            self.rho_index, self.rho_coef = self.get_interpolation_matrices(xy_source = self.rho_points, 
-                                                                            xy_source_center = self.psi_points, 
-                                                                            xy_fvcom = self.fv_nodes,
-                                                                            widget_title = 'rho'
-                                                                            )
+            self.rho_index, self.rho_coef = self.get_interpolation_matrices(
+                xy_source=self.rho_points, source_mask=self.ROMS.fv_rho_mask,
+                xy_fvcom=self.fv_nodes, widget_title='rho')
             if self.uv:
-                self.u_index, self.u_coef = self.get_interpolation_matrices(xy_source = self.u_points,
-                                                                            xy_source_center = self.v_points,
-                                                                            xy_fvcom = self.fv_cells,
-                                                                            widget_title = 'u'
-                                                                            )
+                self.u_index, self.u_coef = self.get_interpolation_matrices(
+                    xy_source=self.u_points, source_mask=self.ROMS.fv_u_mask,
+                    xy_fvcom=self.fv_cells, widget_title='u')
 
-                self.v_index, self.v_coef = self.get_interpolation_matrices(xy_source = self.v_points,
-                                                                            xy_source_center = self.u_points,
-                                                                            xy_fvcom = self.fv_cells,
-                                                                            widget_title = 'v'
-                                                                            )
+                self.v_index, self.v_coef = self.get_interpolation_matrices(
+                    xy_source=self.v_points, source_mask=self.ROMS.fv_v_mask,
+                    xy_fvcom=self.fv_cells, widget_title='v')
 
         except ValueError:
             self.domain_exception_plot(self.psi_points)
@@ -138,7 +132,7 @@ class N4ROMS(N4):
             return
 
         error_occured = False
-        for field in ['rho', 'u', 'v']:
+        for field in (['rho', 'u', 'v'] if self.uv else ['rho']):
             indices = getattr(self.ROMS, f'Land_{field}').ravel()[getattr(self, f'{field}_index')]
             if indices.any():
                 # If so, we only need to plot the background once, hence "if not error_occured"
