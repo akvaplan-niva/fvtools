@@ -26,7 +26,11 @@ class CoastLine:
 
         # therefore: Add the points connecting of the nodestrings to the coastline
         for nodestring in self.nodestrings:
-            coastline_nodes = np.append(coastline_nodes, nodestring[[0,-1]])
+            # The two endpoints of an open OBC also touch land. A closed
+            # OBC has no endpoints and must not be tagged as coastline.
+            nodes = np.asarray(nodestring, dtype=np.int64)
+            if nodes.size > 1 and nodes[0] != nodes[-1]:
+                coastline_nodes = np.append(coastline_nodes, nodes[[0, -1]])
         return coastline_nodes
 
     @property

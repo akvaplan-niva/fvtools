@@ -61,10 +61,18 @@ def test_nodestring_reconstruction_rejects_invalid_or_interior_edges(
         grid._get_nodestrings(indices)
 
 
-def test_closed_boundary_cannot_be_used_as_one_open_nodestring(small_grid_file):
+def test_closed_boundary_is_one_circular_nodestring(small_grid_file):
     grid = FVCOM_grid(str(small_grid_file))
-    with pytest.raises(ValueError, match='Closed OBC loops'):
-        grid._get_nodestrings([0, 1, 2, 3])
+    nodestrings = grid._get_nodestrings([0, 1, 2, 3])
+    assert len(nodestrings) == 1
+    # SMS represents a circular OBC by repeating its first node.
+    np.testing.assert_array_equal(nodestrings[0], [0, 1, 2, 3, 0])
+    # Every step must still be an actual mesh-boundary edge.
+    boundary_edges = {
+        tuple(sorted(map(int, edge))) for edge in grid.boundary_nodes
+    }
+    for left, right in zip(nodestrings[0][:-1], nodestrings[0][1:]):
+        assert tuple(sorted((int(left), int(right)))) in boundary_edges
 
 
 def test_boundary_segments_match_exact_exterior_triangle_edges(small_grid_file):

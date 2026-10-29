@@ -95,79 +95,90 @@ class OBC:
         return np.array([self.lon[nodestring] for nodestring in self.nodestrings], dtype = object)
 
     def _get_nodestrings(self, obc_nodes):
-        """
-        Identify and order open boundary nodestrings.
+        """Order open and circular OBCs from actual mesh connectivity.
 
-        Only edges belonging to the outer boundary of the
-        triangulation are considered. Each nodestring is ordered
-        by following the actual mesh connectivity.
+        Open chains contain their endpoints once. Closed chains have their
+        first node repeated at the end, matching SMS 2DM nodestrings.
 
-        Parameters
-        ----------
-        obc_nodes : array-like
-            Zero-based node indices belonging to open boundaries.
-
-        Returns
-        -------
-        nodestrings : list of np.ndarray
-            One ordered array per connected open boundary.
-
-        Raises
-        ------
-        ValueError
-            If a node is not connected to an OBC boundary edge,
-            or if the boundary contains branches or closed loops.
+        Mesh-boundary edges are preferred. An interior circular chain can be
+        inferred only if its OBC-induced mesh graph is unbranched (degree 2).
+        Ambiguous interior loops require an explicitly ordered ``nodestrings``.
         """
         obc_nodes = np.unique(np.asarray(obc_nodes, dtype=np.int64))
-
         if obc_nodes.size == 0:
             return []
-
         if np.any(obc_nodes < 0) or np.any(obc_nodes >= self.node_number):
             raise ValueError("Invalid OBC node indices")
 
-        # Identify nodes belonging to the open boundary.
         is_obc = np.zeros(self.node_number, dtype=bool)
         is_obc[obc_nodes] = True
 
-        # Only consider edges on the actual mesh boundary.
-        boundary_edges = self.boundary_nodes
+        boundary_edges = np.asarray(self.boundary_nodes, dtype=np.int64).reshape(-1, 2)
         obc_edges = boundary_edges[np.all(is_obc[boundary_edges], axis=1)]
+        graph = nx.Graph()
+        graph.add_nodes_from(map(int, obc_nodes))
+        graph.add_edges_from(map(tuple, obc_edges))
 
-        # Verify that every OBC node belongs to a selected edge.
-        missing = np.setdiff1d(obc_nodes, np.unique(obc_edges))
-
+        missing = np.asarray([n for n in obc_nodes if graph.degree(int(n)) == 0], dtype=np.int64)
         if missing.size:
-            raise ValueError(f"OBC nodes without a connected boundary edge: {missing.tolist()}")
+            # A circular OBC may run along *interior* triangle edges rather
+            # than along the exposed mesh perimeter. Only infer such a loop
+            # when the induced graph is unambiguous; do not pick arbitrary
+            # shortcuts across triangles.
+            tri = np.asarray(self.tri, dtype=np.int64)
+            all_edges = np.concatenate((tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]))
+            interior_edges = all_edges[np.all(is_obc[all_edges], axis=1)]
+            candidates = nx.Graph()
+            candidates.add_nodes_from(map(int, obc_nodes))
+            candidates.add_edges_from(map(tuple, interior_edges))
+            missing_set = set(map(int, missing))
+            for component in nx.connected_components(candidates):
+                if not missing_set.intersection(component):
+                    continue
+                subgraph = candidates.subgraph(component)
+                if len(component) < 3 or any(degree != 2 for _, degree in subgraph.degree()):
+                    raise ValueError(
+                        "Cannot uniquely order OBC nodes away from the mesh boundary. "
+                        "For a circular interior OBC, assign explicitly ordered "
+                        "M.nodestrings = [np.array([... , first_node])] "
+                        "before writing the 2DM file."
+                    )
+                graph.add_edges_from(subgraph.edges())
 
-        # Create a graph containing only OBC boundary edges.
-        G = nx.Graph()
-        G.add_edges_from(map(tuple, obc_edges))
+        missing = [int(n) for n in obc_nodes if graph.degree(int(n)) == 0]
+        if missing:
+            raise ValueError(f"OBC nodes without a connected boundary edge: {missing}")
+
         nodestrings = []
-
-        # Each connected component represents a separate boundary.
-        for component in nx.connected_components(G):
-            subgraph = G.subgraph(component)
-            degrees = dict(subgraph.degree())
-
-            # An unbranched boundary cannot have more than two neighbours at any node.
-            branches = [node for node, degree in degrees.items() if degree > 2]
-
+        for component in nx.connected_components(graph):
+            subgraph = graph.subgraph(component)
+            branches = sorted(int(node) for node, degree in subgraph.degree() if degree > 2)
             if branches:
                 raise ValueError(f"Branched OBC at nodes {branches}")
 
-            # An open boundary has exactly two endpoints.
-            endpoints = sorted(node for node, degree in degrees.items() if degree == 1)
-
-            if len(endpoints) != 2:
-                raise ValueError("Expected an open boundary with two endpoints. Closed OBC loops are not supported.")
-
-            # Follow the mesh connectivity from one endpoint
-            # to the other, preserving the actual node order.
-            path = nx.shortest_path(subgraph, source=endpoints[0], target=endpoints[1])
+            endpoints = sorted(int(node) for node, degree in subgraph.degree() if degree == 1)
+            if len(endpoints) == 2:
+                # Preserve the legacy direction for open boundaries.
+                path = nx.shortest_path(subgraph, source=endpoints[0], target=endpoints[1])
+            elif len(endpoints) == 0 and len(component) >= 3:
+                # A simple cycle: start at the smallest node and choose the
+                # smaller of its two neighbours for deterministic orientation.
+                first = min(component)
+                previous = first
+                current = min(subgraph.neighbors(first))
+                path = [first, current]
+                while current != first:
+                    following = [int(node) for node in subgraph.neighbors(current)
+                                 if node != previous]
+                    if len(following) != 1 or len(path) > len(component):
+                        raise ValueError("Invalid circular OBC connectivity")
+                    previous, current = current, following[0]
+                    path.append(current)
+                if len(path) != len(component) + 1:
+                    raise ValueError("Circular OBC does not traverse all selected nodes")
+            else:
+                raise ValueError("OBC must be an unbranched open chain or a closed loop")
             nodestrings.append(np.asarray(path, dtype=np.int64))
 
-        # Sort boundary segments deterministically.
         nodestrings.sort(key=lambda path: int(path[0]))
-
         return nodestrings

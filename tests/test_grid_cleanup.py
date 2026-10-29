@@ -155,5 +155,7 @@ def test_obc_reassignment_rejects_disconnected_node_instead_of_using_stale_cache
     grid = FVCOM_grid(str(small_grid_file))
     _ = grid.nodestrings
     grid.obc_nodes = [0, 2]  # This is the interior diagonal, not a mesh boundary.
-    with pytest.raises(ValueError, match='without a connected boundary edge'):
+    with pytest.raises(ValueError, match='Cannot uniquely order OBC nodes away from the mesh boundary'):
         _ = grid.nodestrings
+    # A failed reconstruction must not preserve or cache the earlier nodestring.
+    assert '_nodestrings' not in grid.__dict__

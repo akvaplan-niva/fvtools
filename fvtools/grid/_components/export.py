@@ -74,19 +74,26 @@ class ExportGrid:
         print(f'  - Wrote : {filename}')
 
     def write_obc(self, filename = None):
-        '''
-        - Generates an ascii FVCOM 5.x formatted obc file
-        '''
-        if filename is None: 
+        """Write FVCOM OBC nodes once each, even for circular SMS nodestrings."""
+        if filename is None:
             filename = f'input/{self.casename}_obc.dat'
 
+        # SMS represents closed nodestrings by repeating their first node.
+        # FVCOM's OBC-node count must not include that closing duplicate.
+        sequences = []
+        for nodestring in self.nodestrings:
+            nodes = np.asarray(nodestring, dtype=np.int64)
+            if nodes.size > 1 and nodes[0] == nodes[-1]:
+                nodes = nodes[:-1]
+            sequences.append(nodes)
+
         with open(filename, 'w') as f:
-            f.write(f'OBC Node Number = {len(self.obc_nodes)}\n')
+            f.write(f'OBC Node Number = {sum(map(len, sequences))}\n')
             i = 0
-            for nodestring in self.nodestrings:
-               for obc_node in nodestring:
+            for nodes in sequences:
+                for node in nodes:
                     i += 1
-                    f.write(f'{i} {obc_node+1} 1\n')
+                    f.write(f'{i} {node+1} 1\n')
         print(f'  - Wrote : {filename}')
 
     def write_cor(self, filename = None, latlon = False):
@@ -143,6 +150,10 @@ class ExportGrid:
         # Add lines from OBC (in exterior) to the exterior_buffer polygon
         obc_points = []
         for nodestring in self.nodestrings:
+            # Closed loops have no land-connected endpoints to extend into
+            # the exterior buffer. Treat only open chains here.
+            if len(nodestring) > 1 and nodestring[0] == nodestring[-1]:
+                continue
             points = [nodestring[0], nodestring[-1]]
             ind = []
             for point in points:
@@ -182,6 +193,8 @@ class ExportGrid:
         '''
         import fvtools.grid.fvgrid as fvgrid
         if name is None: name = self.casename
+        if str(name).lower().endswith('.2dm'):
+            name = str(name)[:-4]
         if any(self.obc_nodes):
             fvgrid.write_2dm(self.x, self.y, self.tri, nodestrings = self.nodestrings, name = name, casename = name)
         else:

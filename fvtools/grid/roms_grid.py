@@ -448,6 +448,26 @@ class RomsDownloader:
     '''
     Routine that downloads data. It will automatically stop and wait if the thredds server goes down / the data we need is temporarily unavailable
     '''
+    # ROMS DAP retry: classify transient NetCDF errors without masking code bugs.
+    @staticmethod
+    def _is_retryable_roms_io_error(exc):
+        """netCDF4 may report transient OPeNDAP failures as RuntimeError.
+
+        Keep this helper on RomsDownloader so AST-based regression tests and
+        separately-instantiated readers work without hidden module dependencies.
+        """
+        if isinstance(exc, (OSError, TimeoutError, ConnectionError)):
+            return True
+        if not isinstance(exc, RuntimeError):
+            return False
+        message = str(exc).casefold()
+        return any(fragment in message for fragment in (
+            'netcdf: dap failure',
+            'netcdf: dap server error',
+            'netcdf: curl error',
+            'netcdf: i/o failure',
+        ))
+
     # Phase 6A: explicit single-handle ROMS NetCDF reuse in serial mode.
     @contextmanager
     def reuse_roms_datasets(self):
@@ -497,7 +517,9 @@ class RomsDownloader:
 
         try:
             yield cache['dataset']
-        except (OSError, TimeoutError, ConnectionError):
+        except Exception as exc:
+            if not self._is_retryable_roms_io_error(exc):
+                raise
             # A transient failure should not leave a stale OPeNDAP connection
             # in the cache. Preserve the original read exception for retries.
             failed = cache['dataset']
@@ -526,7 +548,9 @@ class RomsDownloader:
         for attempt in range(max_retries + 1):
             try:
                 return self._load_roms_data(index_here, filepath, variables, sigma)
-            except (OSError, TimeoutError, ConnectionError) as exc:
+            except Exception as exc:
+                if not self._is_retryable_roms_io_error(exc):
+                    raise
                 if attempt == max_retries:
                     raise RuntimeError(
                         f'Could not read ROMS timestep {index_here} from {filepath!s} '
@@ -570,16 +594,16 @@ class RomsDownloader:
                 timestep.v    = nc['v'][index_here, :, self.N4.m_vi:(self.N4.x_vi+1), self.N4.m_vj:(self.N4.x_vj+1)]
 
             if 'ua' in variables:
-                try:
+                if 'ubar' in nc.variables:
                     timestep.ua = nc['ubar'][index_here, self.N4.m_ui:(self.N4.x_ui+1), self.N4.m_uj:(self.N4.x_uj+1)]
-                except:
-                    timestep.ua = np.sum(timestep.u*self.N4.cropped_dsigma_u, axis = 0)
+                else:
+                    timestep.ua = np.sum(timestep.u*self.N4.cropped_dsigma_u, axis=0)
 
             if 'va' in variables:
-                try:
+                if 'vbar' in nc.variables:
                     timestep.va = nc['vbar'][index_here, self.N4.m_vi:(self.N4.x_vi+1), self.N4.m_vj:(self.N4.x_vj+1)]
-                except:
-                    timestep.va = np.sum(timestep.v*self.N4.cropped_dsigma_v, axis = 0)
+                else:
+                    timestep.va = np.sum(timestep.v*self.N4.cropped_dsigma_v, axis=0)
 
         return timestep
 
