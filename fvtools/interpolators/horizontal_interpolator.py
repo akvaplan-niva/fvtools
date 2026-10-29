@@ -143,13 +143,26 @@ class N4Coefficients(N4, DomainMasks):
         _, nearest_coarse_ocean = full_coarse_tree.query(np.array([nearest_ocean_x, nearest_ocean_y]).transpose())
         return nearest_coarse_ocean
 
+    def compute_cell_arome_angle(self, latlon):
+        '''
+        Angle (radians, counter-clockwise) from the model's x-axis, or from true east if latlon, to the AROME
+        grid's x-axis at each FVCOM cell. Winds along the AROME grid axes are turned by this angle.
+
+        Uses the same cell coefficients as the winds (call compute_nearest4 first), and interpolates unit
+        vectors rather than angles.
+        '''
+        angle = self.COARSE.x_axis_angle_east if latlon else self.COARSE.x_axis_angle
+        angle = np.asarray(angle)[self.fv_domain_mask]
+        self.cell_arome_angle = np.arctan2(np.sum(np.sin(angle)[self.cindex] * self.ccoef, axis=1),
+                                           np.sum(np.cos(angle)[self.cindex] * self.ccoef, axis=1))
+
     def dump(self):
         '''
         Not sure if this is needed, but I am scared of using much more memory than needbe when parallellizing
         '''
         smallerN4 = N4_interpolation()
         smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['fv_domain_mask', 'nindex', 'cindex', 'nindex_ocean'])
-        smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['ncoef', 'ccoef', 'ncoef_ocean'])
+        smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['ncoef', 'ccoef', 'ncoef_ocean', 'cell_arome_angle'])
         smallerN4 = self._set_attributes_to_dump(smallerN4, self.FVCOM_grd, ['cell_utm_angle'])
         if hasattr(self, 'fv_domain_mask_ex'):
             smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['fv_domain_mask_ex'])
@@ -169,6 +182,7 @@ class N4_interpolation:
     '''
     fv_domain_mask: np.array
     cell_utm_angle: np.array
+    cell_arome_angle: np.array
     nindex: np.array
     cindex: np.array
     nindex_rad: np.array
