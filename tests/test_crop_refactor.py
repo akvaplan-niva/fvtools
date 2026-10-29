@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 
 from fvtools.grid.fvcom_grd import CropGrid, FVCOM_grid
-from fvtools.grid._components.cropping import CropGrid as ExtractedCropGrid
 
 
 @pytest.fixture
@@ -28,12 +27,6 @@ def fan_grid():
     )
     grid.casename = 'fan_mesh'
     return grid
-
-
-def test_cropgrid_public_identity_and_mro():
-    assert CropGrid is ExtractedCropGrid
-    assert issubclass(FVCOM_grid, CropGrid)
-    assert FVCOM_grid.subgrid is CropGrid.subgrid
 
 
 def test_default_crop_mapping_and_setters(fan_grid):

@@ -9,8 +9,6 @@ import numpy as np
 import pytest
 
 from fvtools.grid.fvcom_grd import FVCOM_grid, GridProximity, CellTriangulation
-from fvtools.grid._components.proximity import GridProximity as ExtractedProximity
-from fvtools.grid._components.triangulation import CellTriangulation as ExtractedCellTri
 
 
 @pytest.fixture
@@ -35,13 +33,6 @@ def spatial_grid():
         siglay=0.5 * (sigma_levels[:, :-1] + sigma_levels[:, 1:]),
     )
     return grid
-
-
-def test_spatial_mixins_reexported_without_api_change():
-    assert GridProximity is ExtractedProximity
-    assert CellTriangulation is ExtractedCellTri
-    assert issubclass(FVCOM_grid, GridProximity)
-    assert issubclass(FVCOM_grid, CellTriangulation)
 
 
 def test_find_nearest_nodes_and_cells_scalar_and_array(spatial_grid):

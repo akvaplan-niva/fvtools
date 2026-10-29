@@ -13,14 +13,6 @@ import pytest
 from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
 
 
-def test_grid_exports_and_inheritance_are_preserved():
-    assert issubclass(FVCOM_grid, object)
-    assert FVCOM_grid.__name__ == 'FVCOM_grid'
-    assert NEST_grid.__name__ == 'NEST_grid'
-    assert callable(FVCOM_grid.smooth)
-    assert callable(FVCOM_grid._smooth)
-
-
 def test_import_does_not_disable_runtime_warnings():
     """Test in a fresh process so import-time warning filters are observable."""
     check = (

@@ -14,15 +14,6 @@ from fvtools.grid.fvcom_grd import (
     FVCOM_grid,
     PropertiesFromTGE,
 )
-from fvtools.grid._components.physics import AnglesAndPhysics as PhysicsMixin
-from fvtools.grid._components.topology import PropertiesFromTGE as TopologyMixin
-
-
-def test_topology_physics_imports_and_mro_preserved():
-    assert PropertiesFromTGE is TopologyMixin
-    assert AnglesAndPhysics is PhysicsMixin
-    assert issubclass(FVCOM_grid, PropertiesFromTGE)
-    assert issubclass(FVCOM_grid, AnglesAndPhysics)
 
 
 def test_vector_rotation_roundtrip_and_speed(small_grid_file):

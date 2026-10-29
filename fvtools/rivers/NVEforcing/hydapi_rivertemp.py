@@ -1,5 +1,5 @@
 from urllib.request import Request, urlopen
-from pykdtree.kdtree import KDTree
+from fvtools.util.kdtree import KDTree
 from scipy.signal import medfilt
 from datetime import datetime
 import json

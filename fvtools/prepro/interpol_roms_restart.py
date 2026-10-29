@@ -9,7 +9,7 @@ import fvtools.nesting.vertical_interpolation as vi
 from datetime import timedelta
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.grid.roms_grid import get_roms_grid
-from pykdtree.kdtree import KDTree
+from fvtools.util.kdtree import KDTree
 from fvtools.grid.roms_grid import RomsDownloader
 from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
 

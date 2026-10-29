@@ -4,7 +4,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from pykdtree.kdtree import KDTree
+from fvtools.util.kdtree import KDTree
 
 def main(mesh, nrows = 4, remove_land_squares = True):
     '''

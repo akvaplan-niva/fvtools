@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import re
 import shapely as shp
-from pykdtree.kdtree import KDTree
+from fvtools.util.kdtree import KDTree
 import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 

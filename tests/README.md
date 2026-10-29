@@ -1,51 +1,47 @@
-# fvtools regression tests
+# Tests in fvtools
 
-These tests are intended to be run from the **`diverse_smaating`** branch.
-They use the public FVCOM APIs (`FVCOM_grid`, `read_sms_mesh`, `load_netCDF`),
-so reorganizing implementation modules should not require rewriting the tests.
+The suite is primarily a **numerical and behavioral regression suite**, not an
+assertion that each implementation must live in one particular module.
 
-## Quick tests
+## Keep
 
-Install the project's normal runtime dependencies from `env.yml`, and ensure
-`pytest` is available in the environment. From the repository root, run:
+- Mesh and FVCOM topology, index ordering, sigma levels, NetCDF file formats.
+- ROMS horizontal and vertical interpolation and correct node/cell staggering.
+- OBC, river temperature and discharge, bathymetry, and section results.
+- Numba kernel equivalence, independently checked geometry, nopython compilation.
+- Actual KDTree nearest-neighbour distances and index behavior.
+- Stable public API contracts and backward-compatible legacy names where necessary.
+- Real Python 3.15 imports/JIT tests; Pandas 3 microsecond/nanosecond regression.
+- Error handling, retries, safe file publication, THREDDS access efficiency.
 
-```bash
-python -m pytest tests -q
+## Remove
+
+One-off checks of old code locations, specific mixin inheritance order,
+installation patch metadata, and helper tests of the test harness itself.
+Importantly, the test checking **all Numba kernels are accounted for** remains.
+
+Avoid adding tests that simply assert exact strings in `pyproject.toml`,
+`env.yml`, or an old patch's internal class hierarchy unless this is an explicit
+public contract. `scripts/audit_dependencies.py` remains a manual audit tool.
+
+## Running on Windows using uv
+
+```powershell
+# Collection alone (no test execution)
+uv run --no-sync python -m pytest tests --collect-only -q
+
+# A targeted compatibility smoke after Python/Numba changes
+uv run --no-sync python -m pytest tests/test_python315_compat.py tests/test_all_numba_kernels.py tests/test_kdtree_backend.py -q
+
+# Before committing a functional change
+uv run --no-sync python -m pytest tests -q
 ```
 
-The fast tests build a four-node grid and a synthetic NetCDF file, so they
-run without external geographic datasets, network access, or an HPC system.
+On Olivia, use the equivalent `python -m pytest tests -q` in the existing
+mamba/hpc-container-wrapper environment after verifying the environment.
+No tests should require a live THREDDS server to pass. Reference mesh fixtures
+may be skipped when optional external files are unavailable.
 
-## Optional tests on a real mesh
-
-The two original reference files are not committed to Git because the `.npy`
-file alone is about 31 MB. Put the files in `tests/reference/`:
-
-- `v2_with_nodestrings_with_nest.2dm`
-- `M.npy`
-
-Or provide their existing full paths:
-
-```bash
-export FVTOOLS_TEST_2DM=/path/to/v2_with_nodestrings_with_nest.2dm
-export FVTOOLS_TEST_M_NPY=/path/to/M.npy
-python -m pytest tests/test_reference_mesh.py -q
-```
-
-Tests that need those files are skipped if either is absent. `M.npy` contains
-a Python object array, which requires pickle-based loading; **only load a
-trusted file**.
-
-The real fixtures currently contain 48,803 nodes, 93,524 triangular elements,
-and three nodestrings (25, 57, and 17 nodes). They test the exact ordering of
-triangles, coordinates, boundaries, and vertical sigma-coordinate invariants.
-
-## Scope
-
-- `.2dm` SMS grid parsing and ordered open-boundary nodestrings
-- Recreating FVCOM_grid from a saved `M.npy`
-- Distinguishing node-based `temp`/`pv` from element-based `u`/`v`
-- Wet/dry masks and repeatable NetCDF loading across timesteps
-- Avoiding accidental simultaneous `sig` and `z` inputs
-
-The suite deliberately does not modify `env.yml` or `environment.yaml`.
+Do not compare test counts across runs without accounting for parametrization,
+optional reference data, and version-dependent skips. Test coverage of model
+results matters more than a fixed number of tests.

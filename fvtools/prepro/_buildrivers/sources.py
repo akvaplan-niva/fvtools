@@ -305,7 +305,12 @@ class RiverTemperatures:
                 print(f'  - Station {key} had too many gaps in the simulation period')
                 continue
 
-            sample_time = station['time'].astype('int64').to_numpy(dtype=float) / 1e9
+            # Pandas 3 may parse datetime strings at microsecond resolution,
+            # whereas Pandas 2 normally used nanoseconds.  Convert the
+            # elapsed time explicitly instead of assuming an integer unit.
+            sample_time = (
+                station['time'] - pd.Timestamp('1970-01-01', tz='UTC')
+            ).dt.total_seconds().to_numpy(dtype=float)
             sample_temp = station['filtered_temperature'].to_numpy(dtype=float)
             # Explicit seconds, not pd.to_datetime(seconds) interpreted as ns.
             out = np.interp(target_time, sample_time, sample_temp)

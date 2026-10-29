@@ -1,7 +1,7 @@
 import numpy as np
 
 from fvtools.interpolators.nearest4 import N4 # base-class for nearest 4 interpolation & the method used to find nearest 4
-from pykdtree.kdtree import KDTree
+from fvtools.util.kdtree import KDTree
 from functools import cached_property
 
 class DomainMasks:

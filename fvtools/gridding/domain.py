@@ -12,7 +12,7 @@ import os
 from matplotlib.path import Path
 from matplotlib.widgets import Slider, Button
 from matplotlib.path import Path
-from pykdtree.kdtree import KDTree
+from fvtools.util.kdtree import KDTree
 
 def gfunc(rmax, dfact, rfact, dev1, dev2, Ld, rcoast):
     x     = np.arange(0,Ld,10)

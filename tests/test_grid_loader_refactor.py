@@ -9,13 +9,6 @@ import pytest
 from netCDF4 import Dataset
 
 from fvtools.grid.fvcom_grd import FVCOM_grid, GridLoader
-from fvtools.grid._components.grid_loader import GridLoader as ImplementationGridLoader
-
-
-def test_grid_loader_public_import_and_mro_are_preserved():
-    assert GridLoader is ImplementationGridLoader
-    assert issubclass(FVCOM_grid, GridLoader)
-    assert FVCOM_grid.__mro__[1] is GridLoader
 
 
 def test_direct_initialization_produces_node_and_cell_coordinates(small_grid_file):

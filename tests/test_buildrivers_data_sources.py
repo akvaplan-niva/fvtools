@@ -166,6 +166,19 @@ def test_temperature_observations_are_sorted_and_deduplicated(tmp_path):
     assert got.loc['91-001', 4] == 100.
 
 
+@pytest.mark.parametrize('timestamp_unit', ['us', 'ns'])
+def test_temperature_interpolation_does_not_depend_on_datetime_resolution(tmp_path, timestamp_unit):
+    """Pandas 3 uses us for ISO strings, while older Pandas used ns."""
+    expected = np.array([2. * d + 1. for d in range(1, 11)])
+    root = write_temp_db(tmp_path, {'91-001': obs_frame(range(1, 11), values=expected)})
+    obj = br.RiverTemperatures(root, ts(1), ts(10))
+    # Exercise both resolutions regardless of the installed Pandas version.
+    observation = obj.observations['91-001']
+    observation['time'] = observation['time'].dt.as_unit(timestamp_unit)
+    result = obj.insert_observed_temperature(clim_row(), [91])
+    np.testing.assert_allclose(result.loc['91-001'], expected)
+
+
 def test_temperature_bad_quality_and_empty_stations_keep_climatology(tmp_path):
     frame = obs_frame(range(1, 11), quality=[1] * 10)
     root = write_temp_db(tmp_path, {'91-001': frame, '91-002': pd.DataFrame(columns=frame.columns)})

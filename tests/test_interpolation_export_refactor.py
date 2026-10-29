@@ -6,15 +6,6 @@ import numpy as np
 import pytest
 
 from fvtools.grid.fvcom_grd import FVCOM_grid, InterpolateToZ, ExportGrid
-from fvtools.grid._components.interpolation import InterpolateToZ as ImplementationInterpolation
-from fvtools.grid._components.export import ExportGrid as ImplementationExport
-
-
-def test_mixin_imports_and_inheritance_are_preserved():
-    assert InterpolateToZ is ImplementationInterpolation
-    assert ExportGrid is ImplementationExport
-    assert issubclass(FVCOM_grid, InterpolateToZ)
-    assert issubclass(FVCOM_grid, ExportGrid)
 
 
 def test_linear_sigma_to_z_interpolation_and_exact_levels(small_grid_file):

@@ -8,17 +8,6 @@ import numpy as np
 import pytest
 
 from fvtools.grid.fvcom_grd import FVCOM_grid, CoastLine, OBC
-from fvtools.grid._components.coastline import CoastLine as CoastLineImplementation
-from fvtools.grid._components.obc import OBC as OBCImplementation
-
-
-def test_public_mixins_remain_identical_and_keep_mro():
-    assert CoastLine is CoastLineImplementation
-    assert OBC is OBCImplementation
-    mro = FVCOM_grid.__mro__
-    assert mro.index(CoastLine) < mro.index(OBC)
-    assert FVCOM_grid._get_nodestrings is OBC._get_nodestrings
-    assert FVCOM_grid.get_land_polygons is CoastLine.get_land_polygons
 
 
 def test_existing_nodestring_order_and_adjacent_cellstrings(small_grid_file):

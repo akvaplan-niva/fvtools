@@ -18,9 +18,6 @@ from fvtools.grid.fvcom_grd import (
     ControlVolumePlotter,
 )
 
-from fvtools.grid._components.plotting import (
-    PlotFVCOM as PlottingMixin,
-)
 
 from fvtools.grid._components.control_volumes import (
     ControlVolumePlotter as ControlVolumeMixin,
@@ -61,12 +58,6 @@ def multi_cell_grid():
     grid.casename = 'synthetic_plotting'
     return grid
 
-
-def test_plotting_classes_and_cv_helper_imports_still_work():
-    assert PlotFVCOM is PlottingMixin
-    assert ControlVolumePlotter is ControlVolumeMixin
-    assert issubclass(FVCOM_grid, PlottingMixin)
-    assert issubclass(FVCOM_grid, ControlVolumeMixin)
 
 def test_plot_triangulations_are_cached_separately_and_reset(multi_cell_grid):
     grid = multi_cell_grid
