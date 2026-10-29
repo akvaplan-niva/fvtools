@@ -31,7 +31,9 @@ def main(fvcom_grd,
          latlon  = True,
          mother  = None,
          weights = [2.5e-4, 2.5e-5],
-         nprocs = 1):
+         nprocs = 1,
+         time_block_size = 1,
+         max_block_mb = 128):
     '''
     Nest from NorKyst-800 or NorShelf-2.4km
 
@@ -79,7 +81,8 @@ def main(fvcom_grd,
 
     N4R, M, NEST = _prepare_nesting_interpolator(ROMS, M, NEST, latlon)
     _publish_nesting_file(outfile, NEST, mother, time, latlon,
-                          M.reference, path, index, N4R, nprocs)
+                          M.reference, path, index, N4R, nprocs,
+                          time_block_size=time_block_size, max_block_mb=max_block_mb)
 
     print('\n--> Fin.')
 
@@ -102,7 +105,8 @@ def _prepare_nesting_interpolator(ROMS, M, NEST, latlon):
 
 
 def _publish_nesting_file(outfile, NEST, mother, time, latlon, epsg,
-                          path, index, N4R, nprocs):
+                          path, index, N4R, nprocs, *,
+                          time_block_size=1, max_block_mb=128):
     """Write a complete forcing file atomically, retaining the previous file on failure."""
     # Write to a sibling temporary file, publishing only a complete product.
     # The preexisting nesting file remains intact if an input fails.
@@ -114,8 +118,16 @@ def _publish_nesting_file(outfile, NEST, mother, time, latlon, epsg,
         R2F = Roms2FVCOMNest(str(temporary), path, index, N4R, latlon)
         if nprocs == 1:
             print('  - Running in single mode')
-            R2F.dump_single()
+            # Keep the legacy call signature for the default (phase 6A) path.
+            # Non-default options still reach dump_single for normal validation.
+            if (type(time_block_size) is int and time_block_size == 1 and
+                    type(max_block_mb) in (int, float) and max_block_mb == 128):
+                R2F.dump_single()
+            else:
+                R2F.dump_single(time_block_size=time_block_size, max_block_mb=max_block_mb)
         else:
+            if time_block_size != 1:
+                raise ValueError('time_block_size > 1 requires nprocs=1')
             R2F.dump(nprocs=nprocs)
         os.replace(temporary, target)
     finally:
@@ -207,29 +219,84 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         self.N4 = N4.dump()
         self.latlon = latlon
 
-    def _prepare_timestep(self, counter, path_here, index_here):
-        """Run exactly the same interpolation stages in serial and parallel mode."""
-        timestep = self.read_timestep(index_here, path_here)
+    def _interpolate_downloaded_timestep(self, counter, timestep):
+        """Apply unchanged interpolation stages to an already-read timestep."""
         timestep = self.crop_and_transpose(timestep)
         timestep = self.horizontal_interpolation(timestep)
         timestep = self.vertical_interpolation(timestep)
         timestep = self.adjust_uv(timestep)
-        timestep.counter = counter    # Referencing where in the nestingfile we will store this timestep
+        timestep.counter = counter
         return timestep
 
-    def dump_single(self):
+    # Phase 6B: block processing is opt-in; default is phase 6A.
+    def _iter_time_blocks(self, time_block_size, max_block_mb):
+        """Only combine consecutive time indices from the same ROMS file."""
+        import math
+        if isinstance(time_block_size, bool) or not isinstance(time_block_size, int) or time_block_size < 1:
+            raise ValueError('time_block_size must be a positive integer')
+        if isinstance(max_block_mb, bool) or not isinstance(max_block_mb, (int, float)) or not math.isfinite(max_block_mb) or max_block_mb <= 0:
+            raise ValueError('max_block_mb must be finite and positive')
+        # Index/path metadata only; never prefetch data from future files.
+        items = list(enumerate(zip(self.path, self.index)))
+        capacity_cache = {}
+        i = 0
+        while i < len(items):
+            counter, (path, index) = items[i]
+            end = i + 1
+            while (end < len(items) and end - i < time_block_size and
+                   items[end][1][0] == path and
+                   isinstance(index, (int, np.integer)) and
+                   isinstance(items[end][1][1], (int, np.integer)) and
+                   items[end][1][1] == index + (end - i)):
+                end += 1
+            count = end - i
+            if count > 1:
+                if path not in capacity_cache:
+                    capacity_cache[path] = self.estimate_roms_timestep_bytes(path)
+                byte_estimate = capacity_cache[path]
+                # Allow approx. 2x raw per-step bytes for transient masks and
+                # per-step array processing; never read unused future steps.
+                byte_budget = int(max_block_mb * (1024 ** 2))
+                capacity = max(1, byte_budget // max(1, 2 * byte_estimate))
+                count = min(count, capacity)
+            if count == 1:
+                yield counter, self.read_timestep(index, path)
+            else:
+                for offset, step in enumerate(self.read_timestep_block(index, count, path)):
+                    yield counter + offset, step
+            i += count
+
+    def _prepare_timestep(self, counter, path_here, index_here):
+        """Run exactly the same interpolation stages in serial and parallel mode."""
+        timestep = self.read_timestep(index_here, path_here)
+        return self._interpolate_downloaded_timestep(counter, timestep)
+
+    def dump_single(self, *, time_block_size=1, max_block_mb=128):
         '''
         Mostly for debug/illustration of the downloading/interpolation/writing process
         '''
         widget = [f'  - Interpolating and dumping timesteps to nest: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.path))
+        # Validate options before reading or opening the output file.
+        import math
+        if isinstance(time_block_size, bool) or not isinstance(time_block_size, int) or time_block_size < 1:
+            raise ValueError('time_block_size must be a positive integer')
+        if isinstance(max_block_mb, bool) or not isinstance(max_block_mb, (int, float)) or not math.isfinite(max_block_mb) or max_block_mb <= 0:
+            raise ValueError('max_block_mb must be finite and positive')
         bar.start()
         # Phase 6A: the serial reader keeps only the current ROMS file open.
         with self.reuse_roms_datasets(), netCDF4.Dataset(self.outfile, 'r+') as self.out:
-            for counter, (path_here, index_here) in enumerate(zip(self.path, self.index)):
-                bar.update(counter)
-                timestep = self._prepare_timestep(counter, path_here, index_here)
-                self.dump_timestep_to_nest(timestep)
+            if time_block_size == 1:
+                # Fast, verified phase 6A path remains the default.
+                for counter, (path_here, index_here) in enumerate(zip(self.path, self.index)):
+                    bar.update(counter)
+                    timestep = self._prepare_timestep(counter, path_here, index_here)
+                    self.dump_timestep_to_nest(timestep)
+            else:
+                for counter, downloaded in self._iter_time_blocks(time_block_size, max_block_mb):
+                    bar.update(counter)
+                    timestep = self._interpolate_downloaded_timestep(counter, downloaded)
+                    self.dump_timestep_to_nest(timestep)
         bar.finish()
 
     def dump(self, nprocs=None):

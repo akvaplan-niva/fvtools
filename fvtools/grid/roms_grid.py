@@ -510,6 +510,100 @@ class RomsDownloader:
                     pass
             raise
 
+    # Phase 6B: optional contiguous-time block read (single open Dataset).
+    def estimate_roms_timestep_bytes(self, filepath):
+        """Estimate raw selected source bytes for one full nesting timestep.
+
+        Metadata only. Doubled by the caller when applying the memory budget
+        to provide room for masked arrays and working buffers. Not a process
+        RSS limit: the NetCDF library can have its own internal caches.
+        """
+        fields = {'salt': 'r', 'temp': 'r', 'zeta': 'r',
+                  'u': 'u', 'v': 'v', 'ubar': 'u', 'vbar': 'v'}
+        total = 0
+        with self._roms_dataset(filepath) as nc:
+            for name, grid in fields.items():
+                var = nc.variables.get(name)
+                if var is None:
+                    continue
+                ni = getattr(self.N4, 'x_' + grid + 'i') - getattr(self.N4, 'm_' + grid + 'i') + 1
+                nj = getattr(self.N4, 'x_' + grid + 'j') - getattr(self.N4, 'm_' + grid + 'j') + 1
+                if ni < 1 or nj < 1:
+                    raise ValueError('Invalid ROMS crop dimensions')
+                nz = int(var.shape[1]) if name in ('salt', 'temp', 'u', 'v') else 1
+                total += ni * nj * nz * np.dtype(var.dtype).itemsize
+        return total
+
+    def read_timestep_block(self, first_index, count, filepath, *,
+                            max_retries=5, retry_delay=30):
+        """Read consecutive source timesteps with one hyperslab per variable.
+
+        Returns the same ROMSTimeStep attributes and shapes as read_timestep.
+        This method is only called when phase 6B is explicitly enabled.
+        """
+        if isinstance(count, (bool, np.bool_)) or not isinstance(count, (int, np.integer)) or count < 1:
+            raise ValueError('count must be a positive integer')
+        if isinstance(first_index, (bool, np.bool_)) or not isinstance(first_index, (int, np.integer)) or first_index < 0:
+            raise ValueError('first_index must be a nonnegative integer')
+        if not isinstance(max_retries, int) or max_retries < 0:
+            raise ValueError('max_retries must be a nonnegative integer')
+        if retry_delay < 0:
+            raise ValueError('retry_delay must be nonnegative')
+        for attempt in range(max_retries + 1):
+            try:
+                return self._load_roms_timestep_block(first_index, count, filepath)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                if attempt == max_retries:
+                    raise RuntimeError(
+                        f'Could not read ROMS timesteps {first_index}:{first_index + count} '
+                        f'from {filepath!s} after {attempt + 1} attempts'
+                    ) from exc
+                print(f'  - ROMS block I/O error for {filepath}: {exc!s}. '
+                      f'Retrying ({attempt + 1}/{max_retries}) in {retry_delay}s', flush=True)
+                time_mod.sleep(retry_delay)
+
+    def _load_roms_timestep_block(self, first_index, count, filepath):
+        stop = first_index + count
+        t = slice(first_index, stop)
+        r_i = slice(self.N4.m_ri, self.N4.x_ri + 1)
+        r_j = slice(self.N4.m_rj, self.N4.x_rj + 1)
+        u_i = slice(self.N4.m_ui, self.N4.x_ui + 1)
+        u_j = slice(self.N4.m_uj, self.N4.x_uj + 1)
+        v_i = slice(self.N4.m_vi, self.N4.x_vi + 1)
+        v_j = slice(self.N4.m_vj, self.N4.x_vj + 1)
+        with self._roms_dataset(filepath) as nc:
+            # Same source fields/crops as the one-timestep reader; only the
+            # integer time index changes to a contiguous time slice.
+            salt = nc['salt'][t, :, r_i, r_j]
+            temp = nc['temp'][t, :, r_i, r_j]
+            zeta = nc['zeta'][t, r_i, r_j]
+            u = nc['u'][t, :, u_i, u_j]
+            v = nc['v'][t, :, v_i, v_j]
+            try:
+                ua = nc['ubar'][t, u_i, u_j]
+            except Exception:  # preserve the legacy ubar fallback behavior
+                ua = None
+            try:
+                va = nc['vbar'][t, v_i, v_j]
+            except Exception:  # preserve the legacy vbar fallback behavior
+                va = None
+        # Split into per-timestep source arrays, preserving masked-array data,
+        # source dtype and native order; interpolation is otherwise unchanged.
+        steps = []
+        for offset in range(count):
+            step = ROMSTimeStep(first_index + offset)
+            step.salt = salt[offset]
+            step.temp = temp[offset]
+            step.zeta = zeta[offset]
+            step.u = u[offset]
+            step.v = v[offset]
+            step.ua = (ua[offset] if ua is not None else
+                       np.sum(step.u * self.N4.cropped_dsigma_u, axis=0))
+            step.va = (va[offset] if va is not None else
+                       np.sum(step.v * self.N4.cropped_dsigma_v, axis=0))
+            steps.append(step)
+        return steps
+
     def read_timestep(self, index_here, filepath, variables=None, sigma=None,
                       *, max_retries=5, retry_delay=30):
         """Read ROMS data; retry only temporary I/O errors, never coding errors.
