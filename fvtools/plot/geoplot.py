@@ -5,7 +5,7 @@
 
 import contextily as ctx
 import numpy as np
-from pyproj import Proj, transform
+from pyproj import Proj, Transformer
 
 class geoplot:
     '''
