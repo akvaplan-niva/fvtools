@@ -38,7 +38,13 @@ class geoplot:
         self.WGS84   = Proj('EPSG:4326')
         self.WebMerc = Proj('EPSG:3857')
         self.UTM     = Proj(projection)
-        
+
+        self._to_webmerc = Transformer.from_crs(
+            self.WGS84.crs,
+            self.WebMerc.crs,
+            always_xy=True,
+        )
+
         # initialize offset
         self.offx    = 0
         self.offy    = 0
@@ -90,9 +96,8 @@ class geoplot:
         self.img, self.extent = ctx.warp_tiles(img, extent, projection) 
         self.extent = np.array(self.extent)
 
-    def project_to_map(self,lon,lat):
-        xe,ns      = transform(self.WGS84, self.WebMerc, lon, lat, always_xy = True)
-        return xe,ns
+    def project_to_map(self, lon, lat):
+        return self._to_webmerc.transform(lon, lat)
 
     def project_to_utm(self, lon, lat):
         '''
