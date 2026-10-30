@@ -186,19 +186,41 @@ class ExportGrid:
             all_islands.plot()
             self.plot_grid()
             
-    def write_2dm(self, name = None):
-        '''
-        Writes a 2dm file for this grid
-        name: to be saved
-        '''
-        import fvtools.grid.fvgrid as fvgrid
-        if name is None: name = self.casename
-        if str(name).lower().endswith('.2dm'):
-            name = str(name)[:-4]
-        if any(self.obc_nodes):
-            fvgrid.write_2dm(self.x, self.y, self.tri, nodestrings = self.nodestrings, name = name, casename = name)
-        else:
-            fvgrid.write_2dm(self.x, self.y, self.tri, name = name, casename = name)
+    def write_2dm(self, name=None):
+        """Write the grid to an SMS 2DM file, without fvgrid.
+
+        The original API accepts a basename or a name ending in '.2dm'.
+        Coordinates and triangulation are stored as ND and E3T records.
+        Nodestrings are written only when OBC nodes are defined.
+        """
+        name = str(self.casename if name is None else name)
+        if name.lower().endswith('.2dm'):
+            name = name[:-4]
+
+        with open(f'{name}.2dm', 'w', encoding='utf-8', newline='\n') as file:
+            file.write('MESH2D\n')
+            file.write(f'MESHNAME "{name}"\n')
+            for i, (n1, n2, n3) in enumerate(self.tri, start=1):
+                file.write(f'E3T {i} {n1+1} {n2+1} {n3+1} 1\n')
+            for i, (xp, yp) in enumerate(zip(self.x, self.y), start=1):
+                file.write(f'ND {i} {xp} {yp} 0.00000001\n')
+
+            if len(self.obc_nodes) > 0:
+                for boundary_number, nodestring in enumerate(self.nodestrings, start=1):
+                    nodes = np.asarray(nodestring, dtype=np.int64)
+                    if nodes.size == 0:
+                        continue
+                    # Match fvgrid's ten-node chunking and trailing positive
+                    # boundary identifier; the last node ID is negative.
+                    for start in range(0, nodes.size, 10):
+                        part = nodes[start:start + 10] + 1
+                        if start + 10 >= nodes.size:
+                            part = part.copy()
+                            part[-1] *= -1
+                            text = ' '.join(map(str, part)) + f' {boundary_number}'
+                        else:
+                            text = ' '.join(map(str, part))
+                        file.write(f'NS  {text}\n')
 
     def write_section(self):
         '''

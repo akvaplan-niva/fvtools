@@ -8,45 +8,58 @@
 # - fix the last node so that it does not have a triangle with only one neighbour
 #
 # hes@akvaplan.niva.no
-import sys
+from pathlib import Path
 import numpy as np
-import fvtools.grid.fvgrid as fvg
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from scipy.spatial import cKDTree as KDTree
 from operator import add
 
-def main(meshname, res, rows):
-    '''
-    Build a nestzone-grid suitable for roms-fvcom nesting
-    '''
-    print(f'Read: {meshname}')
-    t, _, x, y, _, _, nstr = fvg.read_sms_mesh(meshname, nodestrings = True)
-    M = FVCOM_grid(meshname)
-    
-    print('\nMake the OBC mesh')
-    p,tri = obcgridding(x, y, t, nstr, res, rows)
-    new_name = meshname.split('.')[0]+'_with_nest'
 
-    print(f'\nThe new mesh file is called: {new_name}')
-    fvg.write_2dm(p[:,0], p[:,1], tri, name = new_name, casename = 'obcgridding')
+def main(meshname, res, rows):
+    """
+    Build a nestzone-grid suitable for roms-fvcom nesting.
+
+    Read and write the 2dm mesh through FVCOM_grid, without importing fvgrid.
+    """
+    print(f'Read: {meshname}')
+    M = FVCOM_grid(str(meshname))
+
+    print('\\nMake the OBC mesh')
+    p, tri = obcgridding(M.x, M.y, M.tri, M.nodestrings, res, rows)
+    new_name = str(Path(meshname).with_suffix('')) + '_with_nest'
+
+    # The output is a computational + nest mesh. As in the original
+    # fvgrid.write_2dm call, do not write the *original* OBC nodestrings:
+    # they are now interior edges, not the outer boundary of the new mesh.
+    #
+    # M is local to main(), so reuse it to avoid constructing/projecting
+    # a second potentially large FVCOM_grid instance.
+    M.x = p[:, 0]
+    M.y = p[:, 1]
+    M.tri = tri
+    M.obc_nodes = []
+    M.nodestrings = []
+
+    print(f'\\nThe new mesh file is called: {new_name}')
+    M.write_2dm(name=new_name)
 
     print('Fin.')
-    
-    
+
+
 def obcgridding(x, y, t, nstr, res, rows):
-    '''
+    """
     Builds a mesh outside of the obc
     - Assumes that SMS counts anti-clockwise (as it tends to do)
 
     Parameters:
-    x,y :  ndarray 
+    x,y :  ndarray
         nodal coordinates
     t :    ndarray
         triangulation matrix
     nstr : list
         list containing the nodestrings from the sms grid
-    '''
-    
+    """
+
     # Supports multiple obcs.
     for i in range(len(nstr)):
         print(f'- Nodestring: {i+1} of {len(nstr)}')
@@ -58,7 +71,7 @@ def obcgridding(x, y, t, nstr, res, rows):
 
         # Boundary nodes
         xb = x[nstr[i]]; yb = y[nstr[i]]
-        
+
         # Boundary node-vector
         dx = np.array([xb[i+1]-xb[i] for i in range(len(xb)-1)])
         dy = np.array([yb[i+1]-yb[i] for i in range(len(yb)-1)])
@@ -76,14 +89,14 @@ def obcgridding(x, y, t, nstr, res, rows):
         normvec_node_rest = [list(map(add,a,b)) for a,b in zip(normvec[1:],normvec[:-1])]
         normvec_node_half = [[a/2, b/2] for a,b in normvec_node_rest]
         normvec_node.extend(normvec_node_half)
-        
+
         if not circular:
             normvec_node.extend([normvec[-1]])
 
         # Normalize the normal vector (in the future we might want variable size, then this will be obsolete.)
-        dst       = [np.sqrt(a**2+b**2) for a,b in normvec_node] 
+        dst       = [np.sqrt(a**2+b**2) for a,b in normvec_node]
         unit_norm = np.array([[v[0]/l, v[1]/l] for v,l in zip(normvec_node, dst)])
-        
+
         # Build the structured grid
         # - Loop over each node, add points away from the obc. create new triangles.
         if not circular:
@@ -114,7 +127,7 @@ def obcgridding(x, y, t, nstr, res, rows):
                 ynew   = np.append(ynew, yb+res*unit_norm[:,1])
                 old_xr = xb+res*unit_norm[:,0]
                 old_yr = yb+res*unit_norm[:,1]
-                    
+
                 # Store the triangles
                 # Better to think of them one square at the time
                 x_square = [xb[:-1], xb[1:], old_xr[:-1], old_xr[1:]]
@@ -133,7 +146,7 @@ def obcgridding(x, y, t, nstr, res, rows):
 
                     new_nv.append([ind[1],ind[3],ind[2]])
                     new_nv.append([ind[1],ind[0],ind[2]])
-                    
+
 
             else:
                 # Update the nestgrid-nodes
@@ -195,6 +208,7 @@ def obcgridding(x, y, t, nstr, res, rows):
 
     p = np.array((x,y)).T
     return p,t
+
 
 def circular_adjustment(square_in, pos_in, old_pos):
     """

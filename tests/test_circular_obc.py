@@ -156,24 +156,20 @@ def test_nodestrings_reset_on_obc_assignment(fan):
     assert m.nodestrings[0].tolist() == [0, 1, 2, 3, 0]
 
 
-def test_2dm_filename_suffix_is_not_duplicated(fan, tmp_path, monkeypatch):
-    import sys
-    import types
+def test_2dm_filename_suffix_is_not_duplicated(fan, tmp_path):
+    # The writer now belongs to ExportGrid, not fvgrid. Assert the actual
+    # output format instead of mocking the removed fvgrid.write_2dm call.
     tri, boundary = fan
     m = Mesh(tri, 5, [0, 1, 2, 3], boundary)
-    captured = {}
-    mod = types.ModuleType('fvtools.grid.fvgrid')
-    def write_2dm(x, y, tri, **kwargs):
-        captured.update(kwargs)
-    mod.write_2dm = write_2dm
-    # Isolate import performed by ExportGrid.write_2dm from package initialization.
-    fvtools = types.ModuleType('fvtools')
-    grid = types.ModuleType('fvtools.grid')
-    grid.fvgrid = mod
-    fvtools.grid = grid
-    monkeypatch.setitem(sys.modules, 'fvtools', fvtools)
-    monkeypatch.setitem(sys.modules, 'fvtools.grid', grid)
-    monkeypatch.setitem(sys.modules, 'fvtools.grid.fvgrid', mod)
-    m.write_2dm(name=str(tmp_path / 'B_grid.2dm'))
-    assert captured['name'].endswith('B_grid')
-    assert captured['nodestrings'][0].tolist() == [0, 1, 2, 3, 0]
+    path = tmp_path / 'B_grid.2dm'
+    m.write_2dm(name=str(path))
+
+    assert path.is_file()
+    assert not (tmp_path / 'B_grid.2dm.2dm').exists()
+    ns_records = [
+        line for line in path.read_text(encoding='utf-8').splitlines()
+        if line.startswith('NS ')
+    ]
+    # The final -1 closes the circular nodestring, followed by the
+    # boundary number. The writer must preserve that convention.
+    assert ns_records == ['NS  1 2 3 4 -1 1']

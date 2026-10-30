@@ -57,23 +57,109 @@ class GridLoader:
         assert self.lon.shape == self.lat.shape, 'lon, lat shapes do not match'
 
     def _add_grid_parameters_2dm(self):
-        '''
-        Grid parameters from a .2dm file
-        - assumes that .2dm files are always projected to carthesian coordinates
-        '''
-        import fvtools.grid.fvgrid as fvgrid
-        tri, nodes, x, y, _, _, types = fvgrid.read_sms_mesh(self.filepath, nodestrings = True)
-        l = []
-        for nstr in types:
-            l.extend(nstr)
-        self._direct_initialization(x=x, y=y, tri=tri, obc_nodes = l)
+        """Read SMS 2DM geometry and ordered open-boundary nodestrings.
 
-        # Add nodestrings
-        nodestrings = []
-        for ns in types:
-            nodestrings.append(np.array(ns))
+        Node and element IDs in the file are one-based; internal connectivity
+        and nodestrings are zero-based. 2DM coordinates are assumed projected.
+        """
+        from pathlib import Path
+
+        node_ids = []
+        x = []
+        y = []
+        triangles = []
+        raw_nodestrings = []
+        current_string = []
+
+        with open(self.filepath, encoding='utf-8') as file:
+            for line_number, line in enumerate(file, 1):
+                fields = line.split()
+                if not fields:
+                    continue
+                record = fields[0].upper()
+                if record == 'ND':
+                    if len(fields) < 5:
+                        raise ValueError(f'Incomplete ND record on line {line_number}')
+                    node_ids.append(int(fields[1]))
+                    x.append(float(fields[2]))
+                    y.append(float(fields[3]))
+                elif record == 'E3T':
+                    if len(fields) < 5:
+                        raise ValueError(f'Incomplete E3T record on line {line_number}')
+                    triangles.append([int(value) for value in fields[2:5]])
+                elif record == 'NS':
+                    # A negative ID terminates a nodestring. SMS may then
+                    # append a positive boundary identifier, which is *not*
+                    # a mesh node (fvgrid.write_2dm used this convention).
+                    ids = [int(value) for value in fields[1:]]
+                    i = 0
+                    while i < len(ids):
+                        value = ids[i]
+                        if value == 0:
+                            raise ValueError(f'Zero node ID on line {line_number}')
+                        current_string.append(abs(value))
+                        if value < 0:
+                            raw_nodestrings.append(current_string)
+                            current_string = []
+                            # Legacy SMS format: the next token on this line
+                            # is a boundary number, not the next mesh node.
+                            if i + 1 < len(ids):
+                                i += 1
+                        i += 1
+
+        if current_string:
+            raise ValueError('Unterminated NS nodestring in 2DM file')
+        if not node_ids or not triangles:
+            raise ValueError('2DM file must contain ND and E3T records')
+        # In normal SMS files IDs are 1..N in ND-record order. Avoid a
+        # Python dictionary (which can be large) for these common meshes.
+        sequential = all(node_id == i + 1 for i, node_id in enumerate(node_ids))
+        if not sequential and len(set(node_ids)) != len(node_ids):
+            raise ValueError('Duplicate node IDs in 2DM file')
+        index = None if sequential else {node_id: i for i, node_id in enumerate(node_ids)}
+
+        def zero_based(node_id):
+            if sequential:
+                idx = node_id - 1
+                if idx < 0 or idx >= len(node_ids):
+                    raise ValueError(f'2DM references unknown node ID {node_id}')
+                return idx
+            try:
+                return index[node_id]
+            except KeyError as exc:
+                raise ValueError(f'2DM references unknown node ID {node_id}') from exc
+
+        if sequential:
+            # Vectorized conversion avoids building a second set of Python
+            # lists for meshes with millions of elements.
+            tri = np.asarray(triangles, dtype=np.int64) - 1
+            if tri.min() < 0 or tri.max() >= len(node_ids):
+                raise ValueError('2DM triangle references an unknown node ID')
+            nodestrings = [
+                np.asarray(row, dtype=np.int64) - 1
+                for row in raw_nodestrings
+            ]
+            if any(row.min() < 0 or row.max() >= len(node_ids) for row in nodestrings):
+                raise ValueError('2DM nodestring references an unknown node ID')
+        else:
+            tri = np.asarray(
+                [[zero_based(node_id) for node_id in row] for row in triangles],
+                dtype=np.int64,
+            )
+            nodestrings = [
+                np.asarray([zero_based(node_id) for node_id in row], dtype=np.int64)
+                for row in raw_nodestrings
+            ]
+        obc_nodes = [int(node) for row in nodestrings for node in row]
+        self._direct_initialization(
+            x=np.asarray(x, dtype=float),
+            y=np.asarray(y, dtype=float),
+            tri=tri,
+            obc_nodes=obc_nodes,
+        )
+        # Retain the original ordering (including closure for circular OBCs).
         self.nodestrings = nodestrings
-        self.casename = self.filepath.split('.2dm')[0]
+        self.casename = str(Path(self.filepath).with_suffix(''))
 
     def _add_grid_parameters_mat(self):
         '''
