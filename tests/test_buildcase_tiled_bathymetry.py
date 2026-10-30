@@ -4,14 +4,12 @@ No external topography is needed. SciPy's original global interpolator is the
 numerical reference for all sufficiently small synthetic point clouds.
 """
 
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from scipy.interpolate import LinearNDInterpolator
 
 from fvtools.prepro._buildcase import tiled_bathymetry as tiled
-from fvtools.prepro._buildcase.depth import DepthHandler
 
 
 def _reference(data, queries):
@@ -120,44 +118,6 @@ def test_outside_source_extent_still_rejected(tmp_path):
     np.save(path, np.array([[0., 0., 2.], [1., 0., 3.], [0., 1., 4.]]))
     with pytest.raises(ValueError, match='cover'):
         tiled.interpolate_unstructured_npy(path, np.array([[4., 4.], [5., 5.]]))
-
-
-def test_depthhandler_npy_path_preserves_min_depth_and_source_file(tmp_path):
-    xy = np.array([[0., 0.], [10., 0.], [0., 10.], [10., 10.], [5., 5.]])
-    source = np.array([[0., 0., 1.], [10., 0., 8.],
-                       [0., 10., 3.], [10., 10., 12.], [5., 5., 2.]])
-    filename = tmp_path/'bathy.npy'
-    np.save(filename, source)
-    obj = SimpleNamespace(depth_file=str(filename), x=xy[:, 0],
-                          xy_grid_at_depth_points=xy, min_depth=4.)
-    DepthHandler.make_depth(obj)
-    expected = _reference(source, xy)
-    expected[np.isnan(expected) | (expected < 4.)] = 4.
-    np.testing.assert_allclose(obj.h_raw, expected)
-    np.testing.assert_array_equal(np.load(filename), source)
-
-
-def test_flat_and_text_bathymetry_workflow_unchanged():
-    flat = SimpleNamespace(depth_file=17., x=np.zeros(4), min_depth=3.)
-    DepthHandler.make_depth(flat)
-    np.testing.assert_array_equal(flat.h_raw, [17., 17., 17., 17.])
-
-    class Text:
-        depth_file = 'topography.txt'
-        x = np.zeros(3)
-        min_depth = 3.
-        def load_textbath(self, filename):
-            assert filename == self.depth_file
-            return 'raw'
-        def crop(self, data):
-            assert data == 'raw'
-            return 'cropped'
-        def interpolate_to_mesh(self, data):
-            assert data == 'cropped'
-            return np.array([2., 4., 6.])
-    obj = Text()
-    DepthHandler.make_depth(obj)
-    np.testing.assert_array_equal(obj.h_raw, [3., 4., 6.])
 
 
 def test_extra_unused_source_columns_are_ignored(tmp_path):

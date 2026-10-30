@@ -406,7 +406,7 @@ class CellData:
         detide a velocity signal
         '''
         u_t, v_t = self.tidal_current(self.original_time, coef)
-        return u-u_t, v-u_t
+        return u-u_t, v-v_t
 
     def tidal_current(self, time, coef):
         '''

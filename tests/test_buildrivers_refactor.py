@@ -92,24 +92,6 @@ def test_draggable_widget_keeps_originals_and_waits_for_done(monkeypatch):
         plt.close(fig)
 
 
-def test_merge_rivers_preserves_flux_sum_and_weighted_temperature():
-    river = br.FVCOM_rivers.__new__(br.FVCOM_rivers)
-    river.info = {'iloc': 'node'}
-    river.M = SimpleNamespace(x=np.array([10., 20., 30.]),
-                              y=np.array([40., 50., 60.]))
-    river.mesh_location = np.array([0, 0, 2])
-    river.RiverTransport = np.array([[1., 2., 3.], [4., 5., 6.]])
-    river.RiverTemp = np.array([[10., 12., 20.], [11., 13., 21.]])
-    river.river_names = ['A', 'B', 'C']
-    river.short_names = ['a', 'b', 'c']
-    flux, temperature, names, ids = river.merge_rivers()
-    np.testing.assert_array_equal(flux, [[3., 3.], [9., 6.]])
-    np.testing.assert_allclose(temperature, [[34. / 3., 20.], [109. / 9., 21.]])
-    assert names == ['A, B', 'C']
-    assert ids == ['a, b', 'c']
-    np.testing.assert_array_equal(river.xriv, [10., 30.])
-
-
 def test_namelist_keeps_one_based_locations_and_vertical_weights(tmp_path):
     obj = br.FVCOM_rivers.__new__(br.FVCOM_rivers)
     obj.M = SimpleNamespace(siglev_c=np.array([[0., -.4, -1.], [0., -.2, -1.]]))

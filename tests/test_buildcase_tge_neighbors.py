@@ -38,7 +38,7 @@ def legacy(obj):
 
 
 @pytest.mark.parametrize('closed', [True, False])
-@pytest.mark.parametrize('n', [3, 5, 8, 16, 25])
+@pytest.mark.parametrize('n', [3, 5, 8, 12, 16, 25])
 def test_tge_smoothing_neighbors_match_legacy_connectivity(closed, n):
     obj = fan(n, closed)
     (old_neighbors, old_counts), edges = legacy(obj)

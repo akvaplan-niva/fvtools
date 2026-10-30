@@ -5,8 +5,6 @@ The tests are synthetic; they never open a bathymetry file or write FVCOM output
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
-from matplotlib.tri import Triangulation
 
 from fvtools.prepro import BuildCase as bc
 from fvtools.prepro._buildcase.depth import DepthHandler
@@ -89,20 +87,6 @@ def _fan_mesh(n):
     return x, y, tri
 
 
-def _edge_reference(x, y, tri):
-    """Neighbor table from Matplotlib edges, independent of TGE's ring layout."""
-    edges = Triangulation(x, y, tri).edges
-    counts = np.bincount(edges.ravel(), minlength=len(x))
-    neighbors = np.full((len(x), int(counts.max(initial=0))), -1, dtype=np.int64)
-    offset = np.zeros(len(x), dtype=np.int64)
-    for i, j in edges:
-        neighbors[i, offset[i]] = j
-        neighbors[j, offset[j]] = i
-        offset[i] += 1
-        offset[j] += 1
-    return neighbors, counts
-
-
 def test_dynamic_neighbor_capacity_exceeds_old_twelve_limit():
     x, y, tri = _fan_mesh(16)
     obj = SimpleNamespace(x=x, y=y, tri=tri)
@@ -115,23 +99,6 @@ def test_dynamic_neighbor_capacity_exceeds_old_twelve_limit():
     depths = np.arange(1., len(x) + 1.)
     smoothed = DepthHandler.laplacian_filter(x, y, depths, obj.nbsn, obj.ntsn, .2)
     np.testing.assert_allclose(smoothed[0], .8*depths[0] + .2*np.mean(depths[1:]))
-
-
-@pytest.mark.parametrize('n', [3, 5, 8, 12])
-def test_neighbor_lists_and_smoothing_match_original_for_small_valence(n):
-    x, y, tri = _fan_mesh(n)
-    obj = SimpleNamespace(x=x, y=y, tri=tri)
-    DepthHandler.setup_metrics(obj)
-    old_nbsn, old_counts = _edge_reference(x, y, tri)
-    np.testing.assert_array_equal(obj.ntsn, old_counts)
-    for i in range(len(x)):
-        count = int(old_counts[i])
-        assert set(obj.nbsn[i, :count]) == set(old_nbsn[i, :count])
-        assert len(set(obj.nbsn[i, :count])) == count
-    h = np.linspace(1., 50., len(x))
-    got = DepthHandler.laplacian_filter(x, y, h, obj.nbsn, obj.ntsn, .25)
-    expected = DepthHandler.laplacian_filter(x, y, h, old_nbsn, old_counts, .25)
-    np.testing.assert_allclose(got, expected, rtol=0, atol=1e-12)
 
 
 def test_dynamic_neighbors_have_no_arbitrary_minimum():

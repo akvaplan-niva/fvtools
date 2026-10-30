@@ -55,7 +55,10 @@ def test_text_depth_enforces_minimum_while_flat_depth_stays_unchanged():
     DepthHandler.make_depth(text)
     np.testing.assert_array_equal(text.h_raw, [3., 4., 6.])
 
-    # Numeric constant bathymetry took a separate path in the original code.
-    flat = SimpleNamespace(depth_file=2., x=np.zeros(3), min_depth=4.)
-    DepthHandler.make_depth(flat)
-    np.testing.assert_array_equal(flat.h_raw, [2., 2., 2.])
+    # Constant bathymetry bypasses minimum-depth clipping, both below and
+    # above min_depth (unlike interpolated bathymetry).
+    for constant, minimum, count in [(2., 4., 3), (17., 3., 4)]:
+        flat = SimpleNamespace(depth_file=constant, x=np.zeros(count),
+                               min_depth=minimum)
+        DepthHandler.make_depth(flat)
+        np.testing.assert_array_equal(flat.h_raw, np.full(count, constant))

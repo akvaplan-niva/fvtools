@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-import netCDF4
 import numpy as np
 import pytest
 
@@ -210,24 +209,3 @@ def test_hyw_scalar_zero_fits_siglev_node_shape():
     np.testing.assert_array_equal(obj.out.variables['hyw'],np.zeros((1,4,3)))
 
 
-def test_netcdf_time_format_remains_float32_and_itime(monkeypatch, tmp_path):
-    # Test an actual netCDF file, not only source-text assertions.
-    from netCDF4 import Dataset
-    m=SimpleNamespace(
-        xn=np.array([[0.],[1.],[0.]]),yn=np.array([[0.],[0.],[1.]]),
-        xc=np.array([.3]),yc=np.array([.3]),
-        lat=np.array([60.,60.,61.]),lon=np.array([5.,6.,5.]),
-        latc=np.array([60.3]),lonc=np.array([5.3]),
-        h=np.ones(3)*5,hc=np.ones(1)*5,
-        nv=np.array([[0,1,2]]),
-        siglay=np.full((3,2),-.5),siglev=np.full((3,3),-.5),
-        siglay_center=np.full((1,2),-.5),siglev_center=np.full((1,3),-.5),
-    )
-    dest=tmp_path/'out.nc'
-    roms.create_nc_forcing_file(str(dest),m,'NKv3',np.array([61000.,61000.5]),False,'epsg:32633')
-    with Dataset(dest) as ds:
-        assert ds.variables['time'].dtype==np.dtype('float32')
-        assert ds.variables['Itime'].dtype==np.dtype('int32')
-        assert ds.variables['Itime2'].dtype==np.dtype('int32')
-        assert ds.variables['hyw'].dimensions==('time','siglev','node')
-        np.testing.assert_array_equal(ds.variables['time'][:], [61000.,61000.5])

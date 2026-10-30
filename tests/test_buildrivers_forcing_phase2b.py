@@ -72,6 +72,27 @@ def test_merge_conserves_each_time_step_and_weights_temperature():
     np.testing.assert_array_equal(r.xriv, [0, 2])
 
 
+def test_merge_nonzero_flux_preserves_names_ids_and_weighted_temperature():
+    """Nonzero-flow case from the older refactor tests, using shared setup."""
+    river = make_rivers(
+        [10., 10., 30.],
+        [[1., 2., 3.], [4., 5., 6.]],
+        [[10., 12., 20.], [11., 13., 21.]],
+        mesh_locations=[0, 0, 2], land_count=3,
+    )
+    river.M.x = np.array([10., 20., 30.])
+    river.M.y = np.array([40., 50., 60.])
+    river.river_names = ['A', 'B', 'C']
+    river.short_names = ['a', 'b', 'c']
+    q, t, names, ids = river.merge_rivers()
+    np.testing.assert_array_equal(q, [[3., 3.], [9., 6.]])
+    np.testing.assert_allclose(t, [[34. / 3., 20.], [109. / 9., 21.]])
+    np.testing.assert_allclose(q.sum(axis=1), [6., 15.])
+    assert names == ['A, B', 'C']
+    assert ids == ['a, b', 'c']
+    np.testing.assert_array_equal(river.xriv, [10., 30.])
+
+
 def test_merge_one_river_preserves_all_fields():
     r = make_rivers([2], [[2.], [0.]], [[4.], [9.]], land_count=4)
     q, t, names, ids = r.merge_rivers()
