@@ -818,8 +818,10 @@ def get_obc(M):
     '''
     Simple check to see if obc_nodes is available
     '''
-    if any(M.obc_nodes):
-        obc_nodes = M.obc_nodes
+    if len(M.obc_nodes):
+        # Numba's reflected Python-list arguments are deprecated.  OBC
+        # indices are read-only, so always hand the JIT kernel an ndarray.
+        obc_nodes = np.asarray(M.obc_nodes, dtype=np.int64)
 
     else:
         print(f'{M.filepath}\ndoes not contain OBC information.')

@@ -174,13 +174,13 @@ class streamlines:
         NBE                       = tge.get_NBE(NT, MT, NV)
 
         if self.verbose: print('  - Boundary check')
-        ISBCE, ISONB              = tge.get_BOUNDARY(NT, MT, NBE, NV)
+        _, ISONB                  = tge.get_BOUNDARY(NT, MT, NBE, NV)
 
         if self.verbose: print('  - Elements around nodes')
         NBVE, NBVT, NTVE          = tge.get_NBVE_NBVT(MT, NT, NV, 15)
 
         if self.verbose: print('  - Nodes around nodes')
-        NTSN, NBSN, NBVE, NBVT, _ = tge.get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, 15, MT)
+        _, _, NBVE, NBVT, _       = tge.get_NTSN_NBSN(NBVE, NTVE, NBVT, NBE, NV, ISONB, 15, MT)
         
         if self.verbose: print('  - Elements around elements')
         self.NBSE, self.NESE      = tge.get_NBSE_NESE(NBVE, NTVE, NV, NT)

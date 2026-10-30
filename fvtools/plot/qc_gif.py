@@ -251,7 +251,7 @@ def _set_section_velocity_colorbars(mmaker, fields, vlim, nlevels):
     for field in vel_fields:
         cfg = mmaker.cb[field]
         cfg['label'] = 'm/s'
-        cfg['extend'] = 'both'
+        cfg['extend'] = 'max' if field == 'velocity_speed' else 'both'
         cfg['cmap'] = cmo.cm.speed if field == 'velocity_speed' else cmo.cm.balance
         cfg['colorticks'] = np.linspace(
             0 if field == 'velocity_speed' else -limit,
