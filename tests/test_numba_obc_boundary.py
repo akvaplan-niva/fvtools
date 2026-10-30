@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from numba.core.errors import NumbaPendingDeprecationWarning
 
-from fvtools.grid import tge
+from fvtools.grid.fvcom import tge
 
 
 def test_only_zero_index_is_still_an_open_boundary():

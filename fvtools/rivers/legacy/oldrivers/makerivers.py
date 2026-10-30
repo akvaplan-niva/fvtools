@@ -6,7 +6,7 @@ import os
 import chardet
 import netCDF4
 import numpy as np
-import fvtools.grid.grid_metrics as gm
+import fvtools.grid.fvcom.grid_metrics as gm
 import matplotlib.pyplot as plt
 import pandas as pd
 

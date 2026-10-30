@@ -8,7 +8,7 @@ import datetime
 import numpy as np
 import netCDF4
 import matplotlib.mlab as mp
-from fvtools.grid import tge
+from fvtools.grid.fvcom import tge
 
 def get_cstr():
     '''Returns case-string'''

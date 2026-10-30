@@ -9,7 +9,7 @@ import numpy as np
 from scipy import interpolate
 from scipy.spatial import cKDTree as KDTree
 
-import fvtools.grid.grid_metrics as gm
+import fvtools.grid.fvcom.grid_metrics as gm
 from fvtools.prepro._buildrivers.constants import version
 from fvtools.prepro._buildrivers.interaction import CropRivers
 from fvtools.prepro._buildrivers.output import RiverOutputMixin

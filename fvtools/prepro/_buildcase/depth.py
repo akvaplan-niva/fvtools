@@ -247,7 +247,7 @@ class DepthHandler:
         """
         # Use TGE's topological connectivity without triggering its full
         # control-volume/gradient calculation through self.T.
-        from fvtools.grid import tge
+        from fvtools.grid.fvcom import tge
 
         n_nodes = len(self.x)
         nv = tge.check_nv(np.asarray(self.tri), self.x, self.y)

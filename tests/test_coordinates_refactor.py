@@ -2,7 +2,7 @@
 import numpy as np
 
 from fvtools.grid.fvcom_grd import FVCOM_grid, Coordinates, InputCoordinates
-from fvtools.grid._components.coordinates import (
+from fvtools.grid.fvcom._components.coordinates import (
     Coordinates as ImplementationCoordinates,
     InputCoordinates as ImplementationInputCoordinates,
 )

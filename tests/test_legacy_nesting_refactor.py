@@ -12,13 +12,13 @@ from fvtools.grid.fvcom_grd import (
     LegacyPropertyAliases, LegacyFunctions, OutputLoader,
     LegacyNestPropertyAliases, LoadNest, NestROMS2FVCOM,
 )
-from fvtools.grid.netcdf_io import FVCOMNetCDFIO
-from fvtools.grid._components.compatibility import (
+from fvtools.grid.fvcom.netcdf_io import FVCOMNetCDFIO
+from fvtools.grid.fvcom._components.compatibility import (
     LegacyPropertyAliases as MovedAliases,
     LegacyFunctions as MovedFunctions,
     OutputLoader as MovedOutputLoader,
 )
-from fvtools.grid._components.nesting import (
+from fvtools.grid.fvcom._components.nesting import (
     LegacyNestPropertyAliases as MovedNestAliases,
     LoadNest as MovedLoadNest,
     NestROMS2FVCOM as MovedNestROMS2FVCOM,

@@ -19,7 +19,7 @@ from fvtools.grid.fvcom_grd import (
 )
 
 
-from fvtools.grid._components.control_volumes import (
+from fvtools.grid.fvcom._components.control_volumes import (
     ControlVolumePlotter as ControlVolumeMixin,
     _find_cv_walls,
     _connect_cv_walls,
@@ -206,7 +206,7 @@ def test_cv_polygon_numba_helpers_still_function():
 
 
 def test_control_volume_dispatch_passes_node_connectivity(monkeypatch):
-    import fvtools.grid._components.control_volumes as cv_module
+    import fvtools.grid.fvcom._components.control_volumes as cv_module
 
     seen = []
 

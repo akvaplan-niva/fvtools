@@ -526,7 +526,7 @@ class HorizontalMaker(AnimationFields):
         )
 
         if 'vorticity' in var or 'pv' in var:
-            import fvtools.grid.tge as tge
+            import fvtools.grid.fvcom.tge as tge
             self.T = tge.main(full_grid, verbose=True)
             self.T.get_art1(verbose=False)
 

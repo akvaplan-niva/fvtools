@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from numba import jit
 
-from fvtools.grid import tge
+from fvtools.grid.fvcom import tge
 
 
 @jit(nopython=True)

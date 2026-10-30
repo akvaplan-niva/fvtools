@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from fvtools.grid.fvcom_grd import FVCOM_grid, SectionMaker
-from fvtools.grid._components.sections import SectionMaker as ImplementationSectionMaker
+from fvtools.grid.fvcom._components.sections import SectionMaker as ImplementationSectionMaker
 
 
 @pytest.fixture

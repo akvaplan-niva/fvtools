@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Module path (relative to fvtools/) -> qualified names of *all* active JIT kernels.
 KERNELS = {
-    "grid/tge.py": (
+    "grid/fvcom/tge.py": (
         "get_NBE", "get_BOUNDARY", "get_MAXNBR", "get_NBVE_NBVT",
         "get_NTSN_NBSN", "get_TRI_EDGE_PARAM", "set_boundary", "get_CV",
         "get_NBSE_NESE", "shape_coefficients", "get_art", "get_art1",
@@ -39,7 +39,7 @@ KERNELS = {
     ),
     "gridding/estimator.py": ("DistanceFunction._get_node_estimate_function",),
     "prepro/_buildcase/depth.py": ("DepthHandler.laplacian_filter", "DepthHandler.mellor_ezer_oey"),
-    "grid/_components/control_volumes.py": ("_find_cv_walls", "_connect_cv_walls"),
+    "grid/fvcom/_components/control_volumes.py": ("_find_cv_walls", "_connect_cv_walls"),
     "grid/fvcom_grd.py": ("FVCOM_grid._smooth",),
     "nesting/vertical_interpolation.py": (
         "calc_interp_matrices", "numba_absdiff", "find_inds_and_weights",
@@ -130,7 +130,7 @@ def _fan():
 
 def _topology():
     """Use production connectivity algorithms on the synthetic mesh."""
-    from fvtools.grid import tge
+    from fvtools.grid.fvcom import tge
     x, y, tri, cx, cy = _fan()
     nt, mt = len(tri), len(x)
     nbe = tge.get_NBE(nt, mt, tri)
@@ -149,8 +149,8 @@ def _args(path, name):
     nt, mt = len(tri), len(x)
     k = name.split(".")[-1]
 
-    if path == "grid/tge.py":
-        from fvtools.grid import tge
+    if path == "grid/fvcom/tge.py":
+        from fvtools.grid.fvcom import tge
         nbe = tge.get_NBE(nt, mt, tri)
         if k == "get_NBE": return (nt, mt, tri)
         if k == "get_BOUNDARY": return (nt, mt, nbe, tri)
@@ -197,7 +197,7 @@ def _args(path, name):
         return (np.array([[0, 1, 2, 3]], dtype=np.int64), pts,
                 np.array([[.45, .55]]), 1)
     elif path == "plot/fvcom_streamlines.py":
-        from fvtools.grid import tge
+        from fvtools.grid.fvcom import tge
         nbve, _, ntve = tge.get_NBVE_NBVT(mt, nt, tri, 4)
         nbse, nese = tge.get_NBSE_NESE(nbve, ntve, tri, nt)
         initial = np.array([[.5, .10]], dtype=np.float64)
@@ -219,7 +219,7 @@ def _args(path, name):
         z = np.array([20., 2., 5.])
         if k == "laplacian_filter": return (np.arange(3.), np.arange(3.), z, neigh, counts, .25)
         return (z, counts, neigh, .2, np.arange(3))
-    elif path == "grid/_components/control_volumes.py":
+    elif path == "grid/fvcom/_components/control_volumes.py":
         # One boundary node, two adjacent elements, 3 ordered neighbours.
         nodes = np.array([1, 2, 3], dtype=np.int64)
         elements = np.array([0, 1], dtype=np.int64)
@@ -283,7 +283,7 @@ def test_numba_compiled_matches_python_and_compiles_in_nopython(path, name):
 
 
 def test_topology_independent_oracle():
-    from fvtools.grid import tge
+    from fvtools.grid.fvcom import tge
     x, y, tri, _, _ = _fan()
     neighbors = tge.get_NBE(4, 5, tri)
     assert np.count_nonzero(neighbors == -1) == 4
@@ -339,8 +339,8 @@ def test_depth_smoothing_conservation():
 
 
 def test_streamfunction_zero_velocity():
-    from fvtools.grid import tge
-    args = _args("grid/tge.py", "streamfunction")
+    from fvtools.grid.fvcom import tge
+    args = _args("grid/fvcom/tge.py", "streamfunction")
     psi = tge.streamfunction(*args)
     np.testing.assert_allclose(psi, 0, atol=1e-7)
 
@@ -349,7 +349,7 @@ def test_streamfunction_zero_velocity():
     np.array([[0, 1, 6]], dtype=np.int64),  # index outside node count
 ])
 def test_tge_rejects_invalid_connectivity(bad_mesh):
-    from fvtools.grid import tge
+    from fvtools.grid.fvcom import tge
     with pytest.raises(ValueError):
         tge.get_NBE(1, 5, bad_mesh)
 

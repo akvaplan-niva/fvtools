@@ -6,7 +6,7 @@ both public Numba helper functions in nopython mode.
 import numpy as np
 import pytest
 
-from fvtools.grid._components.control_volumes import (
+from fvtools.grid.fvcom._components.control_volumes import (
     _connect_cv_walls, _find_cv_walls,
 )
 

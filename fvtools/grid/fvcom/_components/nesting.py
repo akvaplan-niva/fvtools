@@ -7,11 +7,11 @@ import numpy as np
 from pyproj import Proj
 from scipy.spatial import cKDTree as KDTree
 
-from fvtools.grid._components.coordinates import Coordinates
-from fvtools.grid._components.proximity import GridProximity
-from fvtools.grid._components.plotting import PlotFVCOM
-from fvtools.grid._components.physics import AnglesAndPhysics
-from fvtools.grid._components.compatibility import LegacyPropertyAliases
+from fvtools.grid.fvcom._components.coordinates import Coordinates
+from fvtools.grid.fvcom._components.proximity import GridProximity
+from fvtools.grid.fvcom._components.plotting import PlotFVCOM
+from fvtools.grid.fvcom._components.physics import AnglesAndPhysics
+from fvtools.grid.fvcom._components.compatibility import LegacyPropertyAliases
 
 
 class LegacyNestPropertyAliases:

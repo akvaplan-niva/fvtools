@@ -1,6 +1,6 @@
 import xarray as xr
 import numpy as np
-from .base import BaseGrid
+from .common.base import BaseGrid
 
 class GLORYS(BaseGrid):
     def __init__(self, ncglorys):

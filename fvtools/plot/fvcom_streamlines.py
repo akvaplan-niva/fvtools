@@ -33,7 +33,7 @@ import matplotlib.patches as patches
 from numba import jit
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from scipy.spatial import cKDTree as KDTree
-from fvtools.grid import tge
+from fvtools.grid.fvcom import tge
 
 class streamlines:
     '''

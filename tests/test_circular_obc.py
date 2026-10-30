@@ -17,9 +17,9 @@ def _load_module(name, path):
     return module
 
 
-obc_mod = _load_module('_test_obc_circular', ROOT / 'fvtools/grid/_components/obc.py')
-export_mod = _load_module('_test_export_circular', ROOT / 'fvtools/grid/_components/export.py')
-coast_mod = _load_module('_test_coastline_circular', ROOT / 'fvtools/grid/_components/coastline.py')
+obc_mod = _load_module('_test_obc_circular', ROOT / 'fvtools/grid/fvcom/_components/obc.py')
+export_mod = _load_module('_test_export_circular', ROOT / 'fvtools/grid/fvcom/_components/export.py')
+coast_mod = _load_module('_test_coastline_circular', ROOT / 'fvtools/grid/fvcom/_components/coastline.py')
 
 
 class Mesh(obc_mod.OBC, export_mod.ExportGrid, coast_mod.CoastLine):

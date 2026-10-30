@@ -4,7 +4,7 @@ Class implementations extracted verbatim from fvcom_grd.py.
 """
 
 import numpy as np
-from fvtools.grid.netcdf_io import FVCOMNetCDFIO
+from fvtools.grid.fvcom.netcdf_io import FVCOMNetCDFIO
 
 
 class LegacyPropertyAliases:

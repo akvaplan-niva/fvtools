@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from fvtools.grid import tge
+from fvtools.grid.fvcom import tge
 
 
 def _mesh(n, *, closed):

@@ -8,7 +8,7 @@ must match the old routine because get_NTSN_NBSN consumes the arrays.
 import numpy as np
 import pytest
 
-from fvtools.grid import tge
+from fvtools.grid.fvcom import tge
 
 
 def quadratic_reference(mt, nv, cap):

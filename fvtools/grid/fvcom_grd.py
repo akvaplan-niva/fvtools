@@ -1,25 +1,25 @@
 import numpy as np
 from numba import njit
 
-from fvtools.grid._components.grid_loader import GridLoader
-from fvtools.grid._components.coordinates import InputCoordinates, Coordinates
-from fvtools.grid._components.proximity import GridProximity
-from fvtools.grid._components.topology import PropertiesFromTGE
-from fvtools.grid._components.triangulation import CellTriangulation
-from fvtools.grid._components.cropping import CropGrid
-from fvtools.grid._components.coastline import CoastLine
-from fvtools.grid._components.obc import OBC
-from fvtools.grid._components.control_volumes import ControlVolumePlotter
-from fvtools.grid._components.sections import SectionMaker
-from fvtools.grid._components.plotting import PlotFVCOM
-from fvtools.grid._components.physics import AnglesAndPhysics
+from fvtools.grid.fvcom._components.grid_loader import GridLoader
+from fvtools.grid.fvcom._components.coordinates import InputCoordinates, Coordinates
+from fvtools.grid.fvcom._components.proximity import GridProximity
+from fvtools.grid.fvcom._components.topology import PropertiesFromTGE
+from fvtools.grid.fvcom._components.triangulation import CellTriangulation
+from fvtools.grid.fvcom._components.cropping import CropGrid
+from fvtools.grid.fvcom._components.coastline import CoastLine
+from fvtools.grid.fvcom._components.obc import OBC
+from fvtools.grid.fvcom._components.control_volumes import ControlVolumePlotter
+from fvtools.grid.fvcom._components.sections import SectionMaker
+from fvtools.grid.fvcom._components.plotting import PlotFVCOM
+from fvtools.grid.fvcom._components.physics import AnglesAndPhysics
 
-from fvtools.grid._components.compatibility import (
+from fvtools.grid.fvcom._components.compatibility import (
     LegacyPropertyAliases, LegacyFunctions, OutputLoader,
 )
-from fvtools.grid._components.interpolation import InterpolateToZ
-from fvtools.grid._components.export import ExportGrid
-from fvtools.grid._components.nesting import (
+from fvtools.grid.fvcom._components.interpolation import InterpolateToZ
+from fvtools.grid.fvcom._components.export import ExportGrid
+from fvtools.grid.fvcom._components.nesting import (
     NEST_grid, LegacyNestPropertyAliases, LoadNest, NestROMS2FVCOM,
 )
 

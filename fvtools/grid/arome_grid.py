@@ -4,7 +4,7 @@ from datetime import datetime
 from functools import cached_property
 from netCDF4 import Dataset
 from abc import ABC, abstractmethod
-from .base import BaseGrid
+from .common.base import BaseGrid
 
 def get_arome_grids(startdate, stopdate, Proj):
     # The arome grid changed feb. 5 2020

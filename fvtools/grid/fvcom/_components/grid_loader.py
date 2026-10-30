@@ -7,7 +7,7 @@ from fvtools.grid.fvcom_grd.
 import numpy as np
 from netCDF4 import Dataset
 
-from fvtools.grid.depth import setup_sigma
+from fvtools.grid.fvcom.depth import setup_sigma
 
 
 class GridLoader:

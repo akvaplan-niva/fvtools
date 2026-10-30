@@ -83,7 +83,7 @@ def test_cfl_matches_independent_triangle_edge_calculation(small_grid_file):
 @pytest.fixture
 def fake_tge(monkeypatch):
     """Count TGE calls without compiling large TGE/Numba kernels."""
-    import fvtools.grid.tge as tge
+    import fvtools.grid.fvcom.tge as tge
 
     calls = {"main": 0, "neighbors": 0, "art1": 0}
 
@@ -137,7 +137,7 @@ def test_tge_lazy_initialization_and_cached_node_cell_connectivity(
 
 
 def test_boundary_properties_remain_lazy_without_full_tge(small_grid_file, monkeypatch):
-    import fvtools.grid.tge as tge
+    import fvtools.grid.fvcom.tge as tge
 
     calls = []
 

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from functools import cached_property
 from netCDF4 import Dataset
 from dataclasses import dataclass, field
-from .cropper_roms import ROMSCropper
+from .roms.cropper_roms import ROMSCropper
 
 def get_roms_grid(mother, projection = None):
     '''

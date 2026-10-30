@@ -1,6 +1,6 @@
 """FVCOM mesh connectivity and TGE-derived properties."""
 
-import fvtools.grid.tge as tge
+import fvtools.grid.fvcom.tge as tge
 import numpy as np
 
 
