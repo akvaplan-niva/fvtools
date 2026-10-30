@@ -448,117 +448,55 @@ class RomsDownloader:
     '''
     Routine that downloads data. It will automatically stop and wait if the thredds server goes down / the data we need is temporarily unavailable
     '''
-    # ROMS DAP retry: classify transient NetCDF errors without masking code bugs.
+    # Keep the historical entry point: downstream code and tests call this.
     @staticmethod
     def _is_retryable_roms_io_error(exc):
-        """netCDF4 may report transient OPeNDAP failures as RuntimeError.
+        """Same bounded classification as MetCoOp: DAP/curl are transient."""
+        from fvtools.util.thredds_io import is_retryable_netcdf_error
+        return is_retryable_netcdf_error(exc)
 
-        Keep this helper on RomsDownloader so AST-based regression tests and
-        separately-instantiated readers work without hidden module dependencies.
-        """
-        if isinstance(exc, (OSError, TimeoutError, ConnectionError)):
-            return True
-        if not isinstance(exc, RuntimeError):
-            return False
-        message = str(exc).casefold()
-        return any(fragment in message for fragment in (
-            'netcdf: dap failure',
-            'netcdf: dap server error',
-            'netcdf: curl error',
-            'netcdf: i/o failure',
-        ))
-
-    # Phase 6A: explicit single-handle ROMS NetCDF reuse in serial mode.
     @contextmanager
     def reuse_roms_datasets(self):
-        """Scope a *single* open source Dataset to one serial nesting pass.
+        """Keep at most one ROMS source file open during a serial pass.
 
-        There is no global cache, and a Dataset is never placed on an MPI/worker
-        queue or persisted as a pickled attribute between tasks. All other
-        RomsDownloader use remains one open/close per read_timestep call.
+        No global cache: parallel workers and standalone reads remain isolated.
+        All users of RomsDownloader (nesting and restart) share this behavior.
         """
+        from fvtools.util.thredds_io import SourcePool
         if getattr(self, '_roms_reader_cache', None) is not None:
             raise RuntimeError('Nested ROMS Dataset reuse scopes are not supported')
-        cache = {'path': None, 'dataset': None}
-        self._roms_reader_cache = cache
+        pool = SourcePool(Dataset, max_open=1, mode=None)
+        self._roms_reader_cache = pool
         try:
             yield self
         finally:
             self._roms_reader_cache = None
-            dataset = cache['dataset']
-            cache['dataset'] = None
-            cache['path'] = None
-            if dataset is not None:
-                dataset.close()
+            pool.close()
 
     @contextmanager
     def _roms_dataset(self, filepath):
-        """Use exactly one open source file in the optional serial read scope.
-
-        Switch and close on a changed path; discard the current handle on a
-        transient I/O failure so that read_timestep's existing bounded retry
-        reopens the file rather than retrying against a broken connection.
-        """
-        cache = getattr(self, '_roms_reader_cache', None)
-        if cache is None:
-            with Dataset(filepath) as nc:
-                yield nc
-            return
-
-        if cache['dataset'] is None or cache['path'] != filepath:
-            old = cache['dataset']
-            cache['dataset'] = None
-            cache['path'] = None
-            if old is not None:
-                old.close()
-            nc = Dataset(filepath)
-            cache['dataset'] = nc
-            cache['path'] = filepath
-
-        try:
-            yield cache['dataset']
-        except Exception as exc:
-            if not self._is_retryable_roms_io_error(exc):
-                raise
-            # A transient failure should not leave a stale OPeNDAP connection
-            # in the cache. Preserve the original read exception for retries.
-            failed = cache['dataset']
-            cache['dataset'] = None
-            cache['path'] = None
-            if failed is not None:
-                try:
-                    failed.close()
-                except Exception:
-                    pass
-            raise
+        """Use the shared connection context, with damage-aware eviction."""
+        from fvtools.util.thredds_io import source_dataset
+        pool = getattr(self, '_roms_reader_cache', None)
+        with source_dataset(filepath, Dataset, pool=pool,
+                            classifier=self._is_retryable_roms_io_error) as nc:
+            yield nc
 
     def read_timestep(self, index_here, filepath, variables=None, sigma=None,
                       *, max_retries=5, retry_delay=30):
-        """Read ROMS data; retry only temporary I/O errors, never coding errors.
-
-        A finite retry limit prevents endless loops on unavailable files.
-        Numeric/shape/indexing errors propagate immediately with traceback.
-        """
+        """Read a single ROMS timestep with shared bounded NetCDF/DAP retry."""
+        from fvtools.util.thredds_io import retry_read
         if variables is None:
             variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']
-        if not isinstance(max_retries, int) or max_retries < 0:
-            raise ValueError('max_retries must be a nonnegative integer')
-        if retry_delay < 0:
-            raise ValueError('retry_delay must be nonnegative')
-        for attempt in range(max_retries + 1):
-            try:
-                return self._load_roms_data(index_here, filepath, variables, sigma)
-            except Exception as exc:
-                if not self._is_retryable_roms_io_error(exc):
-                    raise
-                if attempt == max_retries:
-                    raise RuntimeError(
-                        f'Could not read ROMS timestep {index_here} from {filepath!s} '
-                        f'after {attempt + 1} attempts'
-                    ) from exc
-                print(f'  - ROMS I/O error for {filepath}: {exc!s}. '
-                      f'Retrying ({attempt + 1}/{max_retries}) in {retry_delay}s', flush=True)
-                time_mod.sleep(retry_delay)
+        return retry_read(
+            lambda: self._load_roms_data(index_here, filepath, variables, sigma),
+            max_retries=max_retries, retry_delay=retry_delay,
+            classifier=self._is_retryable_roms_io_error,
+            sleep=time_mod.sleep,
+            failure_message=(f'Could not read ROMS timestep {index_here} '
+                             f'from {filepath!s}'),
+            log_prefix=f'  - ROMS I/O error for {filepath}',
+        )
 
     def _load_roms_data(self, index_here, filepath, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va'], sigma = None):
         '''

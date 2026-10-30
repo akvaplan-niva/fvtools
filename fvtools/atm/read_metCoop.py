@@ -4,8 +4,6 @@ import pandas as pd
 import time as time_mod
 import multiprocessing as mp
 import progressbar as pb
-import warnings
-warnings.filterwarnings("ignore")
 
 from fvtools.grid.fvcom_grd import FVCOM_grid  # objects that load what we need to know about the FVCOM grid
 from fvtools.grid.arome_grid import get_arome_grids, NoAvailableData # objects that load arome grid data
@@ -15,6 +13,8 @@ from fvtools.interpolators.horizontal_interpolator import N4Coefficients
 from time import gmtime, strftime
 from datetime import datetime, timedelta
 from dataclasses import dataclass
+from ._metcoop_io import SourcePool, read_masked, is_retryable_error
+from fvtools.util.thredds_io import retry_read
 
 '''
 This script downloads AROME data, interpolates it to the FVCOM mesh (using a bilinear interpolation algorithm) and dumps the
@@ -137,7 +137,7 @@ def metcoop_make_fileList(start_time, stop_time, OldAROME = None, NewAROME = Non
         # Just to check that the file is not empty
         # --------------------------------------------------------
         with netCDF4.Dataset(file, 'r') as d:
-            if len(d.variables['time'][:]) == 0: # Check to see if empty
+            if len(d.variables['time']) == 0: # Check to see if empty
                 print(f'  - file for {date} is empty')
                 continue
             missing = 0
@@ -152,6 +152,9 @@ def metcoop_make_fileList(start_time, stop_time, OldAROME = None, NewAROME = Non
             path_rad = path_rad + [file_rad]*len(t_fvcom)
             index.extend(list(range(accdelay, len(t_fvcom)+accdelay)))
         print(f'  - found data for {date}')
+
+    if len(time) == 0:
+        raise NoAvailableData('No usable MetCoOp timesteps in requested period')
 
     # Remove overlap
     # ----
@@ -182,51 +185,62 @@ class AROMEDownloader:
         self.accumulation_paths = path_acc
         self.indices = index
         self.times = time
-        try:
-            self.N4old = oldN4.dump()
-        except:
-            self.N4old = None
-
-        try:
-            self.N4new = newN4.dump()
-        except:
-            self.N4new = None
+        self.N4old = oldN4.dump() if oldN4 is not None else None
+        self.N4new = newN4.dump() if newN4 is not None else None
         self.latlon = latlon
 
-    def dump_single(self):
-        '''
-        Load and dump using a single processor - the one we should use since they now ask users to not run parallell requests
-        '''
-        widget = [f'  Downloading arome timesteps: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
+    def dump_single(self, *, max_retries=5, retry_delay=30):
+        """Serial source reads, with at most three open OPeNDAP datasets.
+
+        Only transient source I/O is retried. Interpolation and output errors
+        propagate immediately, so programming errors cannot loop forever.
+        """
+        widget = ['  Downloading arome timesteps: ', pb.Percentage(), pb.BouncingBar(), pb.ETA()]
         bar = pb.ProgressBar(widgets=widget, maxval=len(self.indices))
         bar.start()
-
-        # Dump to the outfile
-        with netCDF4.Dataset(self.outfile, 'r+') as self.out:
-            for counter, (path, path_acc, path_rad, index) in enumerate(zip(self.normal_paths, self.accumulation_paths, self.radiation_paths, self.indices)):
-                bar.update(counter)
-                if path.find('_det_') > 0:
-                    N4 = self.N4new
-                else:
-                    N4 = self.N4old
-                thredds_unavailable = True
-                while thredds_unavailable:
-                    try:
-                        timestep = self.read_data(N4, path, path_acc, path_rad, index)
-                        timestep.counter = counter 
+        try:
+            with SourcePool(netCDF4.Dataset) as sources:
+                previous_paths = None
+                with netCDF4.Dataset(self.outfile, 'r+') as self.out:
+                    for counter, (path, path_acc, path_rad, index) in enumerate(
+                        zip(self.normal_paths, self.accumulation_paths,
+                            self.radiation_paths, self.indices)
+                    ):
+                        paths = (path, path_acc, path_rad)
+                        if paths != previous_paths:
+                            sources.close()
+                            previous_paths = paths
+                        N4 = self.N4new if '_det_' in path else self.N4old
+                        timestep = self._read_with_retry(
+                            N4, path, path_acc, path_rad, index,
+                            datasets=sources, max_retries=max_retries,
+                            retry_delay=retry_delay,
+                        )
+                        timestep.counter = counter
                         timestep = self.interpolate_arome_data(timestep, N4)
                         if not self.latlon:
                             timestep = self.rotate_arome_vectors(timestep, N4)
                         self.write_timestep(timestep)
-                        thredds_unavailable = False
+                        bar.update(counter + 1)
+        finally:
+            bar.finish()
 
-                    # We will try to catch all outages here, since we already know that the file and the timestep exists on thredds
-                    except:
-                        print('\n---------------------------------------------------------------------------------\n '+\
-                                '   The data is unavailable at the moment. We wait thirty seconds and try again.'+\
-                            '\n---------------------------------------------------------------------------------\n')
-                        time_mod.sleep(30)
-        bar.finish()
+    @staticmethod
+    def _read_with_retry(N4, path, path_acc, path_rad, index, *,
+                         datasets=None, max_retries=5, retry_delay=30):
+        """Shared bounded NetCDF/DAP retry, scoped to source reads only."""
+        return retry_read(
+            lambda: AROMEDownloader.read_data(
+                N4, path, path_acc, path_rad, index, datasets=datasets,
+            ),
+            max_retries=max_retries, retry_delay=retry_delay,
+            classifier=is_retryable_error,
+            sleep=time_mod.sleep,
+            on_transient=(getattr(datasets, 'invalidate', datasets.close)
+                          if datasets is not None else None),
+            failure_message=f'Could not read MetCoOp timestep {index} from {path}',
+            log_prefix='  - MetCoOp I/O error',
+        )
 
     def dump(self, nprocs = None): 
         '''
@@ -253,7 +267,7 @@ class AROMEDownloader:
         # Send data to workers
         jobs = []
         for counter, (path, path_acc, path_rad, index) in enumerate(zip(self.normal_paths, self.accumulation_paths, self.radiation_paths, self.indices)):   
-            if path.find('_det_') > 0:
+            if '_det_' in path:
                 N4 = self.N4new
             else:
                 N4 = self.N4old
@@ -270,24 +284,10 @@ class AROMEDownloader:
         pool.join()
 
     def _worker(self, N4, counter, path, path_acc, path_rad, index, q):
-        '''
-        The worker downloads data
-        - does not interpolate, since that will increase the memory use of the worker quite alot
-        '''
-        thredds_unavailable = True
-        while thredds_unavailable:
-            try:
-                timestep = self.read_data(N4, path, path_acc, path_rad, index)
-                timestep.counter = counter
-                timestep.N4 = N4
-                thredds_unavailable = False
-
-            except RuntimeError:
-                print('\n---------------------------------------------------------------------------------\n '+\
-                        '   The data is unavailable at the moment. We wait thirty seconds and try again.'+\
-                      '\n---------------------------------------------------------------------------------\n')
-                time_mod.sleep(30)
-                
+        """Legacy parallel worker: use bounded retries without shared handles."""
+        timestep = self._read_with_retry(N4, path, path_acc, path_rad, index)
+        timestep.counter = counter
+        timestep.N4 = N4
         q.put(timestep)
         return ''
 
@@ -374,93 +374,79 @@ class AROMEDownloader:
         return unew, vnew
 
     @staticmethod
-    def read_data(N4, path, path_acc, path_rad, index):
-        '''
-        Routine that reads raw meps data covering the the model domain.
-        '''
-        # Initialize output datastructure
+    def read_data(N4, path, path_acc, path_rad, index, *, datasets=None):
+        """Read only the AROME source rectangle containing FVCOM interpolation points.
+
+        Keep the historic 2-D masks and each file format's dimensional layout.
+        ``datasets`` is a SourcePool for serial runs; other callers keep the
+        original one-call/one-close lifetime using a short local pool.
+        """
+        if datasets is None:
+            with SourcePool(netCDF4.Dataset) as sources:
+                return AROMEDownloader.read_data(
+                    N4, path, path_acc, path_rad, index, datasets=sources,
+                )
+
         timestep = AROMETimestep()
-
-        # Indices to be read by accumulated value files
-        read_inds = [index-1, index]
-
-        # It seems a bit unecessary to load the entire grid every time, we can look into adapting the same type of cropping as is done with ROMS data later
-        with netCDF4.Dataset(path,'r') as nc:
-            # Standard fields (all fields for new AROME)
-            if path.find('_pp_') >= 0:
-                timestep.Uwind             = nc.variables.get('x_wind_10m')[index, :, :][N4.fv_domain_mask]
-                timestep.Vwind             = nc.variables.get('y_wind_10m')[index, :, :][N4.fv_domain_mask]
-                timestep.Tair              = nc.variables.get('air_temperature_2m')[index, 0, :, :][N4.fv_domain_mask]
-                timestep.Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, :, :][N4.fv_domain_mask]
-                timestep.relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, :, :][N4.fv_domain_mask]
-                timestep.caf               = nc.variables.get('cloud_area_fraction')[index, :, :][N4.fv_domain_mask]*0.01 # convert from percent to fraction
-                timestep.precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, :, :][:, N4.fv_domain_mask]
-
-            elif path.find('extracted') >= 0:
-                timestep.Uwind             = nc.variables.get('x_wind_10m')[index, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.Vwind             = nc.variables.get('y_wind_10m')[index, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.Tair              = nc.variables.get('air_temperature_2m')[index, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.caf               = nc.variables.get('cloud_area_fraction')[index, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, :, :][:, N4.fv_domain_mask_ex]
-
-            elif path.find('subset') >= 0:
-                timestep.Uwind             = nc.variables.get('x_wind_10m')[index, 0, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.Vwind             = nc.variables.get('y_wind_10m')[index, 0, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.Tair              = nc.variables.get('air_temperature_2m')[index, 0, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.caf               = nc.variables.get('cloud_area_fraction')[index, 0, 0, :, :][N4.fv_domain_mask_ex]
-                timestep.precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, 0, :, :][:, N4.fv_domain_mask_ex]
-
-            elif path.find('_det_') >= 0:
-                timestep.Uwind             = nc.variables.get('x_wind_10m')[index, 0, :, :][N4.fv_domain_mask]
-                timestep.Vwind             = nc.variables.get('y_wind_10m')[index, 0, :, :][N4.fv_domain_mask]
-                timestep.Tair              = nc.variables.get('air_temperature_2m')[index, 0, :, :][N4.fv_domain_mask]
-                timestep.Pair              = nc.variables.get('air_pressure_at_sea_level')[index, 0, :, :][N4.fv_domain_mask]
-                timestep.relative_humidity = nc.variables.get('relative_humidity_2m')[index, 0, :, :][N4.fv_domain_mask]
-                timestep.caf               = nc.variables.get('cloud_area_fraction')[index, 0, :, :][N4.fv_domain_mask]
-                timestep.precip            = nc.variables.get('precipitation_amount_acc')[read_inds, 0, :, :][:, N4.fv_domain_mask]
-                timestep.evap              = nc.variables.get('water_evaporation_amount')[read_inds, 0, :, :][:, N4.fv_domain_mask]
-                timestep.spechum           = nc.variables.get('specific_humidity_2m')[index, 0, :, :][N4.fv_domain_mask]
-                timestep.SwD               = nc.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, :, :][:, N4.fv_domain_mask]
-                timestep.andLw             = nc.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, :, :][:, N4.fv_domain_mask]
-
-        # Accumulated fields
-        if path_acc.find('_full_') >= 0:
-            with netCDF4.Dataset(path_acc,'r') as nc_a:
-                timestep.evap    = nc_a.variables.get('water_evaporation_amount')[read_inds, 0, 0, :, :][:, N4.fv_domain_mask_ex]
-                timestep.spechum = nc_a.variables.get('specific_humidity_2m')[index, 0, 0, :, :][N4.fv_domain_mask_ex]
-
-            with netCDF4.Dataset(path_rad,'r') as nc_r:
-                timestep.SwD     = nc_r.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, 0, :, :][:, N4.fv_domain_mask_ex]
-                timestep.andLw   = nc_r.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, 0, :, :][:, N4.fv_domain_mask_ex]
-
-        elif path.find('_det_') >= 0:
-            pass # no need for special treatment of radiation fields
-
+        nc = datasets.get(path)
+        if '_pp_' in path:
+            mask = N4.fv_domain_mask
+            wind = (index,)
+            standard = (index, 0)
+            cloud = (index,)
+            accumulated = (slice(index - 1, index + 1), 0)
+        elif 'subset' in path:
+            mask = N4.fv_domain_mask_ex
+            wind = standard = cloud = (index, 0, 0)
+            accumulated = (slice(index - 1, index + 1), 0, 0)
+        elif 'extracted' in path or '_det_' in path:
+            mask = N4.fv_domain_mask_ex if 'extracted' in path else N4.fv_domain_mask
+            wind = standard = cloud = (index, 0)
+            accumulated = (slice(index - 1, index + 1), 0)
         else:
-            with netCDF4.Dataset(path_acc,'r') as nc_a:
-                timestep.evap    = nc_a.variables.get('water_evaporation_amount')[read_inds, 0, :, :][:, N4.fv_domain_mask_ex]
-                timestep.spechum = nc_a.variables.get('specific_humidity_2m')[index, 0, :, :][N4.fv_domain_mask_ex]
+            raise ValueError(f'Unrecognized MetCoOp source format: {path}')
 
-            with netCDF4.Dataset(path_rad,'r') as nc_r:
-                if path_rad.find('_extracted_') >= 0:
-                    timestep.SwD     = nc_r.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, :, :][:, N4.fv_domain_mask_ex]
-                    timestep.andLw   = nc_r.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, :, :][:, N4.fv_domain_mask_ex]
-                else:
-                    timestep.SwD     = nc_r.variables.get('integral_of_surface_net_downward_shortwave_flux_wrt_time')[read_inds, 0, 0, :, :][:, N4.fv_domain_mask_ex]
-                    timestep.andLw   = nc_r.variables.get('integral_of_surface_downwelling_longwave_flux_in_air_wrt_time')[read_inds, 0, 0, :, :][:, N4.fv_domain_mask_ex]
+        def read(source, name, prefix, spatial_mask):
+            return read_masked(source, name, prefix, spatial_mask)
 
-        # de-accumulate :)
-        # ----
-        timestep.SwD     = (timestep.SwD[1,:] - timestep.SwD[0,:])/(3600.0)
-        timestep.andLw   = (timestep.andLw[1,:] - timestep.andLw[0,:])/(3600.0)
+        timestep.Uwind = read(nc, 'x_wind_10m', wind, mask)
+        timestep.Vwind = read(nc, 'y_wind_10m', wind, mask)
+        timestep.Tair = read(nc, 'air_temperature_2m', standard, mask)
+        timestep.Pair = read(nc, 'air_pressure_at_sea_level', standard, mask)
+        timestep.relative_humidity = read(nc, 'relative_humidity_2m', standard, mask)
+        timestep.caf = read(nc, 'cloud_area_fraction', cloud, mask)
+        if '_pp_' in path:
+            timestep.caf = timestep.caf * 0.01
+        timestep.precip = read(nc, 'precipitation_amount_acc', accumulated, mask)
 
-        timestep.evap    = (timestep.evap[1,:]   - timestep.evap[0,:])/(1000.0*3600.0)     # converting from (kg m-2) accumulated over 1 h to m s-1, assuming water density = 1000 kg / m^3
-        timestep.precip  = (timestep.precip[1,:] - timestep.precip[0,:])/(1000.0*3600.0)   # converting from (kg m-2) accumulated over 1 h to m s-1, assuming water density = 1000 kg / m^3
+        if '_det_' in path:
+            # New AROME: all fields are in the same file and use the same grid.
+            timestep.evap = read(nc, 'water_evaporation_amount', accumulated, mask)
+            timestep.spechum = read(nc, 'specific_humidity_2m', standard, mask)
+            timestep.SwD = read(nc, 'integral_of_surface_net_downward_shortwave_flux_wrt_time', accumulated, mask)
+            timestep.andLw = read(nc, 'integral_of_surface_downwelling_longwave_flux_in_air_wrt_time', accumulated, mask)
+        else:
+            extended_mask = N4.fv_domain_mask_ex
+            acc = datasets.get(path_acc)
+            acc_prefix = (index, 0, 0) if '_full_' in path_acc else (index, 0)
+            acc_accumulated = (slice(index - 1, index + 1), 0, 0) if '_full_' in path_acc else (slice(index - 1, index + 1), 0)
+            timestep.evap = read(acc, 'water_evaporation_amount', acc_accumulated, extended_mask)
+            timestep.spechum = read(acc, 'specific_humidity_2m', acc_prefix, extended_mask)
 
+            radiation = datasets.get(path_rad)
+            rad_accumulated = (
+                (slice(index - 1, index + 1), 0)
+                if '_extracted_' in path_rad and '_full_' not in path_acc
+                else (slice(index - 1, index + 1), 0, 0)
+            )
+            timestep.SwD = read(radiation, 'integral_of_surface_net_downward_shortwave_flux_wrt_time', rad_accumulated, extended_mask)
+            timestep.andLw = read(radiation, 'integral_of_surface_downwelling_longwave_flux_in_air_wrt_time', rad_accumulated, extended_mask)
+
+        # Preserve the original de-accumulation and unit conversions exactly.
+        timestep.SwD = (timestep.SwD[1, :] - timestep.SwD[0, :]) / 3600.0
+        timestep.andLw = (timestep.andLw[1, :] - timestep.andLw[0, :]) / 3600.0
+        timestep.evap = (timestep.evap[1, :] - timestep.evap[0, :]) / (1000.0 * 3600.0)
+        timestep.precip = (timestep.precip[1, :] - timestep.precip[0, :]) / (1000.0 * 3600.0)
         return timestep
 
 def create_nc_forcing_file(name, FVCOM_grd, times, latlon, epsg):

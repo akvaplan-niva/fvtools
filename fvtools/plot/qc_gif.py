@@ -19,7 +19,7 @@ SECTION_VELOCITY_FIELDS = {
 }
 
 # Only the speed magnitude is cell-centred. Vorticity and PV are nodal.
-CELL_VELOCITY_FIELDS = frozenset({'sp'})
+CELL_VELOCITY_FIELDS = frozenset({'sp', 'sp_lev'})
     
 # ----------------------------------------------------------------------------------------
 #                     Create an animation from a number of files
@@ -28,13 +28,25 @@ def main(folder=None, fname=None, filelist=None, var=None,
          sigma=None, z=None, xlim=None, ylim=None, start=None, stop=None,
          section=None, section_res=None, fps=12, mname=None, dpi=100,
          nlevels=20, reference='epsg:32633', output_dir=None, **kwargs):
-    """Create FVCOM animations from sigma, z-level, and/or vertical sections.
+    """
+    Create FVCOM animations from sigma, z-level, and/or vertical sections.
 
     When both sigma and z are supplied, create both horizontal movie types:
     sigma movies ignore z, and z-level movies ignore sigma.
 
     For section normal-flow animations, specify section=... and
     var=['normal_velocity']; optional section_vlim is in m/s.
+
+    var: variable to plot (any in the file)
+        - also supports these derived variables for horizontal movies: 
+            - sp (np.sqrt(ua**2 + va**2))
+            - sp_lev (np.sqrt(u**2+v**2)) at sigma or z-levels
+            - vorticity
+            - pv
+        - and these derived variables for section movies
+            - normal_velocity (velocity normal to the section)
+            - along_velocity  (velocity along the section)
+            - velocity_speed  (absolute speed along the section)
     """
     options = _prepare_movie_options(
         folder=folder, fname=fname, filelist=filelist, var=var,
@@ -332,7 +344,7 @@ def initialize_cb(filepath, fields):
     cb = {}
     with Dataset(filepath) as dataset:
         for field in fields:
-            if field in SECTION_VELOCITY_FIELDS:
+            if field in SECTION_VELOCITY_FIELDS or field:
                 units = 'm/s'
             elif field in ('pv', 'vorticity', 'sp'):
                 units = ''
@@ -377,7 +389,12 @@ def setup_colorbar(cb, var=None, nlevels=20):
                             colorticks=np.linspace(-1e-5, 1e-5, nlevels))
         elif field == 'sp':
             settings.update(cmap=cmo.cm.speed, label='m/s',
-                            colorticks=np.linspace(0, 0.4, nlevels))
+                            colorticks=np.linspace(0, 1, nlevels),
+                            extend='max')
+        elif field == 'sp_lev':
+            settings.update(cmap=cmo.cm.speed, label='m/s',
+                            colorticks=np.linspace(0, 1, nlevels),
+                            extend='max')
     return cb
 
 
@@ -397,7 +414,7 @@ def build_colorbars(frames, fields, sigma=None, nlevels=20):
     """
     cb = initialize_cb(frames.path[0], fields)
     direct = [f for f in fields if f not in (
-        'pv', 'vorticity', 'sp', *SECTION_VELOCITY_FIELDS)]
+        'pv', 'vorticity', 'sp', 'sp_lev', *SECTION_VELOCITY_FIELDS)]
     if direct:
         for path, indices in frames.iter_files():
             with Dataset(path) as dataset:
@@ -431,7 +448,7 @@ class AnimationFields:
     @property
     def field(self):
         """Load a scalar field with subgrid, sigma/z and wet/dry handling."""
-        if self.var in ['pv', 'vorticity', 'sp']:
+        if self.var in ['pv', 'vorticity', 'sp', 'sp_lev']:
             return getattr(self, self.var)
         return self.M.load_netCDF(
             self.files[self.i], self.var, self.index[self.i],
@@ -461,10 +478,17 @@ class AnimationFields:
 
     @property
     def sp(self):
-        uv = self.M.load_netCDF(self.files[self.i], ('ua', 'va'),
-                                    self.index[self.i])
+        uv = self.M.load_netCDF(self.files[self.i], ('ua', 'va'), self.index[self.i])
         return np.hypot(uv['ua'], uv['va'])
 
+    @property
+    def sp_lev(self):
+        uv = self.M.load_netCDF(
+            self.files[self.i], ('u', 'v'), self.index[self.i], 
+            sig = self.sigma, z=getattr(self, 'z', None)
+        )
+        return np.hypot(uv['u'], uv['v'])
+    
 class HorizontalMaker(AnimationFields):
     '''
     All the data needed by the 
@@ -493,7 +517,7 @@ class HorizontalMaker(AnimationFields):
         if 'pv' in var:
             self.M.get_coriolis()  # PV lives on nodes, not elements.
 
-        # Only 'sp' is cell-centred among the derived 2-D fields.
+        # Only 'sp' and 'sp_lev' are cell-centred among the derived 2-D fields.
         # PV, vorticity, and ordinary scalar fields use nodal extents.
         map_location = 'cell' if set(var).issubset(CELL_VELOCITY_FIELDS) else 'node'
         self.gp = get_grid_georeference(
@@ -525,7 +549,7 @@ class HorizontalMaker(AnimationFields):
 
             if self.gp is not None:
                 ax.imshow(self.gp.img, extent=self.gp.extent, zorder=0)
-            if self.var in ('vorticity', 'pv', 'sp'):
+            if self.var in ('vorticity', 'pv', 'sp', 'sp_lev'):
                 # Static bathymetry: the original nodal FVCOM mesh is used
                 # regardless of whether the animated field is cell-centred.
                 # The same grid may have been used for a previous nodal

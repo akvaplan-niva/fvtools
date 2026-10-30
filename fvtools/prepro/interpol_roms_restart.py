@@ -1,15 +1,15 @@
 # ----------------------------------------------------------------------------------
 #              Dump data from a ROMS run to a FVCOM restart file
 # ----------------------------------------------------------------------------------
-import fvtools.nesting.roms_nesting_fg as rn
 import netCDF4
 import numpy as np
+import fvtools.nesting.roms_nesting_fg as rn
 import fvtools.nesting.vertical_interpolation as vi
 
 from datetime import timedelta
+from fvtools.util.kdtree import KDTree
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.grid.roms_grid import get_roms_grid
-from fvtools.util.kdtree import KDTree
 from fvtools.grid.roms_grid import RomsDownloader
 from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
 
@@ -175,7 +175,7 @@ class N4ROMSRESTART(N4ROMS, N4DEPTH):
         - points partially covered by land will use those values instead
         '''
         _coef, _index, _land = self._nullify_land_points(coef, index, LandMask)
-        nearest_ocean = self._find_nearest_ocean_neighbor(_index, _coef, x_source, y_source, fvcom_x, fvcom_y, LandMask)
+        nearest_ocean = self._find_nearest_ocean_neighbor(x_source, y_source, fvcom_x, fvcom_y, LandMask)
 
         # Overwrite indices at points completely covered by arome land
         _index[_land, :] = nearest_ocean[_land][:, None]
@@ -208,7 +208,7 @@ class N4ROMSRESTART(N4ROMS, N4DEPTH):
         return _coef, _index, _land
 
     @staticmethod
-    def _find_nearest_ocean_neighbor(_index, _coef, x_source, y_source, fvcom_x, fvcom_y, LandMask):
+    def _find_nearest_ocean_neighbor(x_source, y_source, fvcom_x, fvcom_y, LandMask):
         '''
         replace land point with nearest ocean neighbor
         '''
