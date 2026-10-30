@@ -13,8 +13,6 @@ from fvtools.util.kdtree import KDTree
 from fvtools.grid.roms_grid import RomsDownloader
 from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
 
-import warnings
-warnings.filterwarnings("ignore")
 
 from .initial.empty_initial import make_initial_file
 
@@ -98,26 +96,29 @@ def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother =
     N4.ROMS   = ROMS
     
     print('\nUpdate zeta in domain (needed for vertical interpolation)')
+    # A restart needs one ROMS timestep.  The full rho-grid zeta is also
+    # needed to calculate ROMS layer depths, whereas the downloaded fields
+    # are cropped for horizontal interpolation.
     Restarter = Roms2FVCOMRestart(restartfile, N4, M.tri, variables, latlon, verbose=False)
-    ROMS.zeta = Restarter.z # Add actual depth to ROMS
-    timestep  = Restarter.download(variables = variables)
+    with Restarter.reuse_roms_datasets():
+        full_zeta = Restarter.z
+        ROMS.zeta = full_zeta
+        timestep = Restarter.download(variables=variables, full_zeta=full_zeta)
 
-    # Add the FVCOM grid and depth to the interpolator
-    M.zeta = np.sum(timestep.zeta[N4.rho_index] * N4.rho_coef, axis = 1)
-    
-    # Add sea surface perturbation to FVCOM, FVCOM_grid will now say that M.d = M.h + M.zeta
-    N4.h  = M.d
+    # Compute FVCOM water-column depths using the unmodified, cropped zeta.
+    M.zeta = np.sum(timestep.zeta[N4.rho_index] * N4.rho_coef, axis=1)
+    N4.h = M.d
     N4.FV = M
-    N4.ROMS.z = timestep.zeta
+    N4.ROMS.z = timestep.zeta  # Preserve the previous restart depth setup.
 
     print('\nVertical interpolation coefficients')
-    N4 = vi.add_vertical_interpolation2N4(N4, coords = coords)
+    N4 = vi.add_vertical_interpolation2N4(N4, coords=coords)
 
+    # Rebuild only the lightweight interpolation metadata, not the source
+    # file list or ROMS timestep.  dump() modifies the timestep in place.
+    Restarter.N4 = N4.dump()
     print('\nInterpolate and store ROMS hydrography to the FVCOM restart file')
-    # re-initializing the interpolator just to make sure that everything is ready...
-    Restarter = Roms2FVCOMRestart(restartfile, N4, M.tri, variables, latlon, verbose=True) 
-    timestep = Restarter.download(variables = variables)
-    Restarter.dump(timestep, variables = variables)
+    Restarter.dump(timestep, variables=variables)
     print('\nFin.')
 
 class N4DEPTH:
@@ -250,20 +251,39 @@ class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
 
     @property
     def z(self):
-        '''
-        downloads zeta in same shape as ROMS grid
-        '''
-        with netCDF4.Dataset(self.path) as nc:
-            z = nc['zeta'][self.index_here,:,:]
-        return z
+        """Read zeta on the complete ROMS rho grid for vertical coordinates.
 
-    def download(self, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']):
-        '''
-        Download timestep thredds
-        '''
-        timestep = self.read_timestep(self.index_here, self.path, variables = variables)
-        timestep = self.crop_and_transpose(timestep, variables = variables)
-        return timestep
+        When called inside reuse_roms_datasets(), reuse the same Dataset as
+        read_timestep() instead of opening a second THREDDS connection.
+        """
+        with self._roms_dataset(self.path) as nc:
+            return nc['zeta'][self.index_here, :, :]
+
+    def download(self, variables=None, *, full_zeta=None):
+        """Read and crop one ROMS timestep.
+
+        full_zeta, if supplied, is the already-loaded *complete* rho-grid
+        field used for depth calculations.  Reuse its corresponding cropped
+        slice instead of fetching zeta twice from THREDDS.  The default path
+        retains the original behavior for callers of download().
+        """
+        if variables is None:
+            variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']
+        read_variables = (
+            [name for name in variables if name != 'zeta']
+            if full_zeta is not None else variables
+        )
+        timestep = self.read_timestep(
+            self.index_here, self.path, variables=read_variables,
+        )
+        if full_zeta is not None and 'zeta' in variables:
+            # Match RomsDownloader._load_roms_data's exact rho crop.  Let
+            # crop_and_transpose apply the existing ROMS land/target mask.
+            timestep.zeta = full_zeta[
+                self.N4.m_ri:self.N4.x_ri + 1,
+                self.N4.m_rj:self.N4.x_rj + 1,
+            ]
+        return self.crop_and_transpose(timestep, variables=variables)
 
     def dump(self, timestep, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']):
         '''
