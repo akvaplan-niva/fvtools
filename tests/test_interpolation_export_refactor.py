@@ -155,13 +155,13 @@ def test_write_sponge_one_based_node_indices(tmp_path, small_grid_file):
 
 
 def test_write_2dm_roundtrip_preserves_connectivity_and_nodestrings(tmp_path, monkeypatch, small_grid_file):
-    from fvtools.grid.fvgrid import read_sms_mesh
     grid = FVCOM_grid(str(small_grid_file))
     monkeypatch.chdir(tmp_path)
     grid.write_2dm(name='exported')
     exported = tmp_path / 'exported.2dm'
     assert exported.exists()
-    tri, _, x, y, _, _, strings = read_sms_mesh(str(exported), nodestrings=True)
+    loaded = FVCOM_grid(str(exported))
+    tri, x, y, strings = loaded.tri, loaded.x, loaded.y, loaded.nodestrings
     np.testing.assert_array_equal(tri, grid.tri)
     np.testing.assert_allclose(x, grid.x)
     np.testing.assert_allclose(y, grid.y)

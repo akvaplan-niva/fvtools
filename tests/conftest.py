@@ -34,9 +34,10 @@ def reference_paths():
 @pytest.fixture
 def small_grid_file(tmp_path):
     """Make a self-contained, small M.npy compatible with FVCOM_grid."""
-    from fvtools.grid.fvgrid import read_sms_mesh
+    from fvtools.grid.fvcom_grd import FVCOM_grid
 
-    tri, _, x, y, _, _, nodestrings = read_sms_mesh(str(SMALL_2DM), nodestrings=True)
+    grid = FVCOM_grid(str(SMALL_2DM))
+    tri, x, y, nodestrings = grid.tri, grid.x, grid.y, grid.nodestrings
     siglev = np.tile([0.0, -0.5, -1.0], (len(x), 1))
     siglay = (siglev[:, :-1] + siglev[:, 1:]) / 2
     info = {"casename": "mini_nodestrings", "reference": "epsg:32633"}

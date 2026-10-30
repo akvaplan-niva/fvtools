@@ -3,14 +3,18 @@
 import numpy as np
 
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.fvgrid import read_sms_mesh
 
 
 def test_reference_2dm_matches_saved_mesh(reference_paths):
     dm_path, npy_path = reference_paths
     # M.npy is a NumPy object array and may use pickle: only run on trusted inputs.
     grid = FVCOM_grid(str(npy_path))
-    tri, node_ids, x, y, _, _, strings = read_sms_mesh(str(dm_path), nodestrings=True)
+    dm_grid = FVCOM_grid(str(dm_path))
+    tri, x, y, strings = dm_grid.tri, dm_grid.x, dm_grid.y, dm_grid.nodestrings
+    # Original SMS IDs are not stored on FVCOM_grid; check ND records directly.
+    with open(dm_path, encoding='utf-8') as stream:
+        node_ids = [int(fields[1]) for line in stream
+                    if (fields := line.split()) and fields[0] == 'ND']
 
     assert len(x) == 48803
     assert len(tri) == 93524

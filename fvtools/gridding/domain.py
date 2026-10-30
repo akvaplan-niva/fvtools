@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-import fvtools.grid.fvgrid as fvgrd
 import fvtools.gridding.coast as coast
 import scipy.interpolate as scint
 import scipy.ndimage as ndimage

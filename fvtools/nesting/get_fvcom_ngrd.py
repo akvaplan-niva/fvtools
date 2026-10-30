@@ -4,7 +4,6 @@
 # ---------------------------------------------------------------------
 import numpy as np
 import sys
-import fvtools.grid.fvgrid as fvg
 import matplotlib.pyplot as plt
 from pyproj import Proj, transform
 from scipy.spatial import cKDTree as KDTree
