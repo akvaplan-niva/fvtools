@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from fvtools.nesting import obcgridding as module
+from fvtools.prepro.nesting import obcgridding as module
 
 
 def test_main_uses_fvcom_grid_for_input_and_output(tmp_path, monkeypatch):

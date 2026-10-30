@@ -14,7 +14,7 @@ from shapely.ops import polygonize
 from shapely.geometry import LineString
 
 
-import fvtools.gridding.process_coastline as pc
+import fvtools.prepro.gridding.process_coastline as pc
 
 from matplotlib.widgets import Slider, TextBox
 

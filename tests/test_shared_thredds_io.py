@@ -124,7 +124,7 @@ def test_retry_exhausted_preserves_original_failure():
 
 def test_roms_nesting_and_restart_inherit_same_reader():
     from fvtools.grid.roms_grid import RomsDownloader
-    from fvtools.nesting.roms_nesting_fg import Roms2FVCOMNest
+    from fvtools.prepro.nesting.roms_nesting_fg import Roms2FVCOMNest
     from fvtools.prepro.interpol_roms_restart import Roms2FVCOMRestart
     assert issubclass(Roms2FVCOMNest, RomsDownloader)
     assert issubclass(Roms2FVCOMRestart, RomsDownloader)
@@ -133,5 +133,5 @@ def test_roms_nesting_and_restart_inherit_same_reader():
 
 
 def test_metcoop_pool_is_identical_shared_pool():
-    from fvtools.atm._metcoop_io import SourcePool as MetSourcePool
+    from fvtools.prepro.atm._metcoop_io import SourcePool as MetSourcePool
     assert MetSourcePool is SourcePool

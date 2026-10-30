@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from pyproj import Proj, transform
 from scipy.spatial import cKDTree as KDTree
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.gridding.prepare_inputfiles import write_FVCOM_bath
+from fvtools.prepro.gridding.prepare_inputfiles import write_FVCOM_bath
 
 def main(mesh, fvcom_mother):
     '''

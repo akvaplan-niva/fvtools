@@ -96,7 +96,7 @@ class HBVRunoff:
 class RiverPositions:
     def __init__(self, path, vassdrag, epsg_code):
         '''
-        Connect river outlets identified by fvtools.rivers.NVEforcing.elvis_riveroutlets to the FVCOM mesh
+        Connect river outlets identified by fvtools.prepro.rivers.NVEforcing.elvis_riveroutlets to the FVCOM mesh
         - path:      e.g. riverdata/river_positions.csv
         - vassdrag:  list of vassdrags covered by the model
         - epsg_code: EPSG code of the projection the river positions is stored in. Should always be in UTM33 (epsg:32633) in Norway.

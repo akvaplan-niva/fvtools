@@ -1,6 +1,7 @@
 """FVCOM river forcing assembly, mesh assignment, and output."""
 import os
 from datetime import datetime
+from functools import cached_property
 
 import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
@@ -9,7 +10,6 @@ import numpy as np
 from scipy import interpolate
 from scipy.spatial import cKDTree as KDTree
 
-import fvtools.grid.fvcom.grid_metrics as gm
 from fvtools.prepro._buildrivers.constants import version
 from fvtools.prepro._buildrivers.interaction import CropRivers
 from fvtools.prepro._buildrivers.output import RiverOutputMixin
@@ -21,8 +21,24 @@ class FVCOM_rivers(RiverOutputMixin, CropRivers):
     """
     def __init__(self, info, M, vassdrag, start, stop):
         self.info, self.vassdrag, self.M = info, vassdrag, M
-        self.nodes, self.cells = gm.get_nbe(self.M)
         self.start, self.stop = start, stop
+
+    @cached_property
+    def _boundary_node_groups(self):
+        """Land/OBC node IDs on the *actual* mesh perimeter.
+
+        Match the former grid_metrics.get_nbe classification without
+        recomputing triangle neighbours. Interior nodes from an internal
+        circular OBC must not become coastal outlet candidates.
+        """
+        boundary = np.unique(np.asarray(self.M.boundary_nodes, dtype=np.intp))
+        strings = self.M.nodestrings
+        if strings:
+            obc_nodes = np.concatenate(strings)
+            is_obc = np.isin(boundary, obc_nodes)
+        else:
+            is_obc = np.zeros(boundary.size, dtype=bool)
+        return boundary[~is_obc], boundary[is_obc]
 
     @property
     def xy_land(self):
@@ -33,8 +49,9 @@ class FVCOM_rivers(RiverOutputMixin, CropRivers):
             y_land = self.M.yc[land]
 
         elif self.info['iloc'] == 'node':
-            x_land  = self.M.x[self.nodes['boundary'][np.where(self.nodes['id']==1)[0]]]
-            y_land  = self.M.y[self.nodes['boundary'][np.where(self.nodes['id']==1)[0]]]
+            land_nodes = self._boundary_node_groups[0]
+            x_land = self.M.x[land_nodes]
+            y_land = self.M.y[land_nodes]
             
         return np.array([x_land, y_land]).T
 
@@ -55,8 +72,9 @@ class FVCOM_rivers(RiverOutputMixin, CropRivers):
             y_obc = self.M.yc[obc]
 
         elif self.info['iloc'] == 'node':
-            x_obc   = self.M.x[self.nodes['boundary'][np.where(self.nodes['id']==2)[0]]]
-            y_obc   = self.M.y[self.nodes['boundary'][np.where(self.nodes['id']==2)[0]]]
+            obc_nodes = self._boundary_node_groups[1]
+            x_obc = self.M.x[obc_nodes]
+            y_obc = self.M.y[obc_nodes]
         return np.array([x_obc, y_obc]).T
 
     @property
@@ -87,7 +105,7 @@ class FVCOM_rivers(RiverOutputMixin, CropRivers):
         """
         Assign fraction of total runoff to watershed to the individual river
         - the area fraction of the vassdragsområde (catchment area) associated with each river is calculated 
-          in fvtools.rivers.NVEforcing.elvis_riveroutlets. So the runoff from each individual river is independent 
+          in fvtools.prepro.rivers.NVEforcing.elvis_riveroutlets. So the runoff from each individual river is independent 
           of the model domain, but you will loose runoff to the model domain if you exclude rivers that should 
           fill your domain. This is different from the historic setup, where the total runoff from a vassdragsområde was conserved.
         """

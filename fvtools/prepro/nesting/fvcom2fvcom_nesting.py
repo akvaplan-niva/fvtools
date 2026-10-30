@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 from argparse import ArgumentParser
 from netCDF4 import Dataset
-from ..grid.fvcom_grd import NEST_grid, FVCOM_grid
+from fvtools.grid.fvcom_grd import NEST_grid, FVCOM_grid
 from fvtools.util.tools import Filelist
 from .vertical_interpolation import calc_interp_matrices
 

@@ -1,6 +1,6 @@
 # Work need to be done to work in python3!
 import numpy as np
-from fvtools.gridding.coast import read_map
+from fvtools.prepro.gridding.coast import read_map
 
 def write_boundary(mapfile, res = None):
     """

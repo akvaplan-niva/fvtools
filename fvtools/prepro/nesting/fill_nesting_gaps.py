@@ -15,7 +15,7 @@ Known slow stuff:
 
  import sys
  sys.path.append('/cluster/home/hes001/fvtools')
- import fvtools.nesting.fill_nesting_gaps as fg
+ import fvtools.prepro.nesting.fill_nesting_gaps as fg
  fg.main('PO10_v2_nest_feb.nc', nprocs = None)
 
 ## file: run_python.sh (on Betzy using 4 nodes, normal partition)

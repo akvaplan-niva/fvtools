@@ -17,10 +17,10 @@ from time import gmtime, strftime
 from datetime import datetime
 
 # fvtools
-from fvtools.nesting import vertical_interpolation as vi
+from fvtools.prepro.nesting import vertical_interpolation as vi
 from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
 from fvtools.interpolators.roms_interpolators import N4ROMSNESTING, LinearInterpolation
-from fvtools.nesting.matchtopo import MatchTopo
+from fvtools.prepro.nesting.matchtopo import MatchTopo
 from fvtools.grid.roms_grid import get_roms_grid, NoAvailableData, RomsDownloader, ROMSTimeStep
 
 def main(fvcom_grd,

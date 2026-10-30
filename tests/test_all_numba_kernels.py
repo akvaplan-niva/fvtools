@@ -37,11 +37,11 @@ KERNELS = {
     "plot/fvcom_streamlines.py": (
         "remove_land", "is_inside_tri", "get_weights", "compute_streamline_linear",
     ),
-    "gridding/estimator.py": ("DistanceFunction._get_node_estimate_function",),
+    "prepro/gridding/estimator.py": ("DistanceFunction._get_node_estimate_function",),
     "prepro/_buildcase/depth.py": ("DepthHandler.laplacian_filter", "DepthHandler.mellor_ezer_oey"),
     "grid/fvcom/_components/control_volumes.py": ("_find_cv_walls", "_connect_cv_walls"),
     "grid/fvcom_grd.py": ("FVCOM_grid._smooth",),
-    "nesting/vertical_interpolation.py": (
+    "prepro/nesting/vertical_interpolation.py": (
         "calc_interp_matrices", "numba_absdiff", "find_inds_and_weights",
     ),
     "interpolators/structured_bilinear.py": ("_solve_batch",),
@@ -209,7 +209,7 @@ def _args(path, name):
             return (x, y, tri, nbse, nese, np.ones(nt, dtype=np.float64),
                     np.ones(nt, dtype=np.int32), initial, 4,
                     np.zeros(mt), np.zeros(mt), cell)
-    elif path == "gridding/estimator.py":
+    elif path == "prepro/gridding/estimator.py":
         return (1.0, 5.0, 10.0, 2.0, 3.0, 5.0,
                 np.array([[1., 2.], [3., 4.]]),
                 np.array([[0., 0.], [10., 0.]]), np.array([2., 3.]), 1.0)
@@ -233,7 +233,7 @@ def _args(path, name):
         return (np.array([3., 6., 9.]), .25, 2,
                 np.array([[1, 2], [0, 2], [0, 1]], dtype=np.int64),
                 np.array([2, 2, 2], dtype=np.int64))
-    elif path == "nesting/vertical_interpolation.py":
+    elif path == "prepro/nesting/vertical_interpolation.py":
         source = np.array([[0., 0.], [10., 12.], [20., 24.]])
         target = np.array([[0., 3.], [5., 12.], [20., 30.]])
         if k == "calc_interp_matrices": return (source, target)
@@ -297,7 +297,7 @@ def test_topology_independent_oracle():
 
 
 def test_vertical_interpolation_weights_reconstruct_depth():
-    from fvtools.nesting.vertical_interpolation import calc_interp_matrices
+    from fvtools.prepro.nesting.vertical_interpolation import calc_interp_matrices
     source = np.array([[0., 0.], [10., 12.], [20., 24.]])
     target = np.array([[3., 6.], [17., 18.]])
     i, j, w, v = calc_interp_matrices(source, target)

@@ -11,7 +11,7 @@ import netCDF4
 import numpy as np
 import pytest
 
-from fvtools.nesting import roms_nesting_fg as mod
+from fvtools.prepro.nesting import roms_nesting_fg as mod
 
 
 def _fake_nest():

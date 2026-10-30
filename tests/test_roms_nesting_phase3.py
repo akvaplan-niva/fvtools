@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from fvtools.nesting.vertical_interpolation import (
+from fvtools.prepro.nesting.vertical_interpolation import (
     add_vertical_interpolation2N4,
     calc_interp_matrices,
 )
-from fvtools.nesting import matchtopo
+from fvtools.prepro.nesting import matchtopo
 from fvtools.interpolators.roms_interpolators import LinearInterpolation
 
 

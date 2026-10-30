@@ -4,7 +4,7 @@ Create a movie in an area based on results from ROMS
 import numpy as np
 import matplotlib.pyplot as plt
 import netCDF4
-import fvtools.nesting.roms_nesting_fg as rn
+import fvtools.prepro.nesting.roms_nesting_fg as rn
 import matplotlib.tri as tri
 import cmocean as cmo
 import cartopy.crs as ccrs

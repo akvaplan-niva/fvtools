@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-import fvtools.gridding.coast as coast
+import fvtools.prepro.gridding.coast as coast
 import scipy.interpolate as scint
 import scipy.ndimage as ndimage
 import pandas as pd

@@ -6,7 +6,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-import fvtools.nesting.vertical_interpolation as vi # This script will be moved to another folder in due time
+import fvtools.prepro.nesting.vertical_interpolation as vi # This script will be moved to another folder in due time
 import seawater as sw
 import cmocean as cmo
 import datetime

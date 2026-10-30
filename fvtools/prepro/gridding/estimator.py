@@ -5,7 +5,7 @@ Resolution estimator
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import fvtools.gridding.coast as coast
+import fvtools.prepro.gridding.coast as coast
 
 from matplotlib.path import Path
 from matplotlib.widgets import Slider, Button

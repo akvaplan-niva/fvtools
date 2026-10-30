@@ -17,7 +17,7 @@ def test_public_grid_modules_stay_at_root():
 def test_model_helpers_are_grouped():
     for rel in (
         'fvcom/depth.py', 'fvcom/netcdf_io.py', 'fvcom/tge.py',
-        'fvcom/grid_metrics.py', 'fvcom/_components/grid_loader.py',
+        'fvcom/_components/grid_loader.py',
         'fvcom/_components/export.py', 'roms/cropper_roms.py',
         'common/base.py',
     ):

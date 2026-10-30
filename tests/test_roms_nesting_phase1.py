@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from fvtools.grid.roms_grid import RomsDownloader
-from fvtools.nesting import roms_nesting_fg as roms
+from fvtools.prepro.nesting import roms_nesting_fg as roms
 
 
 def test_retry_transient_io_then_succeed(monkeypatch):
