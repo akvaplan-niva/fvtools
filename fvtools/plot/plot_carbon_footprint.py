@@ -1,8 +1,8 @@
 import sys
 import utm
 sys.path.append('/home/hdj002/python_script/fvcom_pytools/')
-from grid.fvcom_grd import FVCOM_grid
-import grid.fvcom_grd as fvg
+from fvtools.grid.fvcom_grd import FVCOM_grid
+import fvtools.grid.fvcom_grd as fvg
 #import matplotlib
 #matplotlib.use('Qt4Agg')
 from matplotlib import pyplot as plt

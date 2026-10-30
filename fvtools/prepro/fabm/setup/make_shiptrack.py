@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 
-from fvcom_grd import FVCOM_grid
+from fvtools.grid.fvcom_grd import FVCOM_grid
 
 from netCDF4 import Dataset
 from datetime import date,datetime,timedelta

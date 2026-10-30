@@ -4,7 +4,6 @@
 #import cPickle as pickle
 from time import gmtime, strftime
 
-from IPython.core.debugger import Tracer
 from netCDF4 import Dataset
 import numpy as np
 import netCDF4

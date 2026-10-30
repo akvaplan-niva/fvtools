@@ -11,9 +11,6 @@ import datetime
 from netCDF4 import Dataset
 import netCDF4
 import numpy as np
-import matplotlib.mlab as mp
-
-
 def parse_command_line():
     ''' Parse command line arguments'''
 

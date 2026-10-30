@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import path
 from netCDF4 import Dataset
-from fvcom_grd import FVCOM_grid
+from fvtools.grid.fvcom_grd import FVCOM_grid
 
 def make_init_c():
     M = FVCOM_grid('M.npy')

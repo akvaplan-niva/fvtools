@@ -8,10 +8,10 @@ import sys
 import os
 
 
-import gridding.domain as domain
-import gridding.coast as coast
-import gridding.ocean as ocean
-import gridding.process_coastline as pc
+import fvtools.prepro.gridding.domain as domain
+import fvtools.prepro.gridding.coast as coast
+import fvtools.prepro.gridding.ocean as ocean
+import fvtools.prepro.gridding.process_coastline as pc
 import matplotlib.pyplot as plt
 import numpy as np
 import subprocess

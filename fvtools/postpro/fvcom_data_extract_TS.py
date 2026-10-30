@@ -5,18 +5,15 @@ import os
 from argparse import ArgumentParser
 import datetime
 import time
-import matplotlib.mlab as mlab
-from IPython.core.debugger import Tracer
 import sys
 
 from netCDF4 import Dataset
 import netCDF4
 import numpy as np
-import matplotlib.mlab as mp
 import time
 
 
-import fvcom_grd
+import fvtools.grid.fvcom_grd as fvcom_grd
 import fvtools.util.tools as tools
 
 
@@ -41,12 +38,12 @@ def export2file_TS(grd,
     # Determine which gridf points to use
     if subset is None:
         if longitude_limits is not None: 
-            ind1 = mlab.find(grd.lon[:,None] >= longitude_limits[0])
-            ind2 = mlab.find(grd.lon[:,None]  <= longitude_limits[1])
+            ind1 = np.flatnonzero(grd.lon[:,None] >= longitude_limits[0])
+            ind2 = np.flatnonzero(grd.lon[:,None]  <= longitude_limits[1])
             ind_lon = np.intersect1d(ind1, ind2) 
             
-            ind3 = mlab.find(grd.lat[:,None]  >= latitude_limits[0])
-            ind4 = mlab.find(grd.lat[:,None]  <= latitude_limits[1])
+            ind3 = np.flatnonzero(grd.lat[:,None]  >= latitude_limits[0])
+            ind4 = np.flatnonzero(grd.lat[:,None]  <= latitude_limits[1])
             ind_lat = np.intersect1d(ind3, ind4)
 
             subset = np.intersect1d(ind_lon, ind_lat)

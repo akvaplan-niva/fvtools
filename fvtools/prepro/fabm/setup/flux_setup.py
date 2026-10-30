@@ -8,10 +8,10 @@ from netCDF4 import Dataset
 import netCDF4
 
 sys.path.append('/work/hdj002/python_script/fvcom_pytools')
-from grid.fvcom_grd import FVCOM_grid
-import fabm.setup.read_excel_positions as rep
-import fabm.setup.read_excel_carbon as rec
-import fabm.setup.read_txt_positions as rtp
+from fvtools.grid.fvcom_grd import FVCOM_grid
+import fvtools.prepro.fabm.setup.read_excel_positions as rep
+import fvtools.prepro.fabm.setup.read_excel_carbon as rec
+import fvtools.prepro.fabm.setup.read_txt_positions as rtp
 import matplotlib.pyplot as plt
 
 def main(savename     = None, 

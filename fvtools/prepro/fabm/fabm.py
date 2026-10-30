@@ -10,7 +10,7 @@ import numpy as np
 #import time
 #import math
 import utm
-import grid.fvcom_grd as fvg
+import fvtools.grid.fvcom_grd as fvg
 
 def initialize_singlenode(rfile='restart.nc',varname='tracer_c',inival=1,latitude=58.02173,longitude=7.116):
     '''Initialize tracer as inval in single node and zero elsewhere'''

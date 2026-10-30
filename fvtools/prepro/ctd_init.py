@@ -4,7 +4,7 @@ import sys
 import os
 import matplotlib.pyplot as plt
 import numpy as np
-from fvcom_grd import FVCOM_grid
+from fvtools.grid.fvcom_grd import FVCOM_grid
 from matplotlib.path import Path
 from netCDF4 import Dataset
 from scipy.io import loadmat

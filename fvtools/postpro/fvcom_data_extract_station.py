@@ -7,15 +7,13 @@ import numpy as np
 import datetime
 from netCDF4 import Dataset
 import netCDF4
-import matplotlib.mlab as mp
 from scipy.io import savemat
-from IPython.core.debugger import Tracer
 from time import gmtime, strftime
 import time
 import sys
 
 
-from grid.fvcom_grd import FVCOM_grid
+from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.util.tools import Filelist
 
 def export2mat(grd, fileList, position_file, output_dir, start_time, stop_time, out_format='matlab'):

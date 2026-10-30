@@ -3,9 +3,9 @@
 
 from argparse import ArgumentParser
 
-import atm.atm_grids as wrf
-import grid.fvcom_grd as fv
-import atm.interp_tools as interp
+import fvtools.prepro.atm.atm_grids as wrf
+import fvtools.grid.fvcom_grd as fv
+import fvtools.prepro.atm.interp_tools as interp
 
 
 def main():
