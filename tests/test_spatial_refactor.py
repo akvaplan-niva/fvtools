@@ -128,7 +128,7 @@ def test_spatial_trees_are_lazy_cached_and_invalidated(spatial_grid):
 
 
 def test_cell_triangulation_mask_and_lazy_cache(spatial_grid, monkeypatch):
-    import fvtools.grid.tools as tools
+    import fvtools.util.tools as tools
 
     grid = spatial_grid
     unmasked = mtri.Triangulation(grid.xc, grid.yc).triangles
@@ -152,7 +152,7 @@ def test_cell_triangulation_mask_and_lazy_cache(spatial_grid, monkeypatch):
 
 
 def test_ctri_setter_and_mesh_edit_invalidate_cell_triangulation(spatial_grid, monkeypatch):
-    import fvtools.grid.tools as tools
+    import fvtools.util.tools as tools
 
     # Avoid compiling geometry routines: this is a cache lifecycle test.
     monkeypatch.setattr(tools, "mask_land_tris", lambda x, y, tri, ctri: ctri)

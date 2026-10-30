@@ -12,7 +12,7 @@ import calendar
 import pwd
 usr=pwd.getpwuid(os.getuid())[0]
 
-from grid.tools import Filelist
+from fvtools.util.tools import Filelist
 import grid.fvcom_grd as fvg
 import matplotlib.pyplot as plt
 

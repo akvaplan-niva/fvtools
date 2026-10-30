@@ -1,4 +1,4 @@
-"""Numerical regression tests for fvtools.grid.tools.make_interpolation_matrices.
+"""Numerical regression tests for fvtools.util.tools.make_interpolation_matrices.
 
 Explicitly test the actual function, not a monkeypatched stand-in.  For a
 nodal/cell tracer, the legacy postprocessing scripts compute:
@@ -11,7 +11,7 @@ All tests are headless and write no output files.
 import numpy as np
 import pytest
 
-from fvtools.grid.tools import make_interpolation_matrices
+from fvtools.util.tools import make_interpolation_matrices
 from fvtools.grid.fvcom_grd import FVCOM_grid
 
 

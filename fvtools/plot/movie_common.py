@@ -1,7 +1,7 @@
 """Shared FVCOM movie input and writer helpers.
 
 Both qc_gif and qc_gif_uv use this module.  Time conversion is delegated to
-fvtools.grid.tools so the FVCOM time convention stays in one place.
+fvtools.util.tools so the FVCOM time convention stays in one place.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from netCDF4 import Dataset
 
-from fvtools.grid.tools import Filelist, date2num, num2date
+from fvtools.util.tools import Filelist, date2num, num2date
 
 
 @dataclass(frozen=True)

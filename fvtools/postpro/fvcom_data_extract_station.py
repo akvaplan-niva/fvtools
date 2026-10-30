@@ -16,7 +16,7 @@ import sys
 
 
 from grid.fvcom_grd import FVCOM_grid
-from grid.tools import Filelist
+from fvtools.util.tools import Filelist
 
 def export2mat(grd, fileList, position_file, output_dir, start_time, stop_time, out_format='matlab'):
     '''Extract fvcom data (vertical profiles) from given positions and time period.'''

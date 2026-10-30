@@ -45,7 +45,7 @@ import progressbar as pb
 import numpy as np 
 import utide
 
-from fvtools.grid.tools import num2date, date2num
+from fvtools.util.tools import num2date, date2num
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from functools import cached_property
 from time import gmtime, strftime

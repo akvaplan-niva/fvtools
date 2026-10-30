@@ -74,7 +74,7 @@ def test_interpolation_matrix_delegates_to_correct_node_and_element_depth(monkey
     def stub(levels, depth):
         seen.append((levels.copy(), depth))
         return np.full(levels.shape, depth, dtype=float)
-    monkeypatch.setattr('fvtools.grid.tools.make_interpolation_matrices', stub)
+    monkeypatch.setattr('fvtools.util.tools.make_interpolation_matrices', stub)
     grid.make_interpolation_matrices_TS([-5])
     grid.make_interpolation_matrices_uv([-3])
     np.testing.assert_array_equal(seen[0][0], grid.siglayz)

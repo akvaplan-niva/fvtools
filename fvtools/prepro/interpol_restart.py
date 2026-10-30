@@ -12,7 +12,7 @@ import cmocean as cmo
 import datetime
 
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.tools import Filelist
+from fvtools.util.tools import Filelist
 
 from .initial.empty_initial import make_initial_file
 from .initial.plot_restart import plot_interps

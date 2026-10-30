@@ -1,7 +1,7 @@
 from fvtools.interpolators.horizontal_interpolator import N4Coefficients
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.grid.era5_grid import ERA5
-from fvtools.grid.tools import date2num
+from fvtools.util.tools import date2num
 
 from time import strftime, gmtime
 from datetime import datetime

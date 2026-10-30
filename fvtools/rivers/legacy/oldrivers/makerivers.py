@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.tools import num2date, date2num
+from fvtools.util.tools import num2date, date2num
 from scipy.spatial import cKDTree as KDTree
 from scipy.io import loadmat
 from scipy import interpolate

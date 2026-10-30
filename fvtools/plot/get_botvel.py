@@ -11,7 +11,7 @@ import fvtools.grid.fvcom_grd as fvg
 import numpy as np
 import scipy.io as sio
 
-from fvtools.grid.tools import num2date, date2num
+from fvtools.util.tools import num2date, date2num
 
 def main(case, month, start_date, stop_date, out_folder = None):
     '''

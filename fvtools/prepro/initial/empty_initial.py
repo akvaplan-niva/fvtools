@@ -1,7 +1,7 @@
 import netCDF4
 import datetime
 import numpy as np
-from fvtools.grid.tools import date2num
+from fvtools.util.tools import date2num
 
 # Make an empty restartfile
 def make_initial_file(M, initial_time, obc_type = 0):

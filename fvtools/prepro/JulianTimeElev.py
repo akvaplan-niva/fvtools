@@ -15,7 +15,7 @@ from time import gmtime, strftime
 from datetime import datetime, timedelta
 from fvtools.plot.geoplot import geoplot
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.tools import date2num
+from fvtools.util.tools import date2num
 
 def main(M, 
          start_year, start_month, start_day, NumDays,

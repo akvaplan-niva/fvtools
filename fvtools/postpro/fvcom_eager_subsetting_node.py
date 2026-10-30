@@ -13,7 +13,7 @@ from netCDF4 import Dataset
 import numpy as np
 
 import fvtools.grid.fvcom_grd
-from fvtools.grid import tools
+from fvtools.util import tools
 
  # extract a single variable or multi varibles
 def extract2file_subset_node_var(

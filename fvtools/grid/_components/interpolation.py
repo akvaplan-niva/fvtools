@@ -5,14 +5,14 @@ import numpy as np
 class InterpolateToZ:
     def make_interpolation_matrices_TS(self, interpolation_depths=[-5]):
         '''Make matrices (numpy arrays) that, when multiplied with fvcom T or S matrix, interpolates data to a given depth.'''
-        import fvtools.grid.tools as tools
+        import fvtools.util.tools as tools
         for depth in interpolation_depths:
             interp_matrix = tools.make_interpolation_matrices(self.siglayz, depth)
             setattr(self, 'interpolation_matrix_TS_' + str(abs(int(depth))) + '_m', interp_matrix)
 
     def make_interpolation_matrices_uv(self, interpolation_depths=[-5]):
         '''Make matrices (numpy arrays) that, when multiplied with fvcom u or v matrix, interpolates data to a given depth.'''
-        import fvtools.grid.tools as tools
+        import fvtools.util.tools as tools
         for depth in interpolation_depths:
             interp_matrix = tools.make_interpolation_matrices(self.siglayz_uv, depth)
             setattr(self, f'interpolation_matrix_uv_{abs(int(depth))}_m', interp_matrix)

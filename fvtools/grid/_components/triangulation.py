@@ -20,7 +20,7 @@ class CellTriangulation:
 
     def cell_tri(self):
         '''Get triangulation connecting cell centres.'''
-        import fvtools.grid.tools as tools
+        import fvtools.util.tools as tools
         if self.verbose: print('- Triangulating using Delaunays method')
         ctri  = matplotlib.tri.Triangulation(self.xc, self.yc)
         masked_ctris = tools.mask_land_tris(self.x, self.y, self.tri, ctri.triangles)

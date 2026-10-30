@@ -9,8 +9,8 @@ from netCDF4 import Dataset
 import numpy as np
 import netCDF4
 
-from grid.tools import Filelist
-from grid.tools import load
+from fvtools.util.tools import Filelist
+from fvtools.util.tools import load
 
 def wrf2fvcom(Nearest4,
               fileList="/home/hdj002/python_script/fvcom_pytools/atm/wrf_fileList.txt", 

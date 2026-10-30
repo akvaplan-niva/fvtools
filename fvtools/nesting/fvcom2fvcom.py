@@ -10,7 +10,7 @@ import netCDF4
 import numpy as np
 
 import grid.fvcom_grd as fvg
-from grid.tools import Filelist
+from fvtools.util.tools import Filelist
 from nesting.vertical_interpolation import calc_interp_matrices
 
 def make_nestfile(ngrd        = 'ngrd.npy',

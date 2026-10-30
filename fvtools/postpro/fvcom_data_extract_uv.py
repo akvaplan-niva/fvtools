@@ -18,7 +18,7 @@ import time
 
 
 import fvcom_grd
-import tools
+import fvtools.util.tools as tools
 
 def export2file_uv(grd,
                 fileList="fileList.txt", 

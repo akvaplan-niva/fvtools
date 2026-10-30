@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from fvtools.grid.tools import num2date, date2num
+from fvtools.util.tools import num2date, date2num
 from scipy import interpolate
 from scipy.signal import filtfilt
 from datetime import datetime, timedelta, timezone

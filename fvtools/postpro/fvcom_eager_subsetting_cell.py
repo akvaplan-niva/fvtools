@@ -13,7 +13,7 @@ from netCDF4 import Dataset
 import numpy as np
 
 import fvtools.grid.fvcom_grd
-from fvtools.grid import tools
+from fvtools.util import tools
 
 def extract2file_subset_cell_var(
     fileList="fileList.txt",
