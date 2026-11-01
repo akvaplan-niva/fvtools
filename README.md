@@ -222,7 +222,7 @@ You have now run FVCOM, which has stored results to output folders, e.g. output1
 ```
 fvcom_make_file_list.py makes a file that links points in time to files and indices in FVCOM results.
 ```bash
-python -m fvtools.postpro.fvcom_make_file_list -d folders.txt -s PO10 -f fileList.txt
+python -m fvtools.util.fvcom_make_file_list -d folders.txt -s PO10 -f fileList.txt
 ```
 
 ### Take a quick look at the results

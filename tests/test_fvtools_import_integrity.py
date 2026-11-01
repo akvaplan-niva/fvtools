@@ -19,6 +19,7 @@ OBSOLETE_MODULES = (
     'grid', 'fvcom_grd', 'fvcom_plot', 'nesting', 'pre_pro',
     'fvtools.pre_pro',
     'fvtools.prepro',
+    'fvtools.postpro',
     'fvtools.grid.grid_metrics',
     'fvtools.grid.fvcom.grid_metrics',
 )
