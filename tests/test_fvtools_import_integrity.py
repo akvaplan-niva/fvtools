@@ -139,9 +139,8 @@ def test_import_scanner_ignores_comments_and_docstrings():
               'import fvtools.grid.fvcom_grd as grid\n'
               'from fvtools.interpolators import vertical_interpolation\n')
     assert [name for name, _ in _iter_imports(source)] == [
-        'fvtools.grid.fvcom_grd', 'fvtools.setup.nesting'
+        'fvtools.grid.fvcom_grd', 'fvtools.interpolators'
     ]
-
 
 def test_import_scanner_handles_legacy_python2_syntax():
     source = 'print file\nimport gridding.domain as domain\n'
