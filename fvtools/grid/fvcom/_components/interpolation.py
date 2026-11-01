@@ -1,6 +1,43 @@
 """FVCOM sigma-to-z interpolation mixin; unchanged implementation."""
 
 import numpy as np
+from numba import njit, prange
+
+@njit(cache=True, parallel=True)
+def _interpolate_to_z_numba(f, z, depths):
+    """One-pass column interpolation without full-grid temporary arrays.
+
+    Preserve the original search semantics (including first-occurrence ties,
+    masked/invalid levels, shallow extrapolation, and below-bottom NaNs).
+    The output remains float64, even for float32 FVCOM NetCDF inputs.
+    """
+    nlevels, npoints = f.shape
+    out = np.empty(npoints, dtype=np.float64)
+    for point in prange(npoints):
+        upper_depth, lower_depth = -np.inf, np.inf
+        upper_value, lower_value = np.nan, np.nan
+        for layer in range(nlevels):
+            depth, value = depths[layer, point], f[layer, point]
+            if not np.isfinite(depth) or not np.isfinite(value):
+                continue
+            if depth <= z and depth > upper_depth:
+                upper_depth, upper_value = depth, value
+            if depth >= z and depth < lower_depth:
+                lower_depth, lower_value = depth, value
+        if np.isfinite(upper_depth) and np.isfinite(lower_depth):
+            if upper_depth == lower_depth:
+                out[point] = upper_value
+            else:
+                out[point] = (
+                    upper_value * (lower_depth - z)
+                    + lower_value * (z - upper_depth)
+                ) / (lower_depth - upper_depth)
+        elif np.isfinite(lower_depth):
+            out[point] = lower_value
+        else:
+            out[point] = np.nan
+    return out
+
 
 class InterpolateToZ:
     def make_interpolation_matrices_TS(self, interpolation_depths=[-5]):
@@ -26,41 +63,23 @@ class InterpolateToZ:
         """
         f = self._as_array(f) if hasattr(self, '_as_array') else np.ma.filled(
             np.ma.asarray(f, dtype=float), np.nan)
-        f = np.asarray(f, dtype=float)
+        # Avoid full-size float64 copies of the 3-D FVCOM input. Numba
+        # converts scalar values to float64 internally for interpolation.
+        f = np.asarray(f)
+        if f.dtype.kind not in 'fiub' or (f.dtype.kind == 'f' and f.dtype.itemsize not in (4, 8)):
+            f = np.asarray(f, dtype=float)
         if depths is None:
             candidates = ('siglayz', 'siglevz', 'siglayz_uv', 'siglevz_uv')
-            depths = next(( -np.asarray(getattr(self, attr)).T
-                            for attr in candidates
-                            if f.shape == getattr(self, attr).T.shape), None)
+            depths = next((-np.asarray(getattr(self, attr)).T
+                           for attr in candidates
+                           if f.shape == getattr(self, attr).T.shape), None)
             if depths is None:
                 raise ValueError('Field shape does not match sigma-depth coordinates')
-        depths = np.asarray(depths, dtype=float)
+        depths = np.asarray(depths)
+        if depths.dtype.kind not in 'fiub' or (depths.dtype.kind == 'f' and depths.dtype.itemsize not in (4, 8)):
+            depths = np.asarray(depths, dtype=float)
         if f.ndim != 2 or f.shape != depths.shape:
             raise ValueError('f and depths must have shape (sigma, location)')
         if not np.isscalar(z) or not np.isfinite(z) or z < 0:
             raise ValueError('z must be a nonnegative, finite depth')
-
-        valid = np.isfinite(f) & np.isfinite(depths)
-        above = np.where(valid & (depths <= z), depths, -np.inf)
-        below = np.where(valid & (depths >= z), depths, np.inf)
-        upper_index = np.argmax(above, axis=0)
-        lower_index = np.argmin(below, axis=0)
-        loc = np.arange(f.shape[1])
-        upper_depth, lower_depth = above[upper_index, loc], below[lower_index, loc]
-        upper_value = f[upper_index, loc]
-        lower_value = f[lower_index, loc]
-
-        out = np.full(f.shape[1], np.nan, dtype=float)
-        exact = np.isfinite(upper_depth) & np.isfinite(lower_depth) & (upper_depth == lower_depth)
-        out[exact] = upper_value[exact]
-        interpolate = (np.isfinite(upper_depth) & np.isfinite(lower_depth)
-                       & (lower_depth > upper_depth))
-        out[interpolate] = (
-            upper_value[interpolate] * (lower_depth[interpolate] - z)
-            + lower_value[interpolate] * (z - upper_depth[interpolate])
-        ) / (lower_depth[interpolate] - upper_depth[interpolate])
-
-        # Shallower than topmost sigma point: reuse the shallowest value.
-        shallower = (~np.isfinite(upper_depth)) & np.isfinite(lower_depth)
-        out[shallower] = lower_value[shallower]
-        return out
+        return _interpolate_to_z_numba(f, float(z), depths)

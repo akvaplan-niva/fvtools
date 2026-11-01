@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Module path (relative to fvtools/) -> qualified names of *all* active JIT kernels.
 KERNELS = {
+    "grid/fvcom/_components/interpolation.py": ("_interpolate_to_z_numba",),
     "grid/fvcom/tge.py": (
         "get_NBE", "get_BOUNDARY", "get_MAXNBR", "get_NBVE_NBVT",
         "get_NTSN_NBSN", "get_TRI_EDGE_PARAM", "set_boundary", "get_CV",
@@ -149,6 +150,12 @@ def _args(path, name):
     nt, mt = len(tri), len(x)
     k = name.split(".")[-1]
 
+    if path == "grid/fvcom/_components/interpolation.py":
+        return (
+            np.array([[1., 2., np.nan], [3., 4., 5.], [6., 7., 8.]]),
+            2.5,
+            np.array([[.5, .5, .5], [2., 2., 2.], [4., 4., 4.]]),
+        )
     if path == "grid/fvcom/tge.py":
         from fvtools.grid.fvcom import tge
         nbe = tge.get_NBE(nt, mt, tri)
