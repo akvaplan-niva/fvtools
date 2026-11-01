@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from fvtools.prepro import BuildCase as bc
-from fvtools.prepro._buildcase.depth import DepthHandler
+from fvtools.setup import BuildCase as bc
+from fvtools.setup._buildcase.depth import DepthHandler
 
 
 def _stub_constructor(monkeypatch):

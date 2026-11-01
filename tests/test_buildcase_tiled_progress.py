@@ -3,7 +3,7 @@
 import numpy as np
 from scipy.interpolate import LinearNDInterpolator
 
-from fvtools.prepro._buildcase import tiled_bathymetry as tiled
+from fvtools.setup._buildcase import tiled_bathymetry as tiled
 
 
 def test_progress_for_grid_nodes(tmp_path, capsys):

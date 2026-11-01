@@ -12,10 +12,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from fvtools.prepro import BuildCase as bc_module
-from fvtools.prepro._buildcase.depth import DepthHandler as ExtractedDepthHandler
-from fvtools.prepro._buildcase.mesh_validation import validate_boundary_triangles
-from fvtools.prepro._buildcase.plotting import BathymetryPlotter
+from fvtools.setup import BuildCase as bc_module
+from fvtools.setup._buildcase.depth import DepthHandler as ExtractedDepthHandler
+from fvtools.setup._buildcase.mesh_validation import validate_boundary_triangles
+from fvtools.setup._buildcase.plotting import BathymetryPlotter
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +25,7 @@ def close_figures():
 
 
 def test_public_jupyter_class_and_depthhandler_reexports():
-    assert bc_module.BuildCase.__module__ == 'fvtools.prepro.BuildCase'
+    assert bc_module.BuildCase.__module__ == 'fvtools.setup.BuildCase'
     assert bc_module.DepthHandler is ExtractedDepthHandler
     assert issubclass(bc_module.BuildCase, ExtractedDepthHandler)
     assert bc_module.BuildCase.show_depth is BathymetryPlotter.show_depth

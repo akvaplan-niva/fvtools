@@ -6,7 +6,7 @@ uncentered circumcircle check fails with large easting/northing values.
 import numpy as np
 import pytest
 from scipy.interpolate import LinearNDInterpolator
-from fvtools.prepro._buildcase.tiled_bathymetry import (
+from fvtools.setup._buildcase.tiled_bathymetry import (
     TilingOptions, _DiskBins, _interpolate_dense_single, interpolate_unstructured_npy
 )
 

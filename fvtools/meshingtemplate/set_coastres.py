@@ -1,6 +1,6 @@
 import os
 # ------------------------------------------------------------------------------
-import fvtools.prepro.gridding.coast as coast
+import fvtools.setup.gridding.coast as coast
 import numpy as np
 import pandas as pd
 

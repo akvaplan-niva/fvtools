@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from fvtools.prepro._buildrivers.forcing import FVCOM_rivers
+from fvtools.setup._buildrivers.forcing import FVCOM_rivers
 
 
 def _forcing_with_boundary(nodestrings):
@@ -48,7 +48,7 @@ def test_boundary_node_groups_are_cached():
 def test_rivers_module_does_not_import_removed_grid_metrics():
     import ast
     import inspect
-    from fvtools.prepro._buildrivers import forcing
+    from fvtools.setup._buildrivers import forcing
 
     tree = ast.parse(inspect.getsource(forcing))
 

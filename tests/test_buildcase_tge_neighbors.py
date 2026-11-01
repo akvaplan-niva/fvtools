@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from matplotlib.tri import Triangulation
 
-from fvtools.prepro._buildcase.depth import DepthHandler
+from fvtools.setup._buildcase.depth import DepthHandler
 
 
 def fan(n, closed):

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from scipy.spatial import cKDTree
 
-from fvtools.prepro._buildrivers import forcing
+from fvtools.setup._buildrivers import forcing
 
 
 def make_rivers(positions, flux, temperature, mesh_locations=None,

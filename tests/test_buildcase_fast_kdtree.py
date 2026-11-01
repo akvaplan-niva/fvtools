@@ -3,8 +3,8 @@ import os
 import numpy as np
 import pytest
 from scipy.interpolate import LinearNDInterpolator
-from fvtools.prepro._buildcase import tiled_bathymetry as tiled
-from fvtools.prepro._buildcase import fast_kdtree as fast
+from fvtools.setup._buildcase import tiled_bathymetry as tiled
+from fvtools.setup._buildcase import fast_kdtree as fast
 
 @pytest.fixture(autouse=True)
 def fast_mode(monkeypatch):

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from scipy.interpolate import LinearNDInterpolator
 try:
-    from fvtools.prepro._buildcase import tiled_bathymetry as tiled
+    from fvtools.setup._buildcase import tiled_bathymetry as tiled
 except ImportError:  # stand-alone isolated testing
     import tiled_bathymetry as tiled
 

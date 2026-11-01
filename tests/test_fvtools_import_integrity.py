@@ -18,6 +18,7 @@ OBSOLETE_MODULES = (
     *(package for package in MOVED_PACKAGES),
     'grid', 'fvcom_grd', 'fvcom_plot', 'nesting', 'pre_pro',
     'fvtools.pre_pro',
+    'fvtools.prepro',
     'fvtools.grid.grid_metrics',
     'fvtools.grid.fvcom.grid_metrics',
 )
@@ -136,9 +137,9 @@ def test_import_scanner_ignores_comments_and_docstrings():
     source = ('"""import gridding.domain"""\n'
               '# from fvtools.nesting import matchtopo\n'
               'import fvtools.grid.fvcom_grd as grid\n'
-              'from fvtools.prepro.nesting import vertical_interpolation\n')
+              'from fvtools.setup.nesting import vertical_interpolation\n')
     assert [name for name, _ in _iter_imports(source)] == [
-        'fvtools.grid.fvcom_grd', 'fvtools.prepro.nesting'
+        'fvtools.grid.fvcom_grd', 'fvtools.setup.nesting'
     ]
 
 
@@ -150,10 +151,10 @@ def test_import_scanner_handles_legacy_python2_syntax():
 def test_audit_reports_obsolete_and_missing_modules():
     source = ('from fvtools.nesting import matchtopo\n'
               'from fvtools.grid.does_not_exist import Example\n'
-              'from fvtools.prepro import BuildRivers\n')
+              'from fvtools.setup import BuildRivers\n')
     issues = _audit_source(
-        source, ROOT / 'fvtools/prepro/example.py', ROOT,
-        {'fvtools', 'fvtools.grid', 'fvtools.prepro'},
+        source, ROOT / 'fvtools/setup/example.py', ROOT,
+        {'fvtools', 'fvtools.grid', 'fvtools.setup'},
     )
     assert len(issues) == 2, issues
     assert any('obsolete import path' in item for item in issues)

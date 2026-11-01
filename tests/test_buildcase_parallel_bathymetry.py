@@ -6,7 +6,7 @@ Serial and spawned Windows/Linux workers use the exact same numerical kernel.
 import numpy as np
 import pytest
 from scipy.interpolate import LinearNDInterpolator
-from fvtools.prepro._buildcase import tiled_bathymetry as mod
+from fvtools.setup._buildcase import tiled_bathymetry as mod
 
 
 def _scene(seed=17, count=5000, nq=320):

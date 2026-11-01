@@ -38,11 +38,11 @@ KERNELS = {
     "plot/fvcom_streamlines.py": (
         "remove_land", "is_inside_tri", "get_weights", "compute_streamline_linear",
     ),
-    "prepro/gridding/estimator.py": ("DistanceFunction._get_node_estimate_function",),
-    "prepro/_buildcase/depth.py": ("DepthHandler.laplacian_filter", "DepthHandler.mellor_ezer_oey"),
+    "setup/gridding/estimator.py": ("DistanceFunction._get_node_estimate_function",),
+    "setup/_buildcase/depth.py": ("DepthHandler.laplacian_filter", "DepthHandler.mellor_ezer_oey"),
     "grid/fvcom/_components/control_volumes.py": ("_find_cv_walls", "_connect_cv_walls"),
     "grid/fvcom_grd.py": ("FVCOM_grid._smooth",),
-    "prepro/nesting/vertical_interpolation.py": (
+    "setup/nesting/vertical_interpolation.py": (
         "calc_interp_matrices", "numba_absdiff", "find_inds_and_weights",
     ),
     "interpolators/structured_bilinear.py": ("_solve_batch",),
@@ -216,11 +216,11 @@ def _args(path, name):
             return (x, y, tri, nbse, nese, np.ones(nt, dtype=np.float64),
                     np.ones(nt, dtype=np.int32), initial, 4,
                     np.zeros(mt), np.zeros(mt), cell)
-    elif path == "prepro/gridding/estimator.py":
+    elif path == "setup/gridding/estimator.py":
         return (1.0, 5.0, 10.0, 2.0, 3.0, 5.0,
                 np.array([[1., 2.], [3., 4.]]),
                 np.array([[0., 0.], [10., 0.]]), np.array([2., 3.]), 1.0)
-    elif path == "prepro/_buildcase/depth.py":
+    elif path == "setup/_buildcase/depth.py":
         neigh = np.array([[1, 2], [0, 2], [0, 1]], dtype=np.int64)
         counts = np.array([2, 2, 2], dtype=np.int64)
         z = np.array([20., 2., 5.])
@@ -240,7 +240,7 @@ def _args(path, name):
         return (np.array([3., 6., 9.]), .25, 2,
                 np.array([[1, 2], [0, 2], [0, 1]], dtype=np.int64),
                 np.array([2, 2, 2], dtype=np.int64))
-    elif path == "prepro/nesting/vertical_interpolation.py":
+    elif path == "setup/nesting/vertical_interpolation.py":
         source = np.array([[0., 0.], [10., 12.], [20., 24.]])
         target = np.array([[0., 3.], [5., 12.], [20., 30.]])
         if k == "calc_interp_matrices": return (source, target)
@@ -304,7 +304,7 @@ def test_topology_independent_oracle():
 
 
 def test_vertical_interpolation_weights_reconstruct_depth():
-    from fvtools.prepro.nesting.vertical_interpolation import calc_interp_matrices
+    from fvtools.setup.nesting.vertical_interpolation import calc_interp_matrices
     source = np.array([[0., 0.], [10., 12.], [20., 24.]])
     target = np.array([[3., 6.], [17., 18.]])
     i, j, w, v = calc_interp_matrices(source, target)
@@ -337,8 +337,8 @@ def test_triangle_weights_reconstruct_point():
 
 
 def test_depth_smoothing_conservation():
-    from fvtools.prepro._buildcase.depth import DepthHandler
-    args = _args("prepro/_buildcase/depth.py", "DepthHandler.mellor_ezer_oey")
+    from fvtools.setup._buildcase.depth import DepthHandler
+    args = _args("setup/_buildcase/depth.py", "DepthHandler.mellor_ezer_oey")
     bath, rmax, fixed = DepthHandler.mellor_ezer_oey(*args)
     assert fixed >= 1 and rmax > 0.2
     np.testing.assert_allclose(bath.sum(), args[0].sum(), atol=1e-12)

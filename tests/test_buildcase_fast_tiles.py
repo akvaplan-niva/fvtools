@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from scipy.interpolate import LinearNDInterpolator
 
-from fvtools.prepro._buildcase import tiled_bathymetry as tiled
+from fvtools.setup._buildcase import tiled_bathymetry as tiled
 
 
 def _compare(tmp_path, data, queries, *, config=None, rtol=1e-10, atol=1e-10):

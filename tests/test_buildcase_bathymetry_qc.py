@@ -8,8 +8,8 @@ from matplotlib.collections import PathCollection
 import numpy as np
 import pytest
 
-from fvtools.prepro._buildcase.depth import DepthHandler
-from fvtools.prepro._buildcase.plotting import BathymetryPlotter
+from fvtools.setup._buildcase.depth import DepthHandler
+from fvtools.setup._buildcase.plotting import BathymetryPlotter
 
 
 @pytest.fixture(autouse=True)

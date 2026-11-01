@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from fvtools.prepro import BuildRivers as br
-from fvtools.prepro._buildrivers import sources, interaction, forcing, constants
+from fvtools.setup import BuildRivers as br
+from fvtools.setup._buildrivers import sources, interaction, forcing, constants
 
 
 def test_classes_still_import_from_buildrivers():

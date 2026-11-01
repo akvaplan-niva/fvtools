@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pytest
 
-from fvtools.prepro import BuildRivers as br
+from fvtools.setup import BuildRivers as br
 
 
 def write_var(root, area, stamps, values=None):

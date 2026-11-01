@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from fvtools.prepro.atm import read_metCoop as met
-from fvtools.prepro.atm._metcoop_io import SourcePool, is_retryable_error, read_masked
+from fvtools.setup.atm import read_metCoop as met
+from fvtools.setup.atm._metcoop_io import SourcePool, is_retryable_error, read_masked
 
 
 FIELDS = {

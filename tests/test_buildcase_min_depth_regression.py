@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 from scipy.interpolate import LinearNDInterpolator
 
-from fvtools.prepro._buildcase.depth import DepthHandler
+from fvtools.setup._buildcase.depth import DepthHandler
 
 
 def test_tiled_npy_enforces_min_depth_and_preserves_input(tmp_path):

@@ -5,7 +5,7 @@ import pytest
 from scipy.interpolate import LinearNDInterpolator
 
 try:
-    from fvtools.prepro._buildcase import tiled_bathymetry as mod
+    from fvtools.setup._buildcase import tiled_bathymetry as mod
 except ImportError:  # standalone copy used by the isolated packager smoke tests
     import tiled_bathymetry as mod
 

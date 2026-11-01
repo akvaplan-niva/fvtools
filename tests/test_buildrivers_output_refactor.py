@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from fvtools.prepro import BuildRivers as br
-from fvtools.prepro._buildrivers import forcing, output
+from fvtools.setup import BuildRivers as br
+from fvtools.setup._buildrivers import forcing, output
 
 
 def make_forcing():

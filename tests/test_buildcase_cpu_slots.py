@@ -3,7 +3,7 @@ import os
 from types import SimpleNamespace
 import numpy as np
 import pytest
-from fvtools.prepro._buildcase import tiled_bathymetry as bath
+from fvtools.setup._buildcase import tiled_bathymetry as bath
 
 
 def _machine(monkeypatch, logical=256, affinity=5, slurm='1'):
