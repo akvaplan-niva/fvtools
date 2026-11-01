@@ -27,7 +27,8 @@ CELL_VELOCITY_FIELDS = frozenset({'sp', 'sp_lev'})
 def main(folder=None, fname=None, filelist=None, var=None,
          sigma=None, z=None, xlim=None, ylim=None, start=None, stop=None,
          section=None, section_res=None, fps=12, mname=None, dpi=100,
-         nlevels=20, reference='epsg:32633', output_dir=None, **kwargs):
+         nlevels=20, reference='epsg:32633', output_dir=None,
+         render='contour', raster_resolution=900, colorbar_samples=None, **kwargs):
     """
     Create FVCOM animations from sigma, z-level, and/or vertical sections.
 
@@ -53,7 +54,9 @@ def main(folder=None, fname=None, filelist=None, var=None,
         sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
         section=section, section_res=section_res, fps=fps, mname=mname,
         dpi=dpi, nlevels=nlevels, reference=reference,
-        output_dir=output_dir, **kwargs,
+        output_dir=output_dir, render=render,
+        raster_resolution=raster_resolution,
+        colorbar_samples=colorbar_samples, **kwargs,
     )
 
     output_paths = []
@@ -71,7 +74,9 @@ def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
               sigma=None, z=None, xlim=None, ylim=None, start=None,
               stop=None, section=None, section_res=None, fps=12,
               mname=None, dpi=100, nlevels=20,
-              reference='epsg:32633', output_dir=None, **kwargs):
+              reference='epsg:32633', output_dir=None,
+              render='contour', raster_resolution=900,
+              colorbar_samples=None, **kwargs):
     """Return all options and selected frames for the three movie functions.
 
     The returned dictionary can be passed directly to surface_movie,
@@ -84,7 +89,9 @@ def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
         sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
         section=section, section_res=section_res, fps=fps, mname=mname,
         dpi=dpi, nlevels=nlevels, reference=reference,
-        output_dir=output_dir,
+        output_dir=output_dir, render=render,
+        raster_resolution=raster_resolution,
+        colorbar_samples=colorbar_samples,
     )
     supported_extra = {'section_neighbors', 'section_vlim', 'velocity_coordinates'}
     unknown = set(kwargs) - supported_extra
@@ -101,16 +108,18 @@ def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
     )
     options['time'], options['dates'] = frames.time, frames.datetime
     options['List'], options['index'] = frames.path, frames.index
+    scan_options = ({'sample_count': options['colorbar_samples']}
+                    if options['colorbar_samples'] is not None else {})
     options['cb'] = build_colorbars(
         frames, options['var'], sigma=options['sigma'],
-        nlevels=options['nlevels'],
+        nlevels=options['nlevels'], **scan_options,
     )
     if options['sigma'] is not None and options['z'] is not None:
         # A z-level movie must not inherit colour limits calculated from
         # the requested sigma layer. Estimate its limits across all layers.
         options['zlevel_cb'] = build_colorbars(
             frames, options['var'], sigma=None,
-            nlevels=options['nlevels'],
+            nlevels=options['nlevels'], **scan_options,
         )
     print_frame_range(frames)
     return options
@@ -134,6 +143,16 @@ def _validate_movie_options(options):
         raise ValueError('nlevels must be an integer >= 3')
     if not options['var']:
         raise ValueError('var must contain at least one field')
+    if options['render'] not in ('contour', 'raster'):
+        raise ValueError("render must be 'contour' or 'raster'")
+    resolution = options['raster_resolution']
+    if (isinstance(resolution, (bool, np.bool_)) or
+            not isinstance(resolution, (int, np.integer)) or resolution < 16):
+        raise ValueError('raster_resolution must be an integer >= 16')
+    count = options['colorbar_samples']
+    if (count is not None and (isinstance(count, (bool, np.bool_))
+            or not isinstance(count, (int, np.integer)) or count < 1)):
+        raise ValueError('colorbar_samples must be None or an integer >= 1')
     resolution = options['section_res']
     if resolution is not None and (
         not isinstance(resolution, (int, float, np.number))
@@ -406,7 +425,7 @@ def _update_field_limits(settings, data):
         settings['max'] = max(settings['max'], float(values.max()))
 
 
-def build_colorbars(frames, fields, sigma=None, nlevels=20):
+def build_colorbars(frames, fields, sigma=None, nlevels=20, sample_count=None):
     """Estimate limits for selected frames, independently of file discovery.
 
     For z=... (or full 3-D sections), source sigma values determine the
@@ -416,7 +435,16 @@ def build_colorbars(frames, fields, sigma=None, nlevels=20):
     direct = [f for f in fields if f not in (
         'pv', 'vorticity', 'sp', 'sp_lev', *SECTION_VELOCITY_FIELDS)]
     if direct:
-        for path, indices in frames.iter_files():
+        if sample_count is None or sample_count >= len(frames):
+            grouped_files = frames.iter_files()
+        else:
+            chosen = np.unique(np.linspace(
+                0, len(frames) - 1, int(sample_count), dtype=int))
+            by_file = {}
+            for j in chosen:
+                by_file.setdefault(frames.path[j], []).append(frames.index[j])
+            grouped_files = by_file.items()
+        for path, indices in grouped_files:
             with Dataset(path) as dataset:
                 for field in direct:
                     variable = dataset[field]
@@ -504,6 +532,10 @@ class HorizontalMaker(AnimationFields):
         self.index, self.files, self.time, self.datetime = index, List, time, dates
         self.sigma, self.z = sigma, z
         self.xlim,  self.ylim = xlim, ylim
+        self.render = kwargs.get('render', 'contour')
+        self.raster_resolution = kwargs.get('raster_resolution', 900)
+        # Retain pixel-to-triangle lookup across successive scalar movies.
+        self._raster_geometry = {}
 
         # Copy colormap settings
         self.cb = cb
@@ -544,6 +576,7 @@ class HorizontalMaker(AnimationFields):
             )
             self._plot_axes = ax
             self._dynamic_contour = None
+            self._fast_raster = None
             self._status_artist = None
             self._bathy_contours = None
 
@@ -577,7 +610,7 @@ class HorizontalMaker(AnimationFields):
     def _clear_dynamic_artists(self):
         """Remove only last frame's field and warning; keep static artists."""
         contour = getattr(self, '_dynamic_contour', None)
-        if contour is not None:
+        if contour is not None and getattr(self, 'render', 'contour') == 'contour':
             # Matplotlib >= 3.8: ContourSet is a removable Artist.
             if hasattr(contour, 'remove'):
                 contour.remove()
@@ -616,7 +649,35 @@ class HorizontalMaker(AnimationFields):
         """Update only the dynamic field and title; preserve static artists."""
         ax = self._plot_axes
         cont = None
-        if field is not None:
+        if getattr(self, 'render', 'contour') == 'raster':
+            if field is not None:
+                from fvtools.plot._fast_raster import FastRasterRenderer
+                data = np.ma.asarray(np.squeeze(field))
+                if data.size == self.M.node_number:
+                    triangulation = self.M.mtri_nodes
+                    location = 'node'
+                elif data.size == self.M.cell_number:
+                    triangulation = self.M.mtri_cells
+                    location = 'cell'
+                else:
+                    raise ValueError('Field length does not match grid vertices')
+                if self._fast_raster is None:
+                    bounds = (*ax.get_xlim(), *ax.get_ylim())
+                    key = (location, bounds, self.raster_resolution)
+                    self._fast_raster = FastRasterRenderer(
+                        ax, triangulation,
+                        cmap=self.cb[self.var]['cmap'],
+                        levels=self.cb[self.var]['colorticks'],
+                        bounds=bounds,
+                        resolution=self.raster_resolution,
+                        geometry=self._raster_geometry.get(key),
+                    )
+                    self._raster_geometry[key] = self._fast_raster.geometry()
+                cont = self._fast_raster.update(data)
+            elif self._fast_raster is not None:
+                self._fast_raster.update(
+                    np.ma.masked_all(self._fast_raster.n_vertices))
+        elif field is not None:
             cont = self.M.plot_contour(
                 field, show=False, ax=ax,
                 cmap=self.cb[self.var]['cmap'],
