@@ -67,7 +67,7 @@ These scrips were developed to emulate the workflow from `fvcom_toolbox/fvtools`
   - `NorShelf2.5km` is a 2500 m resolution data assimilated ROMS model configured for shelf modelling.
 
 You can call most scripts via the `main` function, which will create input/forcing files following a standardized setup:
-- `fvtools.pre_pro.BuildCase.main` 
+- `fvtools.setup.BuildCase.main` 
   - Quality controls the mesh (not complete; some rare cases, such as nodes connected to two boundaries, will not be detected yet)
   - Smooths raw bathymetry to desired `rx0` value (i.e. following MetOffice ROMS routines)
   - Returns estimate of necessary CFL criteria
@@ -77,15 +77,15 @@ You can call most scripts via the `main` function, which will create input/forci
     - `casename_obc.dat`
     - `casename_spg.dat`
 
-- `fvtools.pre_pro.BuildRivers.main` creates river forcing for your experiment
-- `fvtools.nesting.get_ngrd.main` cuts out a nesting zone mesh from the main mesh
+- `fvtools.setup.BuildRivers.main` creates river forcing for your experiment
+- `fvtools.setup.nesting.get_ngrd.main` cuts out a nesting zone mesh from the main mesh
   - for fvcom to fvcom nested domains, this routine will dump the `casename_bathymetry.dat` file to your `input` folder 
-- `atmospheric forcing: fvtools.atm.read_metCoop.main`
+- `atmospheric forcing: fvtools.setup.atm.read_metCoop.main`
   - interpolates atmospheric forcing to your domain
 
 Boundary forcing for ROMS and FVCOM nested models is prepared the following:
-- `fvtools.nesting.roms_nesting_fg.main`
-- `fvtools.nesting.fvcom2fvcom_nesting.main`
+- `fvtools.setup.nesting.roms_nesting_fg.main`
+- `fvtools.setup.nesting.fvcom2fvcom_nesting.main`
 
 they will produce `.nc` forcing files for the boundary and `.dat` depth files, where the depth near the open boundaries is set equal to that of the forcing model, with a relaxation zone connecting it to the bathymetry set by BuildCase.
 
@@ -106,7 +106,7 @@ DL = 0.5
 #### Writing .dat grid files
 You have a `casename.2dm` file (either from smeshing or from SMS); create the FVCOM grid input files using `BuildCase`:
 ```python
-import fvtools.pre_pro.BuildCase as bc
+import fvtools.setup.BuildCase as bc
 bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 ```
 `Mesh quality`: BuildCase prepares the grid before a simulation. It checks if there are invalid triangles (with more than one side facing the boundary) and will remove such triangles if present.
@@ -123,7 +123,7 @@ fvtools support two nesting types:
 - From `FVCOM` (from any `FVCOM` model that overlaps with this mesh)
 
 ```python
-import fvtools.nesting.get_ngrd as gn
+import fvtools.setup.nesting.get_ngrd as gn
 
 # ROMS-FVCOM nesting:
 # nrows is the number of "square" rows from the obc used for the nestingzone. We also normally remove land squares in the nestingzone on all rows except
@@ -139,9 +139,9 @@ gn.main('M.npy', mother='mother_fvcom.nc')
 ### Nesting (OBC forcing)
 Interpolating ocean state to the FVCOM nesting zone.
 
-`FVCOM to FVCOM nesting` requires a [filelist](https://source.coderefinery.org/apn/fvtools/-/blob/hes/README.md#a-filelist-linking-to-fvcom-results).
+`FVCOM to FVCOM nesting` requires a [filelist](#a-filelist-linking-to-fvcom-results).
 ```python
-import fvtools.nesting.fvcom2fvcom_nesting as f2f
+import fvtools.setup.nesting.fvcom2fvcom_nesting as f2f
 f2f.main(ngrd = 'ngrd.npy', 
          fileList = 'fileList.txt', 
          output_file = '/input/my_experiment_nest.nc', 
@@ -152,11 +152,11 @@ f2f.main(ngrd = 'ngrd.npy',
 
 `ROMS-FVCOM nesting` will automatically find the forcing it needs at thredds.met.no:
 ```python
-import fvtools.nesting.roms_nesting_fg as rn
-rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='NS')
+import fvtools.setup.nesting.roms_nesting_fg as rn
+rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='H-NS')
 ```
 
-MET Norway does _not_ guarantee data is continuous in time. We must keep the tides continuous; for that, we use `fvtools.nesting.fill_nesting.gaps`. It performs a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell` to fill gaps. Temperature and salinity are interpolated linearly in time. See examples/run_gap_filler.py and run_python.sh for example use.
+MET Norway does _not_ guarantee data is continuous in time. We must keep the tides continuous; for that, we use `fvtools.setup.nesting.fill_nesting_gaps`. It performs a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell` to fill gaps. Temperature and salinity are interpolated linearly in time. See `fvtools.setup.nesting.fill_nesting_gaps` for the gap-filling implementation.
 
 `ROMS2FVCOM currently supports these ROMS models/setups`
 - Met office NorKyst `MET-NK`
@@ -164,20 +164,20 @@ MET Norway does _not_ guarantee data is continuous in time. We must keep the tid
 - Hourly NorShelf `H-NS`
 - Daily averaged NorShelf `D-NS`
 
-Adding a ROMS reader to `fvtools.grid.roms_grd` can support other ROMS experiments.
+Adding a ROMS reader to `fvtools.grid.roms_grid` can support other ROMS experiments.
 
 ### River runoff
 The river runoff is given for geographical catchment areas ids (vassdrag), and the ids are mapped at [nve atlas](https://atlas.nve.no/).
 ```python
-import fvtools.pre_pro.BuildRivers as br
-await br.main('2018-01-01-00', '2018-02-01-00', vassdrag, 'M.npy')
+import fvtools.setup.BuildRivers as br
+await br.main('2018-01-01', '2018-02-01', vassdrag, 'M.npy')
 ```
 The routine writes a file called `RiverNamelist.nml` and `riverdata.nc` to your working directory. Put these in the `input` folder.
 
 ### Atmospheric forcing
 We use the MetCoOp-AROME model for atmospheric forcing.
 ```python
-import fvtools.atm.read_metCoop as rm
+import fvtools.setup.atm.read_metCoop as rm
 rm.main("M.npy", "./input/casename_atm.nc", "2018-01-01-00", "2018-02-01-00")
 ```
 
@@ -188,16 +188,17 @@ It interpolates initial fields from an FVCOM mother to a restart file.
 - make a restartfile for a `startdate`
 
 ```python
-import fvtools.pre_pro.interpol_restart as ir
-ir.main(childfn="casename_restart_0001.nc", 
+import fvtools.setup.interpol_restart as ir
+ir.main(child_fn="casename_restart_0001.nc", 
         filelist="filelist_restart.txt")
 
 # alternatively, if you need to make a restart file
-ir.main(startdate="2023-01-31-00", 
+ir.main(startdate="2023-01-31-00",
+        child_grid="M.npy",
         filelist="filelist_restart.txt")
 
 # If you don't have a filelist
-ir.main(childfn="casename_restart_0001.nc", 
+ir.main(child_fn="casename_restart_0001.nc", 
         result_folder="./mother_folder/output01/", 
         name = "mother_restart")
 ```
@@ -205,8 +206,8 @@ ir.main(childfn="casename_restart_0001.nc",
 #### interpol_roms_restart
 Interpolate initial fields from a ROMS model to your restart file, but be warned: the model may crash if you set `uv=True`.
 ```python
-import fvtools.pre_pro.interpol_roms_restart as ir 
-ir.main("casename_restart_0001.nc", "NS", uv=True)
+import fvtools.setup.interpol_roms_restart as ir 
+ir.main(restartfile="casename_restart_0001.nc", mother="H-NS", uv=True)
 ```
 
 ## After an experiment
@@ -220,8 +221,8 @@ You have now run FVCOM, which has stored results to output folders, e.g. output1
 /cluster/shared/NS9067K/apn_backup/FVCOM/MATNOC/PO10/output05
 ```
 fvcom_make_file_list.py makes a file that links points in time to files and indices in FVCOM results.
-```python
-python fvcom_make_filelist.py -d folders.txt -s PO10 -f fileList.txt
+```bash
+python -m fvtools.postpro.fvcom_make_file_list -d folders.txt -s PO10 -f fileList.txt
 ```
 
 ### Take a quick look at the results
@@ -307,9 +308,7 @@ for i in range(len(tracer[:,0,0])):
 ### Interpolate data to z-levels
 ```python
 # Get salinity at 50 m depth and look at it
-from netCDF4 import Dataset
-salt = M.load_netCDF('casename_0001.nc', 'salinity' 0)
-salt_50m = M.interpolate_to_z(salt, 50)
+salt_50m = M.load_netCDF('casename_0001.nc', 'salinity', 0, z=50)
 M.georeference()
 M.plot_contour(salt_50m)
 ```

@@ -137,7 +137,7 @@ def test_import_scanner_ignores_comments_and_docstrings():
     source = ('"""import gridding.domain"""\n'
               '# from fvtools.nesting import matchtopo\n'
               'import fvtools.grid.fvcom_grd as grid\n'
-              'from fvtools.setup.nesting import vertical_interpolation\n')
+              'from fvtools.interpolators import vertical_interpolation\n')
     assert [name for name, _ in _iter_imports(source)] == [
         'fvtools.grid.fvcom_grd', 'fvtools.setup.nesting'
     ]

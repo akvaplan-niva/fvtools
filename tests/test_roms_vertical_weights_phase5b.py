@@ -11,7 +11,7 @@ import pytest
 @pytest.fixture(scope='module')
 def vi():
     # Import under its permanent package name. Numba caches the module name.
-    from fvtools.setup.nesting import vertical_interpolation
+    from fvtools.interpolators import vertical_interpolation
     return vertical_interpolation
 
 

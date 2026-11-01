@@ -9,7 +9,7 @@ from argparse import ArgumentParser
 from netCDF4 import Dataset
 from fvtools.grid.fvcom_grd import NEST_grid, FVCOM_grid
 from fvtools.util.tools import Filelist
-from .vertical_interpolation import calc_interp_matrices
+from fvtools.interpolators.vertical_interpolation import calc_interp_matrices
 
 def main(ngrd        = 'ngrd.npy',
          fileList    = "fileList.txt",

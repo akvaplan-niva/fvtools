@@ -4,7 +4,7 @@
 import netCDF4
 import numpy as np
 import fvtools.setup.nesting.roms_nesting_fg as rn
-import fvtools.setup.nesting.vertical_interpolation as vi
+import fvtools.interpolators.vertical_interpolation as vi
 
 from datetime import timedelta
 from fvtools.util.kdtree import KDTree

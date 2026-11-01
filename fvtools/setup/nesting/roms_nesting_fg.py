@@ -17,7 +17,7 @@ from time import gmtime, strftime
 from datetime import datetime
 
 # fvtools
-from fvtools.setup.nesting import vertical_interpolation as vi
+from fvtools.interpolators import vertical_interpolation as vi
 from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
 from fvtools.interpolators.roms_interpolators import N4ROMSNESTING, LinearInterpolation
 from fvtools.setup.nesting.matchtopo import MatchTopo

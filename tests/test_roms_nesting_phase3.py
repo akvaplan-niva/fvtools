@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from fvtools.setup.nesting.vertical_interpolation import (
+from fvtools.interpolators.vertical_interpolation import (
     add_vertical_interpolation2N4,
     calc_interp_matrices,
 )

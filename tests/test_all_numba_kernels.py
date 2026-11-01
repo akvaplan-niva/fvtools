@@ -42,7 +42,7 @@ KERNELS = {
     "setup/_buildcase/depth.py": ("DepthHandler.laplacian_filter", "DepthHandler.mellor_ezer_oey"),
     "grid/fvcom/_components/control_volumes.py": ("_find_cv_walls", "_connect_cv_walls"),
     "grid/fvcom_grd.py": ("FVCOM_grid._smooth",),
-    "setup/nesting/vertical_interpolation.py": (
+    "interpolators/vertical_interpolation.py": (
         "calc_interp_matrices", "numba_absdiff", "find_inds_and_weights",
     ),
     "interpolators/structured_bilinear.py": ("_solve_batch",),
@@ -240,7 +240,7 @@ def _args(path, name):
         return (np.array([3., 6., 9.]), .25, 2,
                 np.array([[1, 2], [0, 2], [0, 1]], dtype=np.int64),
                 np.array([2, 2, 2], dtype=np.int64))
-    elif path == "setup/nesting/vertical_interpolation.py":
+    elif path == "interpolators/vertical_interpolation.py":
         source = np.array([[0., 0.], [10., 12.], [20., 24.]])
         target = np.array([[0., 3.], [5., 12.], [20., 30.]])
         if k == "calc_interp_matrices": return (source, target)
@@ -304,7 +304,7 @@ def test_topology_independent_oracle():
 
 
 def test_vertical_interpolation_weights_reconstruct_depth():
-    from fvtools.setup.nesting.vertical_interpolation import calc_interp_matrices
+    from fvtools.interpolators.vertical_interpolation import calc_interp_matrices
     source = np.array([[0., 0.], [10., 12.], [20., 24.]])
     target = np.array([[3., 6.], [17., 18.]])
     i, j, w, v = calc_interp_matrices(source, target)
