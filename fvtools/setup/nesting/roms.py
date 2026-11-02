@@ -42,7 +42,7 @@ def main(fvcom_grd,
     outfile    - name of the output file
     start_time - yyyy-mm-dd
     stop_time  - yyyy-mm-dd
-    latlon     - True/False (latlon = True triggers adjustment of currents for utm-coordinate meridional convergence)
+    latlon     - Set to True if your model is configured for Spherical coordinates
 
     optional:
     ----
@@ -78,8 +78,7 @@ def main(fvcom_grd,
     time, path, index = make_fileList(start, stop, ROMS)
 
     N4R, M, NEST = _prepare_nesting_interpolator(ROMS, M, NEST, latlon)
-    _publish_nesting_file(outfile, NEST, mother, time, latlon,
-                          M.reference, path, index, N4R, nprocs)
+    _publish_nesting_file(outfile, NEST, mother, time, latlon, M.reference, path, index, N4R, nprocs)
 
     print('\n--> Fin.')
 

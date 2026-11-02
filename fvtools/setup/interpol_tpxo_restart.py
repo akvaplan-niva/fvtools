@@ -16,14 +16,14 @@ import numpy as np
 import xarray as xr
 from netCDF4 import Dataset
 from scipy.interpolate import RegularGridInterpolator
-
+from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.setup.nesting import tpxo
 
 DEFAULT_CONSTITUENTS = ('M2', 'S2', 'N2', 'K2', 'K1', 'O1', 'P1', 'Q1')
 
 def main(
     restartfile, *, harmonics_files, constituents=DEFAULT_CONSTITUENTS,
-    tpxo_bathymetry=None, fvcom_grid=None, latlon=None,
+    tpxo_bathymetry=None,  latlon=None,
 ):
     """Add TPXO barotropic tides to an existing one-record FVCOM restart.
 
@@ -31,25 +31,32 @@ def main(
     ``'v'``. Transport files require ``tpxo_bathymetry`` (hu/hv). Tidal
     velocities are uniform through sigma and added to both u/v and ua/va.
 
-    For projected FVCOM velocities, provide ``fvcom_grid`` to rotate E/N into
+    For projected FVCOM velocities, ``fvcom_grid`` is used to rotate E/N into
     FVCOM's x/y coordinates; ``latlon`` is inferred from the GLORYS restart
     metadata if present, otherwise it must be specified for currents.
 
     Atomic copy-on-write with a lock prevents a partial update or double add.
     The method does not modify temperature, salinity, or other restart state.
     """
+    M = FVCOM_grid(restartfile)
+    print(f'Interpolate TPXO tides to the {M.casename} grid')
     destination = Path(restartfile)
     if not destination.is_file():
         raise FileNotFoundError(destination)
+    
     if not isinstance(harmonics_files, dict) or 'zeta' not in harmonics_files:
         raise ValueError("harmonics_files must contain 'zeta'")
+    
     if set(harmonics_files) - {'zeta', 'u', 'v'}:
         raise ValueError('Only zeta, u and v TPXO components are supported')
+    
     currents = 'u' in harmonics_files or 'v' in harmonics_files
     if currents and not {'u', 'v'} <= set(harmonics_files):
         raise ValueError('Provide BOTH u and v harmonics for a consistent tidal current vector')
+    
     if currents and tpxo_bathymetry is None:
         raise ValueError('TPXO u/v transports require tpxo_bathymetry (hu and hv)')
+    
     if not constituents or len(set(constituents)) != len(constituents):
         raise ValueError('Specify a nonempty sequence of unique TPXO constituents')
 
@@ -73,7 +80,8 @@ def main(
         predictions[component] = predicted
 
     if currents and not geographic:
-        _rotate_currents(predictions, lonc, latc, fvcom_grid)
+        u, v = M.rotate_vector_to_utm(predictions['u'], predictions['v'], np.asarray(M.cell_utm_angle)[None, :])
+        predictions['u'], predictions['v'] = u, v
 
     # The existing TPXO transaction re-checks the marker under an exclusive
     # lock and atomically replaces a *copy* of the unchanged source on success.
@@ -84,11 +92,13 @@ def main(
                 original = np.ma.filled(np.ma.asarray(nc[name][:]), np.nan)
                 if not np.isfinite(original).all():
                     raise ValueError(f'Nonfinite {name} in original FVCOM restart')
+                
             tpxo._write_tpxo_predictions(nc, predictions, constituents)
             for name in required:
                 updated = np.ma.filled(np.ma.asarray(nc[name][:]), np.nan)
                 if not np.isfinite(updated).all():
                     raise ValueError(f'Nonfinite {name} after TPXO augmentation')
+                
             nc.tpxo_application = 'FVCOM restart: one time, elevation and optional barotropic currents'
             if currents:
                 nc.tpxo_current_coordinates = ('geographic east/north' if geographic else 'FVCOM projected x/y')
@@ -276,19 +286,3 @@ def _predict_one_time(harmonics, constituents, time_mjd, latitudes, *, chunk_siz
     if not np.isfinite(out).all():
         raise ValueError('Nonfinite UTide reconstruction')
     return out
-
-
-def _rotate_currents(predictions, restart_lonc, restart_latc, fvcom_grid):
-    """Rotate geographic TPXO E/N to FVCOM x/y using the same FVCOM method as GLORYS."""
-    if fvcom_grid is None:
-        raise ValueError('fvcom_grid is required for TPXO currents on projected FVCOM grids')
-    # Lazy import so zeta-only corrections have no FVCOM grid dependency.
-    from fvtools.grid.fvcom_grd import FVCOM_grid
-    grid = FVCOM_grid(str(fvcom_grid))
-    if (len(grid.xc) != len(restart_lonc)
-            or not np.allclose(grid.lonc, restart_lonc, rtol=0, atol=1e-4)
-            or not np.allclose(grid.latc, restart_latc, rtol=0, atol=1e-4)):
-        raise ValueError('fvcom_grid element coordinates differ from the restart file')
-    u, v = grid.rotate_vector_to_utm(
-        predictions['u'], predictions['v'], np.asarray(grid.cell_utm_angle)[None, :])
-    predictions['u'], predictions['v'] = u, v

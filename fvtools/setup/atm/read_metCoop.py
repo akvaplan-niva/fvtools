@@ -7,7 +7,6 @@ import progressbar as pb
 
 from fvtools.grid.fvcom_grd import FVCOM_grid  # objects that load what we need to know about the FVCOM grid
 from fvtools.grid.arome_grid import get_arome_grids, NoAvailableData # objects that load arome grid data
-#from fvtools.interpolators.arome_interpolators import N4AROME
 from fvtools.interpolators.horizontal_interpolator import N4Coefficients
 
 from time import gmtime, strftime

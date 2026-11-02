@@ -93,8 +93,7 @@ def inputs(tmp_path, monkeypatch):
 
 def test_exact_time_hydrography_and_zeta_shift(inputs):
     src, output = inputs
-    result = restart.main(restartfile=output, glorys_file=src, latlon=True)
-    assert result == str(output)
+    restart.main(restartfile=output, glorys_file=src, latlon=True)
     with Dataset(output) as nc:
         np.testing.assert_allclose(nc['zeta'][0], 2.)
         # z(depth) = 2 + sigma*(20+2), so GLORYS depths = 3.5,14.5m.

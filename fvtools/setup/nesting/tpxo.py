@@ -26,8 +26,7 @@ _COMPONENTS = {
     'v': ('VRe', 'VIm', 'lon_v', 'lat_v'),
 }
 
-def main(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','O1','P1','Q1'),
-                    tpxo_bathymetry=None):
+def main(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','O1','P1','Q1'), tpxo_bathymetry=None):
     """
     Add TPXO barotropic tides to an existing FVCOM nest in-place.
 

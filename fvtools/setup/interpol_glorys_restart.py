@@ -47,8 +47,6 @@ def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
     restart_date : str, optional
         ``YYYY-MM-DD-HH``; create the restart with ``make_initial_file``.
         Otherwise read the existing restart's exact time.
-    fvcom_grid : path
-        FVCOM grid with final bathymetry and sigma coordinates.
     glorys_file : path
         Combined daily CMEMS NetCDF with thetao, so, uo, vo, zos, deptho.
     uv : bool
@@ -66,6 +64,7 @@ def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
 
     Returns the output restart path. A failed interpolation never alters it.
     """
+    print('\nInterpolate TPXO tidal constituents to the FVCOM grid')
     if restart_date is None and restartfile is None:
         raise ValueError('Specify restartfile or restart_date')
     grid = FVCOM_grid(str(fvcom_grid))
