@@ -90,8 +90,6 @@ def main(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','
         with Dataset(staging, 'r+') as nc:
             _write_tpxo_predictions(nc, predictions, constituents)
 
-    return str(nest_file)
-
 def _constituents(con):
     """
     Decode TPXO NetCDF 'con' as 1-D strings or 2-D character arrays.

@@ -120,7 +120,6 @@ def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
             # Atomic replacement on the same filesystem: never publish a
             # partially interpolated or unvalidated restart.
             os.replace(staged, destination)
-    return str(destination)
 
 def _restart_time(nc):
     """Read FVCOM time with millisecond accuracy (the ``time`` field is f32)."""

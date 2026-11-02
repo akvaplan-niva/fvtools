@@ -92,7 +92,6 @@ def main(
                 out.variables['hyw'][dst_i, :, :] = 0.0
 
         os.replace(temporary, destination)
-        return str(destination)
     finally:
         ds.close()
         temporary.unlink(missing_ok=True)
