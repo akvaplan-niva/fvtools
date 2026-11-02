@@ -60,5 +60,7 @@ def test_tpxo_units_and_components():
     assert tpx._unit_factor('cm') == .01
     assert tpx._unit_factor('cm2/s',transport=True) == 1e-4
     assert tpx._constituents(np.array([[b'M',b'2',b' '],[b'S',b'2',b' ']])) == ['M2','S2']
+    assert tpx._unit_factor('meter^2/s', transport=True) == 1.0
+    assert tpx._unit_factor('meters^2/s', transport=True) == 1.0
     with pytest.raises(ValueError,match='Unknown'):
         tpx._unit_factor('unknown')

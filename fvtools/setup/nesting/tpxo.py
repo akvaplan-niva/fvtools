@@ -35,8 +35,14 @@ def _unit_factor(unit, *, transport=False):
         if unit in ('m', 'meter', 'meters'): return 1.0
         if unit in ('cm', 'centimeter', 'centimeters'): return 0.01
     else:
-        if unit in ('m2/s', 'm^2/s', 'm2s-1', 'm^2s^-1'): return 1.0
-        if unit in ('cm2/s', 'cm^2/s', 'cm2s-1', 'cm^2s^-1'): return 1e-4
+        if unit in (
+            'm2/s', 'm^2/s', 'm2s-1', 'm^2s^-1',
+            'meter^2/s', 'meters^2/s',
+        ):
+            return 1.0
+
+        if unit in ('cm2/s', 'cm^2/s', 'cm2s-1', 'cm^2s^-1'):
+            return 1e-4
     raise ValueError(f'Unknown TPXO {"transport" if transport else "height"} units {unit!r}; set units correctly in source file')
 
 
@@ -173,7 +179,6 @@ def add_tpxo_tides(nest_file, *, harmonics_files, constituents=('M2','S2','N2','
     accepted bathy names are 'hu' and 'hv', respectively. No unit guessing.
     """
     from netCDF4 import Dataset
-    from pathlib import Path
     import xarray as xr
     if 'zeta' not in harmonics_files:
         raise ValueError("harmonics_files must contain 'zeta'")

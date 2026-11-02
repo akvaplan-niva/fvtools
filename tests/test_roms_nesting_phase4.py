@@ -84,6 +84,7 @@ def test_public_netcdf_schema_retains_type_dimensions_and_time_formula(tmp_path,
 def test_common_stage_order_serial_and_worker_identical(monkeypatch):
     cls = mod.Roms2FVCOMNest
     obj = object.__new__(cls)
+    obj.N4 = SimpleNamespace()
     events = []
     step = SimpleNamespace()
     def read(self, index, path):
@@ -96,6 +97,8 @@ def test_common_stage_order_serial_and_worker_identical(monkeypatch):
             return value
         return call
     monkeypatch.setattr(cls, 'read_timestep', read)
+    monkeypatch.setattr(mod, '_check_roms_nesting_source', lambda *a: None)
+    monkeypatch.setattr(mod, '_check_roms_nesting_output', lambda *a: None)
     for name in ('crop_and_transpose', 'horizontal_interpolation',
                  'vertical_interpolation', 'adjust_uv'):
         monkeypatch.setattr(cls, name, stage(name))

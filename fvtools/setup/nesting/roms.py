@@ -147,12 +147,17 @@ def make_fileList(start, stop, ROMS):
     for date in dates:
         # Pause two second to avoid being stopped
         time_module.sleep(2)
-        try:
-            file = ROMS.test_day(date)
-
-        except NoAvailableData:
-            print(f'    - warning: {date} not found - your forcing file will have a gap')
-            continue
+        from fvtools.util.thredds_io import retry_read
+        # NorKyst.test_ncfile may mask DAP errors as NoAvailableData.
+        # Retry the whole probe rather than silently omitting a day.
+        file = retry_read(
+            lambda: ROMS.test_day(date),
+            max_retries=5, retry_delay=30,
+            classifier=lambda exc: isinstance(exc, NoAvailableData),
+            sleep=time_module.sleep,
+            failure_message=f'Could not verify NorKyst file for {date}; no day was skipped',
+            log_prefix=f'  - NorKyst day check for {date}',
+        )
 
         print(f'  - checking: {file}')
         with netCDF4.Dataset(file) as d:
@@ -185,7 +190,48 @@ def make_fileList(start, stop, ROMS):
 # --------------------------------------------------------------------------------------
 #                             Grid and interpolation objects
 # --------------------------------------------------------------------------------------
-# Downloading and interpolating to nesting-file
+# THREDDS completeness guard (fvtools 2026-11-02)
+class IncompleteROMSTimestep(RuntimeError):
+    """A ROMS source time slice contains missing values used by the FVCOM nest."""
+
+
+def _invalid_roms_values(array):
+    """Identify masked, NaN, infinity, and unmasked NetCDF fill-like values."""
+    data = np.ma.asarray(array)
+    raw = np.asarray(np.ma.getdata(data))
+    return (np.ma.getmaskarray(data) | ~np.isfinite(raw) | (np.abs(raw) >= 1e30))
+
+
+def _check_roms_nesting_source(timestep, n4):
+    """Check ONLY the four input corners actually used by each interpolation.
+
+    ROMS land cells elsewhere in the cropped source may validly be masked.
+    Never permit np.ma.sum() to silently renormalize missing input corners.
+    """
+    source_grids = (('salt', 'rho'), ('temp', 'rho'), ('zeta', 'rho'),
+                    ('u', 'u'), ('v', 'v'), ('ua', 'u'), ('va', 'v'))
+    for name, grid in source_grids:
+        value = np.ma.asarray(getattr(timestep, name))
+        indices = np.asarray(getattr(n4, f'{grid}_index'))
+        if indices.ndim != 2 or indices.shape[1] != 4 or not len(indices):
+            raise ValueError(f'Invalid four-corner ROMS weights for {name}')
+        chosen = value[indices]  # (FVCOM target, 4 [, levels])
+        bad = _invalid_roms_values(chosen)
+        if np.any(bad):
+            raise IncompleteROMSTimestep(
+                f'{name} has {int(np.count_nonzero(bad)):,} missing/nonfinite '
+                'values in interpolation corners')
+
+
+def _check_roms_nesting_output(timestep):
+    """Fail BEFORE any write if final interpolated FVCOM fields are invalid."""
+    for name in ('salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va'):
+        arr = np.ma.asarray(getattr(timestep, name))
+        if arr.size == 0 or np.any(_invalid_roms_values(arr)):
+            raise ValueError(f'Invalid interpolated ROMS nesting {name}; '
+                             'not writing incomplete timestep')
+
+
 class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
     '''
     Class writing data to nesting-file.
@@ -208,14 +254,42 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         self.latlon = latlon
 
     def _prepare_timestep(self, counter, path_here, index_here):
-        """Run exactly the same interpolation stages in serial and parallel mode."""
-        timestep = self.read_timestep(index_here, path_here)
-        timestep = self.crop_and_transpose(timestep)
-        timestep = self.horizontal_interpolation(timestep)
-        timestep = self.vertical_interpolation(timestep)
-        timestep = self.adjust_uv(timestep)
-        timestep.counter = counter    # Referencing where in the nestingfile we will store this timestep
-        return timestep
+        """Read, check, and interpolate an ENTIRE timestep before any output write.
+
+        Existing RomsDownloader.read_timestep retries transport errors. Additionally,
+        retry incomplete *successfully read* fields from a fresh DAP connection.
+        No values are written until all seven FVCOM fields pass validation.
+        """
+        max_retries = getattr(self, 'incomplete_timestep_retries', 5)
+        retry_delay = getattr(self, 'incomplete_timestep_retry_delay', 30)
+        for attempt in range(max_retries + 1):
+            try:
+                timestep = self.read_timestep(index_here, path_here)
+                timestep = self.crop_and_transpose(timestep)
+                _check_roms_nesting_source(timestep, self.N4)
+                timestep = self.horizontal_interpolation(timestep)
+                timestep = self.vertical_interpolation(timestep)
+                timestep = self.adjust_uv(timestep)
+                _check_roms_nesting_output(timestep)
+                timestep.counter = counter
+                return timestep
+            except IncompleteROMSTimestep as exc:
+                # The serial reader reuses one Dataset between timesteps.
+                # Throw away a potentially bad cached DAP handle before retry.
+                pool = getattr(self, '_roms_reader_cache', None)
+                if pool is not None:
+                    pool.invalidate()
+                if attempt == max_retries:
+                    raise RuntimeError(
+                        f'Incomplete ROMS nesting timestep {index_here} '
+                        f'from {path_here!s} after {attempt + 1} attempts; '
+                        'no data from this timestep were written'
+                    ) from exc
+                print(f'  - Incomplete ROMS source at {path_here!s}, '
+                      f'timestep {index_here}: {exc}. '
+                      f'Restarting entire timestep ({attempt + 1}/{max_retries}) '
+                      f'in {retry_delay}s', flush=True)
+                time_module.sleep(retry_delay)
 
     def dump_single(self):
         '''
