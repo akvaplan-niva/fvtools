@@ -1,24 +1,21 @@
-"""Download local GLORYS daily forcing and corresponding static deptho.
-
-The dynamic field names come from :mod:`fvtools.setup.nesting.cmems`,
-so the downloader and interpolator cannot silently disagree.
-"""
+"""Download one GLORYS NetCDF containing dynamics and static deptho."""
 
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from hashlib import sha256
 from pathlib import Path
-from uuid import uuid4
-import os
+from tempfile import TemporaryDirectory
 
 import numpy as np
 import xarray as xr
+from netCDF4 import Dataset
 
 from fvtools.grid.fvcom_grd import FVCOM_grid
+from fvtools.grid.glorys_grid import GLORYS
 
-DYNAMIC_DATASET = 'cmems_mod_glo_phy_my_0.083deg_P1D-m'
-STATIC_DATASET = 'cmems_mod_glo_phy_my_0.083deg_static'
+DYNAMIC_DATASET = "cmems_mod_glo_phy_my_0.083deg_P1D-m"
+STATIC_DATASET = "cmems_mod_glo_phy_my_0.083deg_static"
+DYNAMIC_VARIABLES = ("thetao", "so", "uo", "vo", "zos")
 
 
 def _datetime(value):
@@ -28,64 +25,7 @@ def _datetime(value):
         return datetime.combine(value, datetime.min.time())
     if isinstance(value, str):
         return datetime.fromisoformat(value)
-    raise TypeError('start and stop must be date, datetime or ISO date strings')
-
-
-def _bounds(model, buffer_degrees):
-    if not np.isfinite(buffer_degrees) or buffer_degrees < 0:
-        raise ValueError('buffer_degrees must be finite and non-negative')
-    lon = np.asarray(model.lon, dtype=float)
-    lat = np.asarray(model.lat, dtype=float)
-    if (not lon.size or not lat.size or lon.shape != lat.shape or
-            not np.isfinite(lon).all() or not np.isfinite(lat).all()):
-        raise ValueError('FVCOM_grid must supply finite matching lon/lat arrays')
-    west, east = float(lon.min() - buffer_degrees), float(lon.max() + buffer_degrees)
-    south, north = float(lat.min() - buffer_degrees), float(lat.max() + buffer_degrees)
-    if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
-        raise ValueError('GLORYS subset bounds cross a longitude seam or latitude pole')
-    return dict(minimum_longitude=west, maximum_longitude=east,
-                minimum_latitude=south, maximum_latitude=north)
-
-
-def _validate_file(path, *, variables, time_axis):
-    """Check completed file structure; avoid treating interrupted files as cached."""
-    if not path.is_file() or path.stat().st_size == 0:
-        raise ValueError(f'CMEMS result is missing or empty: {path}')
-    try:
-        with xr.open_dataset(path) as ds:
-            missing = set(variables) - set(ds.data_vars)
-            required = {'longitude', 'latitude'} | ({'time', 'depth'} if time_axis else set())
-            missing_coords = required - set(ds.coords)
-            if missing or missing_coords:
-                raise ValueError(f'Missing variables {sorted(missing)} or coordinates '
-                                 f'{sorted(missing_coords)} in {path}')
-            if time_axis and ds.sizes.get('time', 0) == 0:
-                raise ValueError(f'No time records in {path}')
-    except (OSError, RuntimeError) as exc:
-        raise ValueError(f'Unreadable CMEMS NetCDF: {path}') from exc
-
-
-def _download_if_needed(cm, target, *, variables, time_axis, force, kwargs):
-    if target.exists() and not force:
-        _validate_file(target, variables=variables, time_axis=time_axis)
-        return target
-
-    # Copernicus writes to a temporary name. An interrupted download can
-    # never masquerade as a complete cached file or overwrite a valid file.
-    staging = target.with_name(f'.{target.stem}.{uuid4().hex}.partial.nc')
-    try:
-        cm.subset(
-            **kwargs,
-            variables=list(variables),
-            output_directory=str(target.parent),
-            output_filename=staging.name,
-            overwrite=True,
-        )
-        _validate_file(staging, variables=variables, time_axis=time_axis)
-        os.replace(staging, target)
-    finally:
-        staging.unlink(missing_ok=True)
-    return target
+    raise TypeError("start and stop must be dates, datetimes or ISO strings")
 
 
 def download_cmems(
@@ -93,46 +33,99 @@ def download_cmems(
     start,
     stop,
     *,
-    output_directory='input/cmems',
+    outfile="input/cmems/glorys.nc",
     buffer_degrees=0.3,
     extra_days=3,
-    force=False,
+    overwrite=False,
 ):
-    """Download daily GLORYS forcing and static deptho for an FVCOM grid.
+    """Return one NetCDF path containing thetao, so, uo, vo, zos and deptho.
 
-    Returns a mapping with ``dynamic`` and ``bathymetry`` Path entries.
-    Repeated calls for the same region and interval reuse verified files.
-    Set ``force=True`` to replace previous downloads.
+    Download static and dynamic GLORYS subsets, align bathymetry to the
+    dynamic grid, and append only the 2D deptho field. Large 4D variables
+    are not loaded into memory. Publish only after both downloads succeed.
+
+    Existing ``outfile`` is left untouched unless ``overwrite=True``.
     """
-    import copernicusmarine as cm  # Optional dependency; needed only here.
-    from fvtools.setup.nesting.cmems import VARIABLES
+    import copernicusmarine as cm  # Optional dependency for downloads only.
 
     start, stop = _datetime(start), _datetime(stop)
     if stop < start:
-        raise ValueError('stop must not precede start')
+        raise ValueError("stop must not precede start")
     if not isinstance(extra_days, int) or extra_days < 0:
-        raise ValueError('extra_days must be a non-negative integer')
-    end = stop + timedelta(days=extra_days)
-    extent = _bounds(model, buffer_degrees)
-    outdir = Path(output_directory)
-    outdir.mkdir(parents=True, exist_ok=True)
+        raise ValueError("extra_days must be a non-negative integer")
+    if not np.isfinite(buffer_degrees) or buffer_degrees < 0:
+        raise ValueError("buffer_degrees must be finite and non-negative")
 
-    # Spatially keyed cached files are never reused for an unrelated FVCOM grid.
-    key = sha256(','.join(f'{value:.8f}' for value in extent.values()).encode()).hexdigest()[:12]
-    date_key = f'{start:%Y%m%dT%H%M%S}_{end:%Y%m%dT%H%M%S}'
-    dynamic = outdir / f'glorys_daily_{date_key}_{key}.nc'
-    static = outdir / f'glorys_deptho_{key}.nc'
-    spatial = {**extent, 'coordinates_selection_method': 'outside'}
+    lon = np.asarray(model.lon, dtype=float)
+    lat = np.asarray(model.lat, dtype=float)
+    if (not lon.size or lon.shape != lat.shape or
+            not np.isfinite(lon).all() or not np.isfinite(lat).all()):
+        raise ValueError("FVCOM_grid requires matching, finite lon/lat arrays")
 
-    # Small static file first: if it fails, do not start the large request.
-    _download_if_needed(
-        cm, static, variables=('deptho',), time_axis=False, force=force,
-        kwargs={**spatial, 'dataset_id': STATIC_DATASET, 'dataset_part': 'bathy'},
+    bounds = dict(
+        minimum_longitude=float(lon.min() - buffer_degrees),
+        maximum_longitude=float(lon.max() + buffer_degrees),
+        minimum_latitude=float(lat.min() - buffer_degrees),
+        maximum_latitude=float(lat.max() + buffer_degrees),
+        coordinates_selection_method="outside",
     )
-    _download_if_needed(
-        cm, dynamic, variables=tuple(VARIABLES.values()), time_axis=True,
-        force=force,
-        kwargs={**spatial, 'dataset_id': DYNAMIC_DATASET,
-                'start_datetime': start, 'end_datetime': end},
-    )
-    return {'dynamic': dynamic, 'bathymetry': static}
+    if not (-180 <= bounds["minimum_longitude"] < bounds["maximum_longitude"] <= 180
+            and -90 <= bounds["minimum_latitude"] < bounds["maximum_latitude"] <= 90):
+        raise ValueError("GLORYS bounds cross a longitude seam or latitude pole")
+
+    destination = Path(outfile)
+    if destination.exists() and not overwrite:
+        raise FileExistsError(f"Output file already exists: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    # Both downloads and all modifications are confined to a temporary
+    # directory on the destination filesystem. No partial final NetCDF file.
+    with TemporaryDirectory(prefix=".cmems_", dir=destination.parent) as tmp:
+        temp = Path(tmp)
+        static = temp / "static.nc"
+        daily = temp / "daily.nc"
+
+        cm.subset(
+            dataset_id=STATIC_DATASET,
+            dataset_part="bathy",
+            variables=["deptho"],
+            output_directory=str(temp), output_filename=static.name,
+            **bounds,
+        )
+        cm.subset(
+            dataset_id=DYNAMIC_DATASET,
+            variables=list(DYNAMIC_VARIABLES),
+            start_datetime=start,
+            end_datetime=stop + timedelta(days=extra_days),
+            output_directory=str(temp), output_filename=daily.name,
+            **bounds,
+        )
+        if not static.is_file() or not daily.is_file():
+            raise FileNotFoundError("Copernicus did not return both requested files")
+
+        # GLORYS already validates and aligns static deptho to the dynamic
+        # grid. Reuse that logic instead of implementing interpolation twice.
+        with xr.open_dataset(daily) as ds, xr.open_dataset(static) as bathy:
+            missing = set(DYNAMIC_VARIABLES) - set(ds.data_vars)
+            if missing or ds.sizes.get("time", 0) == 0:
+                raise ValueError(f"Invalid dynamic GLORYS data (missing {sorted(missing)})")
+            deptho = np.asarray(GLORYS(ds, bathymetry=bathy).h_rho, dtype="f4")
+
+        # Append directly to the downloaded temporary file; do not rewrite
+        # the (potentially very large) time-dependent variables via xarray.
+        with Dataset(daily, "r+") as nc:
+            var = nc.createVariable(
+                "deptho", "f4", ("latitude", "longitude"),
+                zlib=(nc.data_model == "NETCDF4"),
+                fill_value=np.float32(1e20),
+            )
+            var[:] = np.ma.masked_invalid(deptho)
+            var.units = "m"
+            var.positive = "down"
+            var.long_name = "GLORYS model seafloor depth"
+            nc.deptho_source_dataset = STATIC_DATASET
+            nc.deptho_source_part = "bathy"
+
+        daily.replace(destination)
+
+    return destination

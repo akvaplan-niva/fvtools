@@ -48,6 +48,11 @@ class GLORYS(BaseGrid):
                 'GLORYS salinity mask does not match its (depth,lat,lon) grid'
             )
 
+        # A combined download already includes the static bathymetry.
+        # Keep bathymetry=... for users of older two-file workflows.
+        if 'deptho' in df:
+            self._load_static_bathymetry(df)
+
     def _load_static_bathymetry(self, df):
         if 'deptho' not in df:
             raise ValueError("Static GLORYS dataset has no 'deptho' variable")
