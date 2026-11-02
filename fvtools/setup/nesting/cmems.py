@@ -1,6 +1,6 @@
 """CMEMS (GLORYS) z-level fields to FVCOM nesting NetCDF.
 
-Offline/local NetCDF first.  The same structured four-corner bilinear and
+Offline/local NetCDF first. The same structured four-corner bilinear and
 ``calc_interp_matrices`` kernels used in ROMS nesting are reused. No CMEMS
 network access takes place in this module.
 """
@@ -14,10 +14,12 @@ import numpy as np
 import xarray as xr
 from netCDF4 import Dataset, date2num
 
-
 from fvtools.interpolators.structured_bilinear import structured_bilinear_weights
 from fvtools.interpolators.vertical_interpolation import calc_interp_matrices
 from fvtools.interpolators.roms_interpolators import _horizontal_interpolate_blockwise
+from fvtools.interpolators.glorys_barotropic import (
+    depth_average_glorys, correct_fvcom_barotropic,
+)
 
 from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
 from fvtools.grid.glorys_grid import GLORYS
@@ -29,8 +31,7 @@ VARIABLES = {'temp': 'thetao', 'salinity': 'so', 'u': 'uo', 'v': 'vo', 'zeta': '
 
 
 def _fill_below_bottom(profile):
-    """
-    Copy deepest valid value downward; reject gaps inside a wet column.
+    """Copy deepest valid value downward; reject gaps inside a wet column.
 
     Parameters
     ----------
@@ -43,11 +44,10 @@ def _fill_below_bottom(profile):
     good = np.isfinite(a)
     if not good[0].all():
         raise ValueError('CMEMS surface land/missing data in a selected interpolation corner')
-    
-    # A wet value below a dry level is not a simple bottom mask.
+
     if np.any((~good[:-1]) & good[1:]):
         raise ValueError('CMEMS profile has an interior missing level; cannot fill it as seabed')
-    
+
     for k in range(1, len(a)):
         bad = ~good[k]
         a[k, bad] = a[k - 1, bad]
@@ -55,11 +55,10 @@ def _fill_below_bottom(profile):
 
 
 def _horizontal(data, mask, ids, weights):
-    """
-    ROMS-style four-corner interpolation, bounded by small query blocks.
+    """ROMS-style four-corner horizontal interpolation, in small query blocks.
 
-    ``data``: (depth, latitude, longitude), or (latitude, longitude).
-    Returns (depth, target) or (target,).
+    ``data``: (depth, latitude, longitude) or (latitude, longitude).
+    Returns (point, depth) or (point,).
     """
     values = np.ma.filled(np.ma.asarray(data), np.nan)
     if values.ndim == 3:
@@ -75,24 +74,21 @@ def _horizontal(data, mask, ids, weights):
             raise ValueError('CMEMS surface field has missing values in interpolation corners')
     return _horizontal_interpolate_blockwise(cloud, ids, weights)
 
+
 def _vertical(values, matrices):
-    """
-    Apply existing FVCOM vertical coefficient matrices to (point, z) data.
-    """
+    """Apply existing FVCOM vertical coefficient matrices to (point, z) data."""
     i1, i2, w1, w2 = matrices
     values = np.asarray(values)
     if values.ndim != 2:
         raise ValueError('Expected (point, z)')
-   
+
     points = np.arange(values.shape[0])[None, :]
     z = values.T
     return z[i1, points] * w1 + z[i2, points] * w2
 
-def _native_time_indices(source_times, *, start_time=None, stop_time=None):
-    """Select original CMEMS samples without interpolation/resampling.
 
-    Returns indices into ``ds.time``, preserving the original timestamps.
-    """
+def _native_time_indices(source_times, *, start_time=None, stop_time=None):
+    """Select original CMEMS samples without interpolation/resampling."""
     times = np.asarray(source_times, dtype='datetime64[ns]')
     if times.ndim != 1 or not len(times) or np.isnat(times).any():
         raise ValueError('CMEMS time must be a nonempty, valid 1D coordinate')
@@ -108,9 +104,6 @@ def _native_time_indices(source_times, *, start_time=None, stop_time=None):
     return np.flatnonzero((times >= first) & (times <= last))
 
 
-
-
-
 def _open_cmems(path):
     ds = xr.open_dataset(path, decode_times=True)
     missing = set(VARIABLES.values()) - set(ds.variables)
@@ -118,35 +111,30 @@ def _open_cmems(path):
     if missing or missing_dims:
         ds.close()
         raise ValueError(f'Expected CMEMS data: missing fields {sorted(missing)}, coordinates {sorted(missing_dims)}')
-   
+
     for name, cmems_name in VARIABLES.items():
         expected = (('time', 'latitude', 'longitude') if name == 'zeta'
                     else ('time', 'depth', 'latitude', 'longitude'))
-   
+
         if set(ds[cmems_name].dims) != set(expected):
             ds.close()
             raise ValueError(f'{cmems_name}: expected dimensions {expected}, got {ds[cmems_name].dims}')
     depth = np.asarray(ds.depth.values, dtype=float)
-   
+
     if len(depth) < 2 or not np.isfinite(depth).all() or (np.diff(depth) <= 0).any() or depth[0] < 0:
         ds.close()
         raise ValueError('CMEMS depths must be positive, finite, shallow-to-deep')
-   
+
     if ds.longitude.ndim != 1 or ds.latitude.ndim != 1:
         ds.close()
         raise ValueError('This CMEMS adapter expects rectilinear 1D latitude and longitude')
-   
-    # Sorting here is cheap (index-only) and ensures spatial array orientation.
+
     ds = ds.sortby('latitude').sortby('longitude')
     return ds
 
 
 def _prepare_geometry(M, NEST, CMEMS):
-    """Reuse the GLORYS grid geometry and four-corner ROMS-style weights.
-
-    Source mask, coordinates, and depth levels come from the same GLORYS
-    instance as MatchTopo, with exactly the same ordering as the open dataset.
-    """
+    """Reuse the GLORYS grid geometry and four-corner ROMS-style weights."""
     wet = (~np.asarray(CMEMS.land_mask, dtype=bool) &
            ~np.asarray(CMEMS.land_3d[0], dtype=bool))
     if wet.shape != CMEMS.lon.shape or not wet.any():
@@ -159,6 +147,7 @@ def _prepare_geometry(M, NEST, CMEMS):
     ci, cw = structured_bilinear_weights(xy_source, wet, cells)
 
     depths = np.asarray(CMEMS.depth, dtype=np.float64)
+
     def matrices(sig, h):
         target = np.abs(np.asarray(sig).T) * np.asarray(h)[None, :]
         source = np.broadcast_to(depths[:, None], (len(depths), target.shape[1]))
@@ -170,31 +159,50 @@ def _prepare_geometry(M, NEST, CMEMS):
 
 
 def _read_and_interpolate(ds, i, mask, nm, cm, nv, cv, NEST, *, latlon):
-    """
-    Read each variable ONCE for the requested native CMEMS time step.
+    """Read one GLORYS timestep and interpolate all seven FVCOM fields.
+
+    Barotropic ua/va are calculated by integrating GLORYS uo/vo over the
+    GLORYS water column before the horizontal interpolation to FVCOM cells.
+    The interpolated FVCOM 3-D currents are subsequently barotropically
+    corrected to match ua/va, preserving their vertical shear.
     """
     def field(key):
         name = VARIABLES[key]
         selection = ds[name].isel(time=i)
-        return np.asarray(selection.transpose(*(
+        return np.ma.filled(np.ma.asarray(selection.transpose(*(
             ('latitude', 'longitude') if key == 'zeta'
-            else ('depth', 'latitude', 'longitude'))).values)
+            else ('depth', 'latitude', 'longitude'))).values), np.nan)
 
-    zeta = _horizontal(field('zeta'), mask, *nm)
+    zeta_source = field('zeta')
+    u_source = field('u')
+    v_source = field('v')
+    if 'deptho' not in ds:
+        raise ValueError('GLORYS barotropic velocity requires static deptho in the source NetCDF')
+    deptho = np.ma.filled(np.ma.asarray(
+        ds['deptho'].transpose('latitude', 'longitude').values), np.nan)
+    bar_u, bar_v = depth_average_glorys(
+        u_source, v_source, ds.depth.values, deptho, zeta_source,
+        wet_mask=mask,
+    )
+
+    zeta = _horizontal(zeta_source, mask, *nm)
     temp = _vertical(_horizontal(field('temp'), mask, *nm), nv)
     salt = _vertical(_horizontal(field('salinity'), mask, *nm), nv)
-    u = _vertical(_horizontal(field('u'), mask, *cm), cv)
-    v = _vertical(_horizontal(field('v'), mask, *cm), cv)
+    u = _vertical(_horizontal(u_source, mask, *cm), cv)
+    v = _vertical(_horizontal(v_source, mask, *cm), cv)
+    ua = _horizontal(bar_u, mask, *cm)
+    va = _horizontal(bar_v, mask, *cm)
 
     if not latlon:
         angle = NEST.cell_utm_angle
         u, v = NEST.rotate_vector_to_utm(u, v, angle[None, :])
+        ua, va = NEST.rotate_vector_to_utm(ua, va, angle)
 
-    # FVCOM sigma layers are surface-first. Average over actual sigma thickness.
-    thickness = np.abs(np.diff(NEST.siglev_center, axis=1)).T
-    thickness /= thickness.sum(axis=0, keepdims=True)
-    ua = (u * thickness).sum(axis=0)
-    va = (v * thickness).sum(axis=0)
+    # Correct only the barotropic mode. The source-integrated ua/va remain
+    # unchanged; vertically averaged FVCOM u/v now match them exactly.
+    # Use local sigma layer thicknesses, never an unweighted layer mean.
+    u, v = correct_fvcom_barotropic(u, v, ua, va, NEST.siglev_center)
+
     result = dict(zeta=zeta, temp=temp, salinity=salt, u=u, v=v, ua=ua, va=va)
     for key, arr in result.items():
         if not np.isfinite(arr).all():
@@ -227,9 +235,9 @@ def main(fvcom_grd, nest_grd, cmems_file, outfile, *,
     temporary = destination.with_name(
         f'.{destination.name}.{os.getpid()}.{uuid4().hex}.partial')
     try:
-        # Construct GLORYS *from the sorted open dataset*, so its source-mask
-        # indexing always matches the (latitude,longitude) NetCDF arrays.
         CMEMS = GLORYS(ds)
+        if CMEMS.bathymetry_source != 'deptho':
+            raise ValueError('GLORYS nesting requires static deptho in the source NetCDF')
         M = FVCOM_grid(str(fvcom_grd))
         NEST = NEST_grid(str(nest_grd), M, proj=M.reference)
         NEST.calcWeights(M, w1=max(weights), w2=min(weights))
@@ -246,8 +254,6 @@ def main(fvcom_grd, nest_grd, cmems_file, outfile, *,
         output_times = times[chosen]
         wet, nm, cm, nv, cv = _prepare_geometry(M, NEST, CMEMS)
 
-        # Preserve the original CMEMS timestamps in FVCOM's MJD encoding.
-        # Conversion via datetime64[us] retains sub-second precision.
         python_times = output_times.astype('datetime64[us]').astype(object).tolist()
         mjd = date2num(python_times,
                        units='days since 1858-11-17 00:00:00',
@@ -260,6 +266,10 @@ def main(fvcom_grd, nest_grd, cmems_file, outfile, *,
             out.vertical_interpolation = (
                 'fvtools.interpolators.vertical_interpolation.calc_interp_matrices')
             out.temporal_interpolation = 'none - FVCOM interpolates in time'
+            out.velocity_barotropic_correction = (
+                'u/v shifted uniformly over sigma to match GLORYS-depth-integrated ua/va')
+            out.barotropic_velocity_method = (
+                'GLORYS depth-integrated uo/vo on source grid using deptho and zos')
             for dst_i, src_i in enumerate(chosen):
                 result = _read_and_interpolate(ds, int(src_i), wet,
                                                nm, cm, nv, cv, NEST,
