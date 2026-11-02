@@ -49,7 +49,7 @@ def main(folder=None, fname=None, filelist=None, var=None,
             - along_velocity  (velocity along the section)
             - velocity_speed  (absolute speed along the section)
     """
-    options = _prepare_movie_options(
+    options = prepare_movie_options(
         folder=folder, fname=fname, filelist=filelist, var=var,
         sigma=sigma, z=z, xlim=xlim, ylim=ylim, start=start, stop=stop,
         section=section, section_res=section_res, fps=fps, mname=mname,
@@ -70,17 +70,53 @@ def main(folder=None, fname=None, filelist=None, var=None,
     return output_paths
 
 
-def _prepare_movie_options(folder=None, fname=None, filelist=None, var=None,
-              sigma=None, z=None, xlim=None, ylim=None, start=None,
-              stop=None, section=None, section_res=None, fps=12,
-              mname=None, dpi=100, nlevels=20,
-              reference='epsg:32633', output_dir=None,
-              render='contour', raster_resolution=900,
-              colorbar_samples=None, **kwargs):
-    """Return all options and selected frames for the three movie functions.
+def prepare_movie_options(
+        folder=None, fname=None, filelist=None, var=None,
+        sigma=None, z=None, xlim=None, ylim=None, start=None,
+        stop=None, section=None, section_res=None, fps=12,
+        mname=None, dpi=100, nlevels=20,
+        reference='epsg:32633', output_dir=None,
+        render='raster', raster_resolution=900,
+        colorbar_samples=10, **kwargs
+        ):
+    """
+    Return all options and selected frames for the three movie functions.
 
     The returned dictionary can be passed directly to surface_movie,
     zlevel_movie or section_movie. Only called internally by main().
+
+    Input:
+    -----
+    Provide a list of variables to plot
+    - var: (list)
+        -- any variable in the output file with a time dimension
+        -- pv, vorticity, sp (barotropic speed), sp_lev (speed at sigma or z-level)
+
+    Choose one:
+    - folder:   (str) path to a folder that contains FVCOM results on the top level
+    - fname:    (str) path to a file you want to make a movie for
+    - filelist: (str) path to a filelist made by fvtools.util.fvcom_make_filelist
+
+    Choose at least one:
+    - sigma:  (int)   sigma layer to make a movie from
+    - z:      (positive, int or float) z-level below the sea surface to make a movie at
+    - section (True or string) 
+        -- True if you want to click on a map to make a section, otherwise provide a section file
+        -- Section files can be made from jupyter lab through the prepare_section_interactive() method in FVCOM_grid
+
+    Optional frame settings:
+    - render: (str = 'raster') plot method,  'raster' is the fast option, 'contour' is the most accurate option
+    - raster_resolution (int = 900):  pixels along the longest edge of the figure by default
+    - dpi: (int = 100) pixel density
+    - fps: (int = 12) speed of the movie, 12 fps on hourly data equals 2 seconds pr day
+
+    Optional:
+    - reference: (str = 'epsg:32633') 
+        -- projected coordinate of the FVCOM model
+        -- also used to project spherical models to space
+
+    Optional
+    - colorbar_samples: (int = 10) number of samples of the var fields to determine the colorbar contour limits
     """
     options = dict(
         folder=folder, fname=fname, filelist=filelist,
