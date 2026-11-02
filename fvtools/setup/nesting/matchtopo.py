@@ -111,36 +111,34 @@ class MatchTopo:
         self.M.h = updated
 
     def add_GLORYS_bathymetry_to_FVCOM_and_NEST(self):
-        '''
-        Adapted version of the roms routine
-        '''
-        # No need to re-do this step if we already have done it...
-        try:
-            if self.M.info['true if updated by MatchTopo'] == True:
-                print('  - This experiment has already been matched with GLORYS bathymetry, skipping step')
-                self.match_depth_in_nest_and_model()
-                return self.M, self.NEST
-        except:
-            pass
+        """Use ROMS MatchTopo blending with GLORYS wet-cell bathymetry.
 
-        # Prepare interpolator
-        N4B = N4GLORYS(
-            self.COARSE, 
-            x = self.M.x[self.nodes_to_change], 
-            y = self.M.y[self.nodes_to_change], 
-            uv = False, 
-            land_check = False,
-            proj = self.M.Proj
-            ) # the depth at ROMS land is equal to min_depth        
-        N4B.nearest4()
+        The source bathymetry is the deepest wet GLORYS z-level, NOT the
+        underlying high-resolution real seabed. An active nest must never
+        silently retain old FVCOM depth when the GLORYS source is invalid.
+        """
+        if self.M.info.get('true if updated by glorys', False):
+            print('  - GLORYS bathymetry already matched; reusing stored grid')
+            self.match_depth_in_nest_and_model()
+            self.NEST.inherit_sig(self.M)
+            return self.M, self.NEST
+        if self.M.info.get('true if updated by roms', False):
+            raise ValueError('M.npy is already marked as ROMS-matched. '
+                             'Start with the original BuildCase grid before matching GLORYS.')
 
-        # Preserve GLORYS' existing fallback to FVCOM depth at land/missing points.
-        coarse = np.sum(self.COARSE.h_rho.ravel()[N4B.rho_index] * N4B.rho_coef, axis=1)
-        self._blend_coarse_depth(coarse, fallback_invalid=True)
-        
-        # Update and save changes to the bathymetry and vertical grid
-        self._update_depth_and_sigma()
-
+        from fvtools.interpolators.structured_bilinear import structured_bilinear_weights
+        wet = ~np.asarray(self.COARSE.land_mask, dtype=bool)
+        if wet.shape != self.COARSE.lon.shape:
+            raise ValueError('GLORYS wet mask and lon/lat grid have different shapes')
+        xx, yy = self.M.Proj(self.COARSE.lon, self.COARSE.lat)
+        xy_source = np.column_stack((xx[wet], yy[wet]))
+        pts = np.column_stack((self.M.x[self.nodes_to_change],
+                               self.M.y[self.nodes_to_change]))
+        ids, w = structured_bilinear_weights(xy_source, wet, pts)
+        h = np.asarray(self.COARSE.h_rho)[wet]
+        coarse = np.sum(h[ids] * w, axis=1)
+        self._blend_coarse_depth(coarse)
+        self._update_depth_and_sigma(source='glorys')
         return self.M, self.NEST
 
     def add_ROMS_bathymetry_to_FVCOM_and_NEST(self):
@@ -176,16 +174,12 @@ class MatchTopo:
 
         return self.M, self.NEST
 
-    def _update_depth_and_sigma(self):
-        # Re-calculate the sigma distribution from the input file, as it can (when using the SOUZA option) be depth dependent
+    def _update_depth_and_sigma(self, source='roms'):
+        # Souza sigma can depend on bathymetry; calculate it after matching.
         self.M.read_sigma()
-
-        # Match depth AND sigma layers
         self.match_depth_in_nest_and_model()
         self.NEST.inherit_sig(self.M)
-
-        # Store the smoothed bathymetry to the mesh (ends up in casename_dep.dat)
-        self.store_bathymetry()
+        self.store_bathymetry(source=source)
 
     def match_depth_in_nest_and_model(self):
         '''
@@ -194,12 +188,13 @@ class MatchTopo:
         ind = self.M.find_nearest(self.NEST.x, self.NEST.y)
         self.NEST.h = self.M.h[ind]
 
-    def store_bathymetry(self):
-        '''
-        First to FVCOM readable input file, then update the M.npy file with the correct bathymetry
-        '''
-        # Dump bathymetry to forcing and to the M object
-        self.M.write_bath(filename = f"./input/{self.M.info['casename']}_dep.dat", latlon = self.latlon)
+    def store_bathymetry(self, source='roms'):
+        """Persist matched FVCOM depth and record WHICH mother model matched it."""
+        if source not in {'roms', 'glorys'}:
+            raise ValueError(f'Unknown bathymetry mother model: {source}')
+        self.M.write_bath(
+            filename=f"./input/{self.M.info['casename']}_dep.dat",
+            latlon=self.latlon)
         print('- Updating M.npy with the new bathymetry')
-        self.M.info['true if updated by roms'] = True # for later
+        self.M.info[f'true if updated by {source}'] = True
         self.M.to_npy()

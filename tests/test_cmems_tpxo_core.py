@@ -26,14 +26,16 @@ def test_bottom_fill_preserves_wet_levels():
         cm._fill_below_bottom([[np.nan], [2.]])
 
 
-def test_time_bracket_and_no_extrapolation():
-    times = np.array(['2026-01-01T00', '2026-01-02T00'], dtype='datetime64[h]')
-    assert cm._time_bracket(times, '2026-01-01T00') == (0,0,0.)
-    a,b,w = cm._time_bracket(times, '2026-01-01T12')
-    assert (a,b) == (0,1) and w == pytest.approx(.5)
-    with pytest.raises(ValueError, match='outside'):
-        cm._time_bracket(times, '2026-01-03')
-    assert len(cm._output_times(times, interval_hours=6)) == 5
+def test_cmems_keeps_native_time_samples():
+    times = np.array(['2026-01-01T00', '2026-01-02T00',
+                      '2026-01-04T00'], dtype='datetime64[h]')
+    indices = cm._native_time_indices(times,
+        start_time='2026-01-01T12', stop_time='2026-01-04T00')
+    np.testing.assert_array_equal(indices, [1, 2])
+    assert not hasattr(cm, '_time_bracket')
+    assert not hasattr(cm, '_output_times')
+    with pytest.raises(ValueError, match='coverage'):
+        cm._native_time_indices(times, stop_time='2026-01-05')
 
 
 def test_vertical_bilinear_formula():
