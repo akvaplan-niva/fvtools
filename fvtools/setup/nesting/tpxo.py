@@ -8,15 +8,17 @@ The UTide dependency is optional and needed only for prediction.
 from __future__ import annotations
 
 import numpy as np
+import xarray as xr
+from netCDF4 import Dataset
 from scipy.interpolate import RegularGridInterpolator
-
+from utide import reconstruct, ut_constants
+from utide.utilities import Bunch
 
 _COMPONENTS = {
     'zeta': ('hRe', 'hIm', 'lon_z', 'lat_z'),
     'u': ('URe', 'UIm', 'lon_u', 'lat_u'),
     'v': ('VRe', 'VIm', 'lon_v', 'lat_v'),
 }
-
 
 def _constituents(con):
     """Decode TPXO NetCDF 'con' as 1-D strings or 2-D character arrays."""
@@ -26,7 +28,6 @@ def _constituents(con):
                 else ''.join(row).strip().upper() for row in con]
     return [v.decode('ascii').strip().upper() if isinstance(v, bytes)
             else str(v).strip().upper() for v in con]
-
 
 def _unit_factor(unit, *, transport=False):
     unit = (unit or '').strip().lower().replace(' ', '')
@@ -45,7 +46,6 @@ def _unit_factor(unit, *, transport=False):
             return 1e-4
     raise ValueError(f'Unknown TPXO {"transport" if transport else "height"} units {unit!r}; set units correctly in source file')
 
-
 def _rectilinear_axes(lon, lat):
     lon, lat = np.asarray(lon), np.asarray(lat)
     if lon.ndim == lat.ndim == 1:
@@ -60,7 +60,8 @@ def _rectilinear_axes(lon, lat):
 
 
 def _interpolate_complex(lon, lat, complex_grid, target_lon, target_lat, *, axes='yx'):
-    """Bilinear interpolation of complex tidal coefficients (no phase wrapping).
+    """
+    Bilinear interpolation of complex tidal coefficients (no phase wrapping).
 
     complex_grid shape (n_constituents, latitude, longitude) if axes='yx',
     or (n_constituents, longitude, latitude) if axes='xy'.
@@ -71,6 +72,7 @@ def _interpolate_complex(lon, lat, complex_grid, target_lon, target_lat, *, axes
         z = z.transpose(0, 2, 1)
     if z.shape[1:] != (len(lat), len(lon)):
         raise ValueError('TPXO harmonic array shape does not match longitude and latitude axes')
+    
     ilon = np.argsort(lon)
     ilat = np.argsort(lat)
     lon, lat, z = lon[ilon], lat[ilat], z[:, ilat][:, :, ilon]
@@ -80,6 +82,7 @@ def _interpolate_complex(lon, lat, complex_grid, target_lon, target_lat, *, axes
     y = np.asarray(target_lat, dtype=float).copy()
     if x.shape != y.shape:
         raise ValueError('Target lon/lat shape mismatch')
+    
     # Interpret equivalent geographic longitudes in the source convention.
     x += 360.0 * np.round((np.median(lon) - x) / 360.0)
     xy = np.column_stack((y.ravel(), x.ravel()))
@@ -100,7 +103,6 @@ def _interpolate_complex(lon, lat, complex_grid, target_lon, target_lat, *, axes
 
 
 def _load_harmonic_file(filename, key, target_lon, target_lat, constituents):
-    import xarray as xr
     re_name, im_name, lon_name, lat_name = _COMPONENTS[key]
     with xr.open_dataset(filename, decode_cf=True) as ds:
         names = _constituents(ds['con'].values)
@@ -113,11 +115,13 @@ def _load_harmonic_file(filename, key, target_lon, target_lat, constituents):
         db = ds[im_name]
         if da.dims != db.dims:
             raise ValueError('TPXO real/imag dimensions do not match')
+        
         dcon = ds['con'].dims[0]
         space = [d for d in da.dims if d != dcon]
         if len(space) != 2:
             raise ValueError('Expected 2-D TPXO harmonic grid for each constituent')
         lon, lat = _rectilinear_axes(ds[lon_name].values, ds[lat_name].values)
+
         # Infer orientation from dimension lengths / coordinates. Ambiguous
         # square matrices must use named geographic axes.
         dims_lon = ds[lon_name].dims
@@ -139,12 +143,9 @@ def _load_harmonic_file(filename, key, target_lon, target_lat, constituents):
 
 
 def _predict_utide(harmonics, names, times_mjd, latitudes):
-    """UTide astronomical reconstruction, using PyFVCOM's convention."""
-    try:
-        from utide import reconstruct, ut_constants
-        from utide.utilities import Bunch
-    except ImportError as err:
-        raise ImportError('TPXO prediction requires uv add utide') from err
+    """
+    UTide astronomical reconstruction, using PyFVCOM's convention.
+    """
     names = [str(c).upper() for c in names]
     known = list(ut_constants['const']['name'])
     idx = [known.index(name) for name in names]
@@ -172,18 +173,18 @@ def _predict_utide(harmonics, names, times_mjd, latitudes):
 
 def add_tpxo_tides(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','O1','P1','Q1'),
                     tpxo_bathymetry=None):
-    """Add TPXO barotropic tides to an existing FVCOM nest in-place.
+    """
+    Add TPXO barotropic tides to an existing FVCOM nest in-place.
 
     ``harmonics_files`` keys: 'zeta' (required), optionally 'u' and 'v'.
     Currents need ``tpxo_bathymetry`` explicitly supplied as TPXO grid file;
     accepted bathy names are 'hu' and 'hv', respectively. No unit guessing.
     """
-    from netCDF4 import Dataset
-    import xarray as xr
     if 'zeta' not in harmonics_files:
         raise ValueError("harmonics_files must contain 'zeta'")
     if ('u' in harmonics_files or 'v' in harmonics_files) and not tpxo_bathymetry:
         raise ValueError('TPXO transport needs TPXO bathymetry to convert to m/s')
+    
     # Open file for reading and process all harmonics BEFORE modifying values.
     with Dataset(nest_file, 'r') as nc:
         lon, lat = np.asarray(nc['lon'][:]), np.asarray(nc['lat'][:])
@@ -194,6 +195,7 @@ def add_tpxo_tides(nest_file, *, harmonics_files, constituents=('M2','S2','N2','
             raise NotImplementedError('TPXO currents on projected FVCOM grids require velocity rotation')
         xcoords = np.asarray(nc['xc'][:]); ycoords = np.asarray(nc['yc'][:])
         widths = nc.dimensions['siglay'].size
+
     predictions = {}
     for key, path in harmonics_files.items():
         if key not in _COMPONENTS:
@@ -223,6 +225,7 @@ def add_tpxo_tides(nest_file, *, harmonics_files, constituents=('M2','S2','N2','
                     raise ValueError('TPXO bathymetry is missing or non-positive on nesting boundary')
                 coeff = coeff / depth[None, :]
         predictions[key] = _predict_utide(coeff, constituents, t, y)
+
     # Only mutate on success.  Barotropic tide is constant through sigma.
     with Dataset(nest_file, 'r+') as nc:
         nc['zeta'][:] = np.asarray(nc['zeta'][:]) + predictions['zeta']
@@ -230,8 +233,7 @@ def add_tpxo_tides(nest_file, *, harmonics_files, constituents=('M2','S2','N2','
             if key not in predictions:
                 continue
             nc[key][:] = np.asarray(nc[key][:]) + predictions[key][:, None, :]
-            nc[{'u': 'ua', 'v': 'va'}[key]][:] = (
-                np.asarray(nc[{'u': 'ua', 'v': 'va'}[key]][:]) + predictions[key])
+            nc[{'u': 'ua', 'v': 'va'}[key]][:] = (np.asarray(nc[{'u': 'ua', 'v': 'va'}[key]][:]) + predictions[key])
         nc.tidal_source = 'TPXO'
         nc.tidal_constituents = ','.join(constituents)
     return str(nest_file)

@@ -262,12 +262,12 @@ class METNorKystV3(ROMSbase):
     def get_norkyst_url(self, date):
         '''
         Give it a date, and you will get the corresponding url in return
-        '''
-        https       = 'https://thredds.met.no/thredds/dodsC/fou-hi/new_norkyst800m/norkyst_v3_test/his/'
-        year        = str(date.year)
-        month       = '{:02d}'.format(date.month)
-        day         = '{:02d}'.format(date.day)
-        return f'{https}{year}/{month}/{day}/norkyst800_his_sdepth_{year}{month}{day}T00Z_m00_AN.nc'
+        '''           
+        https = 'https://thredds.met.no/thredds/dodsC/romshindcast/norkyst_v3/sdepth/'
+        year  = str(date.year)
+        month = '{:02d}'.format(date.month)
+        day   = '{:02d}'.format(date.day)
+        return f'{https}{year}/{month}/norkyst800-{year}{month}{day}.nc'
     
     def test_ncfile(self, file):
         try:
