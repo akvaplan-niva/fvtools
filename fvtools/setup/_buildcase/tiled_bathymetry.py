@@ -317,6 +317,7 @@ def _init_worker(index_info, mesh_path, options, whole, limits):
     idx = object.__new__(_DiskBins)
     idx.path = Path(index_info['path'])
     idx.offsets = index_info['offsets']
+    idx.total = int(idx.offsets[-1])
     idx.bounds = index_info['bounds']
     idx.count = index_info['count']
     idx.record_bytes = index_info['record_bytes']
@@ -530,6 +531,47 @@ def _interpolate_dense_single(target, idx, options, activity=None, *, return_tri
     report = activity or (lambda *args, **kwargs: None)
     report('Dense bathymetry: using disk-streamed interpolation', force=False)
     limit = options.max_triangulation_points
+    # Try a small local k-NN cloud before adding distant hull vertices.
+    # A containing triangle with an empty *global* circumcircle is already
+    # exact: including far-away hull vertices is then unnecessary and may
+    # make Qhull struggle with huge spatial scales.
+    local_attempts = 0
+    local_k_previous = 0
+    for requested_k in (32, 64, 128, 256):
+        local_k = min(int(requested_k), limit, idx.total)
+        if local_k < 3 or local_k == local_k_previous:
+            continue
+        local_k_previous = local_k
+        local_attempts += 1
+        local_cloud = _nearest_on_disk(idx, target, local_k)
+        try:
+            local_coords = np.ascontiguousarray(
+                local_cloud[:, :2].astype(np.float64) - target)
+            local_tri = Delaunay(local_coords)
+            local_simplex = int(local_tri.find_simplex(
+                np.zeros((1, 2), dtype=np.float64))[0])
+        except QhullError:
+            continue
+        if local_simplex < 0:
+            continue
+        local_circle = _simplex_circle(local_tri, local_simplex)
+        if local_circle is None:
+            continue
+        # This is a GLOBAL check against the complete cropped bathymetry,
+        # not an assumption based only on the local k nearest neighbors.
+        if len(_intruders_on_disk(idx, *local_circle, origin=target)):
+            continue
+        local_value = float(_linear_interpolate(
+            local_tri, local_cloud, np.zeros((1, 2), dtype=np.float64),
+            np.array([local_simplex], dtype=np.int64))[0])
+        if return_triangle:
+            return (local_value, local_attempts,
+                    np.asarray(local_cloud[local_tri.simplices[local_simplex]],
+                               dtype=np.float64).copy())
+        return local_value, local_attempts
+
+    # Retain the original hull-aware refinement for sparse gaps and other
+    # cases where a small local cloud cannot prove the exact simplex.
     k = min(32, max(3, limit - 3))
     cloud = _nearest_on_disk(idx, target, k)
     support = _hull_support_for_query(idx,target) if limit >= 6 else np.empty((0,3),dtype=idx.dtype)
