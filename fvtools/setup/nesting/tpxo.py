@@ -228,18 +228,11 @@ def add_tpxo_tides(nest_file, *, harmonics_files, constituents=('M2','S2','N2','
                 coeff = coeff / depth[None, :]
         predictions[key] = _predict_utide(coeff, constituents, t, y)
 
-    # Only mutate on success.  Barotropic tide is constant through sigma.
-    with _tpxo_transaction(nest_file) as _tpxo_staging:
-        with Dataset(_tpxo_staging, 'r+') as nc:
-            nc['zeta'][:] = np.asarray(nc['zeta'][:]) + predictions['zeta']
-            for key in ('u', 'v'):
-                if key not in predictions:
-                    continue
-                nc[key][:] = np.asarray(nc[key][:]) + predictions[key][:, None, :]
-                nc[{'u': 'ua', 'v': 'va'}[key]][:] = (np.asarray(nc[{'u': 'ua', 'v': 'va'}[key]][:]) + predictions[key])
-            nc.tidal_source = 'TPXO'
-            nc.tidal_constituents = ','.join(constituents)
-            nc.tpxo_applied = 1
+    # Only mutate on success. Barotropic tide is constant through sigma.
+    with _tpxo_transaction(nest_file) as staging:
+        with Dataset(staging, 'r+') as nc:
+            _write_tpxo_predictions(nc, predictions, constituents)
+
     return str(nest_file)
 
 
@@ -251,6 +244,28 @@ def _assert_tpxo_not_applied(nc):
             'TPXO tide has already been added to this nesting file. '
             'Use the original, tide-free nesting file instead.'
         )
+
+
+def _write_tpxo_predictions(nc, predictions, constituents):
+    """Write tidal predictions to the staged NetCDF file."""
+    nc['zeta'][:] = np.asarray(nc['zeta'][:]) + predictions['zeta']
+
+    for key in ('u', 'v'):
+        if key not in predictions:
+            continue
+
+        tide = predictions[key]
+
+        # Three-dimensional velocity: constant through sigma.
+        nc[key][:] = np.asarray(nc[key][:]) + tide[:, None, :]
+
+        # Depth-averaged velocity.
+        barotropic = {'u': 'ua', 'v': 'va'}[key]
+        nc[barotropic][:] = np.asarray(nc[barotropic][:]) + tide
+
+    nc.tidal_source = 'TPXO'
+    nc.tidal_constituents = ','.join(constituents)
+    nc.tpxo_applied = 1
 
 
 @_tpxo_contextmanager
