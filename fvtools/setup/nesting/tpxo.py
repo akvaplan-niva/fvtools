@@ -6,6 +6,7 @@ The harmonic interpolation uses REAL/IMAGINARY components, never angles.
 The UTide dependency is optional and needed only for prediction.
 """
 from __future__ import annotations
+from contextlib import contextmanager as _tpxo_contextmanager
 
 import numpy as np
 import xarray as xr
@@ -187,6 +188,7 @@ def add_tpxo_tides(nest_file, *, harmonics_files, constituents=('M2','S2','N2','
     
     # Open file for reading and process all harmonics BEFORE modifying values.
     with Dataset(nest_file, 'r') as nc:
+        _assert_tpxo_not_applied(nc)
         lon, lat = np.asarray(nc['lon'][:]), np.asarray(nc['lat'][:])
         lonc, latc = np.asarray(nc['lonc'][:]), np.asarray(nc['latc'][:])
         t = np.asarray(nc['Itime'][:]) + np.asarray(nc['Itime2'][:])/86_400_000.
@@ -227,13 +229,70 @@ def add_tpxo_tides(nest_file, *, harmonics_files, constituents=('M2','S2','N2','
         predictions[key] = _predict_utide(coeff, constituents, t, y)
 
     # Only mutate on success.  Barotropic tide is constant through sigma.
-    with Dataset(nest_file, 'r+') as nc:
-        nc['zeta'][:] = np.asarray(nc['zeta'][:]) + predictions['zeta']
-        for key in ('u', 'v'):
-            if key not in predictions:
-                continue
-            nc[key][:] = np.asarray(nc[key][:]) + predictions[key][:, None, :]
-            nc[{'u': 'ua', 'v': 'va'}[key]][:] = (np.asarray(nc[{'u': 'ua', 'v': 'va'}[key]][:]) + predictions[key])
-        nc.tidal_source = 'TPXO'
-        nc.tidal_constituents = ','.join(constituents)
+    with _tpxo_transaction(nest_file) as _tpxo_staging:
+        with Dataset(_tpxo_staging, 'r+') as nc:
+            nc['zeta'][:] = np.asarray(nc['zeta'][:]) + predictions['zeta']
+            for key in ('u', 'v'):
+                if key not in predictions:
+                    continue
+                nc[key][:] = np.asarray(nc[key][:]) + predictions[key][:, None, :]
+                nc[{'u': 'ua', 'v': 'va'}[key]][:] = (np.asarray(nc[{'u': 'ua', 'v': 'va'}[key]][:]) + predictions[key])
+            nc.tidal_source = 'TPXO'
+            nc.tidal_constituents = ','.join(constituents)
+            nc.tpxo_applied = 1
     return str(nest_file)
+
+
+def _assert_tpxo_not_applied(nc):
+    """Refuse both new TPXO markers and the legacy tidal_source metadata."""
+    if ('tpxo_applied' in nc.ncattrs()
+            or 'tpxo' in str(getattr(nc, 'tidal_source', '')).casefold()):
+        raise ValueError(
+            'TPXO tide has already been added to this nesting file. '
+            'Use the original, tide-free nesting file instead.'
+        )
+
+
+@_tpxo_contextmanager
+def _tpxo_transaction(nest_file):
+    """Lock, recheck, modify a copy, then atomically replace original on success.
+
+    Note: after an unexpected interpreter/process crash, a stale .tpxo.lock
+    must be reviewed/removed manually before running again.
+    """
+    from pathlib import Path
+    import os
+    import shutil
+    import tempfile
+    from netCDF4 import Dataset
+
+    source = Path(nest_file)
+    lock_path = source.with_name(source.name + '.tpxo.lock')
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeError(
+            f'TPXO operation already in progress or stale lock: {lock_path}'
+        ) from exc
+
+    temp = None
+    try:
+        os.close(fd)
+        # Recheck after obtaining lock: another call could have finished while
+        # this one was calculating the tidal predictions.
+        with Dataset(source, 'r') as nc:
+            _assert_tpxo_not_applied(nc)
+
+        tmp_fd, path = tempfile.mkstemp(
+            dir=source.parent, prefix=f'.{source.name}.tpxo.', suffix='.partial'
+        )
+        os.close(tmp_fd)
+        temp = Path(path)
+        shutil.copy2(source, temp)
+        yield temp
+        os.replace(temp, source)
+        temp = None
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
+        lock_path.unlink(missing_ok=True)
