@@ -60,9 +60,8 @@ def inputs(tmp_path, monkeypatch):
 
 def test_only_zeta_preserves_other_fields_and_marks_once(inputs):
     outfile, calls = inputs
-    result = restart.main(outfile, harmonics_files={'zeta': 'h.nc'},
-                          constituents=('M2',))
-    assert result == str(outfile)
+    restart.main(outfile, harmonics_files={'zeta': 'h.nc'},
+                constituents=('M2',))
     with Dataset(outfile) as nc:
         np.testing.assert_allclose(nc['zeta'][0], 4.)
         np.testing.assert_allclose(nc['u'][0], [[1., 2.], [3., 4.]])

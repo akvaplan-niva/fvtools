@@ -38,14 +38,14 @@ def test_tpxo_tag_blocks_second_addition(tmp_path, monkeypatch):
     fn = tmp_path / 'nest.nc'
     _make_nest(fn)
     _fake_prediction(monkeypatch)
-    tpxo.add_tpxo_tides(fn, harmonics_files={'zeta': 'h.nc'})
+    tpxo.main(fn, harmonics_files={'zeta': 'h.nc'})
     with Dataset(fn) as nc:
         assert nc.tpxo_applied == 1
         assert nc.tidal_source == 'TPXO'
         np.testing.assert_array_equal(nc['zeta'][:], 2.25)
     before = fn.read_bytes()
     with pytest.raises(ValueError, match='already been added'):
-        tpxo.add_tpxo_tides(fn, harmonics_files={'zeta': 'h.nc'})
+        tpxo.main(fn, harmonics_files={'zeta': 'h.nc'})
     assert fn.read_bytes() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ['nest.nc']
 
@@ -58,7 +58,7 @@ def test_old_tpxo_metadata_blocks_readdition(tmp_path, monkeypatch):
     _fake_prediction(monkeypatch)
     before = fn.read_bytes()
     with pytest.raises(ValueError, match='already been added'):
-        tpxo.add_tpxo_tides(fn, harmonics_files={'zeta': 'h.nc'})
+        tpxo.main(fn, harmonics_files={'zeta': 'h.nc'})
     assert fn.read_bytes() == before
 
 
@@ -71,7 +71,7 @@ def test_commit_error_keeps_original_and_cleans_up(tmp_path, monkeypatch):
         raise OSError('simulated interrupted commit')
     monkeypatch.setattr(os, 'replace', error)
     with pytest.raises(OSError, match='simulated interrupted commit'):
-        tpxo.add_tpxo_tides(fn, harmonics_files={'zeta': 'h.nc'})
+        tpxo.main(fn, harmonics_files={'zeta': 'h.nc'})
     assert fn.read_bytes() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ['nest.nc']
 
@@ -84,6 +84,6 @@ def test_locked_file_is_untouched(tmp_path, monkeypatch):
     lock.touch()
     before = fn.read_bytes()
     with pytest.raises(RuntimeError, match='lock'):
-        tpxo.add_tpxo_tides(fn, harmonics_files={'zeta': 'h.nc'})
+        tpxo.main(fn, harmonics_files={'zeta': 'h.nc'})
     assert fn.read_bytes() == before
     assert lock.exists()

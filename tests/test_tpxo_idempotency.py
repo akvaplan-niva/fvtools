@@ -67,8 +67,7 @@ def test_tpxo_is_applied_only_once_even_with_currents(tmp_path, monkeypatch):
     _make_bathy(bathy)
     calls = _fake_harmonics(monkeypatch)
     sources = {'zeta': 'z.nc', 'u': 'u.nc', 'v': 'v.nc'}
-    assert tpxo.add_tpxo_tides(str(nest), harmonics_files=sources,
-                               tpxo_bathymetry=str(bathy)) == str(nest)
+    tpxo.main(str(nest), harmonics_files=sources, tpxo_bathymetry=str(bathy))
     with Dataset(nest) as nc:
         assert nc.getncattr('tpxo_applied') == 1
         assert nc.getncattr('tidal_source') == 'TPXO'
@@ -82,8 +81,7 @@ def test_tpxo_is_applied_only_once_even_with_currents(tmp_path, monkeypatch):
 
     content = nest.read_bytes()
     with pytest.raises(ValueError, match='already been added'):
-        tpxo.add_tpxo_tides(str(nest), harmonics_files=sources,
-                            tpxo_bathymetry=str(bathy))
+        tpxo.main(str(nest), harmonics_files=sources, tpxo_bathymetry=str(bathy))
     assert calls == ['zeta', 'u', 'v']  # Reject before computing TPXO
     assert nest.read_bytes() == content
 
@@ -96,7 +94,7 @@ def test_preexisting_legacy_tidal_source_blocks_double_add(tmp_path, monkeypatch
     calls = _fake_harmonics(monkeypatch)
     before = nest.read_bytes()
     with pytest.raises(ValueError, match='already been added'):
-        tpxo.add_tpxo_tides(str(nest), harmonics_files={'zeta': 'z.nc'})
+        tpxo.main(str(nest), harmonics_files={'zeta': 'z.nc'})
     assert not calls
     assert nest.read_bytes() == before
 
@@ -108,7 +106,7 @@ def test_uncertain_tpxo_flag_blocks_instead_of_double_adding(tmp_path, monkeypat
         nc.tpxo_applied = 0  # Ambiguous/unfinished marker: fail closed.
     calls = _fake_harmonics(monkeypatch)
     with pytest.raises(ValueError, match='already been added'):
-        tpxo.add_tpxo_tides(str(nest), harmonics_files={'zeta': 'z.nc'})
+        tpxo.main(str(nest), harmonics_files={'zeta': 'z.nc'})
     assert calls == []
 
 
@@ -124,6 +122,6 @@ def test_error_during_write_keeps_original_pristine(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tpxo, '_write_tpxo_predictions', fail_after_partial_write)
     with pytest.raises(RuntimeError, match='synthetic disk write failure'):
-        tpxo.add_tpxo_tides(str(nest), harmonics_files={'zeta': 'z.nc'})
+        tpxo.main(str(nest), harmonics_files={'zeta': 'z.nc'})
     assert nest.read_bytes() == original
     assert sorted(p.name for p in tmp_path.iterdir()) == ['nest.nc']

@@ -21,6 +21,77 @@ from fvtools.setup.nesting import tpxo
 
 DEFAULT_CONSTITUENTS = ('M2', 'S2', 'N2', 'K2', 'K1', 'O1', 'P1', 'Q1')
 
+def main(
+    restartfile, *, harmonics_files, constituents=DEFAULT_CONSTITUENTS,
+    tpxo_bathymetry=None, fvcom_grid=None, latlon=None,
+):
+    """Add TPXO barotropic tides to an existing one-record FVCOM restart.
+
+    ``harmonics_files`` contains ``'zeta'`` and optionally both ``'u'`` and
+    ``'v'``. Transport files require ``tpxo_bathymetry`` (hu/hv). Tidal
+    velocities are uniform through sigma and added to both u/v and ua/va.
+
+    For projected FVCOM velocities, provide ``fvcom_grid`` to rotate E/N into
+    FVCOM's x/y coordinates; ``latlon`` is inferred from the GLORYS restart
+    metadata if present, otherwise it must be specified for currents.
+
+    Atomic copy-on-write with a lock prevents a partial update or double add.
+    The method does not modify temperature, salinity, or other restart state.
+    """
+    destination = Path(restartfile)
+    if not destination.is_file():
+        raise FileNotFoundError(destination)
+    if not isinstance(harmonics_files, dict) or 'zeta' not in harmonics_files:
+        raise ValueError("harmonics_files must contain 'zeta'")
+    if set(harmonics_files) - {'zeta', 'u', 'v'}:
+        raise ValueError('Only zeta, u and v TPXO components are supported')
+    currents = 'u' in harmonics_files or 'v' in harmonics_files
+    if currents and not {'u', 'v'} <= set(harmonics_files):
+        raise ValueError('Provide BOTH u and v harmonics for a consistent tidal current vector')
+    if currents and tpxo_bathymetry is None:
+        raise ValueError('TPXO u/v transports require tpxo_bathymetry (hu and hv)')
+    if not constituents or len(set(constituents)) != len(constituents):
+        raise ValueError('Specify a nonempty sequence of unique TPXO constituents')
+
+    with Dataset(destination, 'r') as nc:
+        tpxo._assert_tpxo_not_applied(nc, destination)
+        time_mjd, lon, lat, lonc, latc = _restart_metadata(nc, currents)
+        geographic = _velocity_is_geographic(nc, latlon) if currents else True
+
+    predictions = {}
+    for component in (('zeta', 'u', 'v') if currents else ('zeta',)):
+        xx, yy = (lon, lat) if component == 'zeta' else (lonc, latc)
+        harmonics = tpxo._load_harmonic_file(
+            harmonics_files[component], component, xx, yy, constituents)
+        if component != 'zeta':
+            depth = _tpxo_depth_at_elements(
+                tpxo_bathymetry, component, xx, yy)
+            harmonics = harmonics / depth[None, :]
+        predicted = _predict_one_time(harmonics, constituents, time_mjd, yy)
+        if predicted.shape != (1, len(yy)) or not np.isfinite(predicted).all():
+            raise ValueError(f'Invalid TPXO {component} prediction at restart time')
+        predictions[component] = predicted
+
+    if currents and not geographic:
+        _rotate_currents(predictions, lonc, latc, fvcom_grid)
+
+    # The existing TPXO transaction re-checks the marker under an exclusive
+    # lock and atomically replaces a *copy* of the unchanged source on success.
+    with tpxo._tpxo_transaction(destination) as staging:
+        with Dataset(staging, 'r+') as nc:
+            required = ('zeta', 'u', 'v', 'ua', 'va') if currents else ('zeta',)
+            for name in required:
+                original = np.ma.filled(np.ma.asarray(nc[name][:]), np.nan)
+                if not np.isfinite(original).all():
+                    raise ValueError(f'Nonfinite {name} in original FVCOM restart')
+            tpxo._write_tpxo_predictions(nc, predictions, constituents)
+            for name in required:
+                updated = np.ma.filled(np.ma.asarray(nc[name][:]), np.nan)
+                if not np.isfinite(updated).all():
+                    raise ValueError(f'Nonfinite {name} after TPXO augmentation')
+            nc.tpxo_application = 'FVCOM restart: one time, elevation and optional barotropic currents'
+            if currents:
+                nc.tpxo_current_coordinates = ('geographic east/north' if geographic else 'FVCOM projected x/y')
 
 def _restart_metadata(nc, currents):
     """Get a single, millisecond-accurate restart time and target locations."""
@@ -221,81 +292,3 @@ def _rotate_currents(predictions, restart_lonc, restart_latc, fvcom_grid):
     u, v = grid.rotate_vector_to_utm(
         predictions['u'], predictions['v'], np.asarray(grid.cell_utm_angle)[None, :])
     predictions['u'], predictions['v'] = u, v
-
-
-def add_tpxo_tides_to_restart(
-    restartfile, *, harmonics_files, constituents=DEFAULT_CONSTITUENTS,
-    tpxo_bathymetry=None, fvcom_grid=None, latlon=None,
-):
-    """Add TPXO barotropic tides to an existing one-record FVCOM restart.
-
-    ``harmonics_files`` contains ``'zeta'`` and optionally both ``'u'`` and
-    ``'v'``. Transport files require ``tpxo_bathymetry`` (hu/hv). Tidal
-    velocities are uniform through sigma and added to both u/v and ua/va.
-
-    For projected FVCOM velocities, provide ``fvcom_grid`` to rotate E/N into
-    FVCOM's x/y coordinates; ``latlon`` is inferred from the GLORYS restart
-    metadata if present, otherwise it must be specified for currents.
-
-    Atomic copy-on-write with a lock prevents a partial update or double add.
-    The method does not modify temperature, salinity, or other restart state.
-    """
-    destination = Path(restartfile)
-    if not destination.is_file():
-        raise FileNotFoundError(destination)
-    if not isinstance(harmonics_files, dict) or 'zeta' not in harmonics_files:
-        raise ValueError("harmonics_files must contain 'zeta'")
-    if set(harmonics_files) - {'zeta', 'u', 'v'}:
-        raise ValueError('Only zeta, u and v TPXO components are supported')
-    currents = 'u' in harmonics_files or 'v' in harmonics_files
-    if currents and not {'u', 'v'} <= set(harmonics_files):
-        raise ValueError('Provide BOTH u and v harmonics for a consistent tidal current vector')
-    if currents and tpxo_bathymetry is None:
-        raise ValueError('TPXO u/v transports require tpxo_bathymetry (hu and hv)')
-    if not constituents or len(set(constituents)) != len(constituents):
-        raise ValueError('Specify a nonempty sequence of unique TPXO constituents')
-
-    with Dataset(destination, 'r') as nc:
-        tpxo._assert_tpxo_not_applied(nc)
-        time_mjd, lon, lat, lonc, latc = _restart_metadata(nc, currents)
-        geographic = _velocity_is_geographic(nc, latlon) if currents else True
-
-    predictions = {}
-    for component in (('zeta', 'u', 'v') if currents else ('zeta',)):
-        xx, yy = (lon, lat) if component == 'zeta' else (lonc, latc)
-        harmonics = tpxo._load_harmonic_file(
-            harmonics_files[component], component, xx, yy, constituents)
-        if component != 'zeta':
-            depth = _tpxo_depth_at_elements(
-                tpxo_bathymetry, component, xx, yy)
-            harmonics = harmonics / depth[None, :]
-        predicted = _predict_one_time(harmonics, constituents, time_mjd, yy)
-        if predicted.shape != (1, len(yy)) or not np.isfinite(predicted).all():
-            raise ValueError(f'Invalid TPXO {component} prediction at restart time')
-        predictions[component] = predicted
-
-    if currents and not geographic:
-        _rotate_currents(predictions, lonc, latc, fvcom_grid)
-
-    # The existing TPXO transaction re-checks the marker under an exclusive
-    # lock and atomically replaces a *copy* of the unchanged source on success.
-    with tpxo._tpxo_transaction(destination) as staging:
-        with Dataset(staging, 'r+') as nc:
-            required = ('zeta', 'u', 'v', 'ua', 'va') if currents else ('zeta',)
-            for name in required:
-                original = np.ma.filled(np.ma.asarray(nc[name][:]), np.nan)
-                if not np.isfinite(original).all():
-                    raise ValueError(f'Nonfinite {name} in original FVCOM restart')
-            tpxo._write_tpxo_predictions(nc, predictions, constituents)
-            for name in required:
-                updated = np.ma.filled(np.ma.asarray(nc[name][:]), np.nan)
-                if not np.isfinite(updated).all():
-                    raise ValueError(f'Nonfinite {name} after TPXO augmentation')
-            nc.tpxo_application = 'FVCOM restart: one time, elevation and optional barotropic currents'
-            if currents:
-                nc.tpxo_current_coordinates = ('geographic east/north' if geographic
-                                               else 'FVCOM projected x/y')
-    return str(destination)
-
-
-main = add_tpxo_tides_to_restart
