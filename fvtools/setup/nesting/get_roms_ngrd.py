@@ -52,7 +52,7 @@ def main(mesh, nrows = 4, remove_land_squares = True):
 
     # Save. (Creates a structure readable by roms_nesting and fvcom2fvcom nesting)
     NEST['oend1'] = 1; NEST['oend2'] = 1
-    NEST['R'] = M.grid_res[cells].mean() # since this number is used later on in roms_nesting_fg
+    NEST['R'] = M.grid_res[cells].mean() # since this number is used later on in roms
     NEST['info'] = {}
     NEST['info']['reference'] = M.info['reference']
     np.save('ngrd.npy', NEST)

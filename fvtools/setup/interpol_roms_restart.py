@@ -3,7 +3,7 @@
 # ----------------------------------------------------------------------------------
 import netCDF4
 import numpy as np
-import fvtools.setup.nesting.roms_nesting_fg as rn
+import fvtools.setup.nesting.roms as rn
 import fvtools.interpolators.vertical_interpolation as vi
 
 from datetime import timedelta

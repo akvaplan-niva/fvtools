@@ -11,7 +11,7 @@ import netCDF4
 import numpy as np
 import pytest
 
-from fvtools.setup.nesting import roms_nesting_fg as mod
+from fvtools.setup.nesting import roms as mod
 
 
 def _fake_nest():
@@ -78,7 +78,7 @@ def test_public_netcdf_schema_retains_type_dimensions_and_time_formula(tmp_path,
         np.testing.assert_array_equal(nc.variables['h'][:], nest.h)
         assert nc.interpolation_projection == 'epsg:32633'
         assert nc.mother_model == 'Using data nested from NKv3'
-        assert nc.created.endswith('using roms_nesting_fg.py')
+        assert nc.created.endswith('using roms.py')
 
 
 def test_common_stage_order_serial_and_worker_identical(monkeypatch):

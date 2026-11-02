@@ -357,7 +357,7 @@ def _write_global_attributes(nc, mother, latlon, epsg):
     nc.title        = 'FVCOM Nesting File'
     nc.institution  = 'Akvaplan-niva AS'
     nc.source       = 'FVCOM grid (unstructured) nesting file'
-    nc.created      = f'{strftime("%Y-%m-%d %H:%M:%S", gmtime())} using roms_nesting_fg.py'
+    nc.created      = f'{strftime("%Y-%m-%d %H:%M:%S", gmtime())} using roms.py'
     nc.mother_model = f'Using data nested from {mother}'
 
     if latlon:

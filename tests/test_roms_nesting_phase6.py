@@ -13,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 GRID = ROOT / 'fvtools/grid/roms_grid.py'
-NEST = ROOT / 'fvtools/setup/nesting/roms_nesting_fg.py'
+NEST = ROOT / 'fvtools/setup/nesting/roms.py'
 
 
 def _compile_reader(dataset_factory):

@@ -150,7 +150,7 @@ class MatchTopo:
         '''
         # No need to re-do this step if we already have done it...
         try:
-            if self.M.info['true if updated by roms_nesting_fg'] == True:
+            if self.M.info['true if updated by roms'] == True:
                 print('  - This experiment has already been matched with ROMS bathymetry, skipping step')
                 self.match_depth_in_nest_and_model()
                 return self.M, self.NEST
@@ -201,5 +201,5 @@ class MatchTopo:
         # Dump bathymetry to forcing and to the M object
         self.M.write_bath(filename = f"./input/{self.M.info['casename']}_dep.dat", latlon = self.latlon)
         print('- Updating M.npy with the new bathymetry')
-        self.M.info['true if updated by roms_nesting_fg'] = True # for later
+        self.M.info['true if updated by roms'] = True # for later
         self.M.to_npy()
