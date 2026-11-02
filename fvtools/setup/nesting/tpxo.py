@@ -6,10 +6,15 @@ The harmonic interpolation uses REAL/IMAGINARY components, never angles.
 The UTide dependency is optional and needed only for prediction.
 """
 from __future__ import annotations
-from contextlib import contextmanager as _tpxo_contextmanager
 
+import os
+import shutil
+import tempfile
 import numpy as np
 import xarray as xr
+
+from contextlib import contextmanager as _tpxo_contextmanager
+from pathlib import Path
 from netCDF4 import Dataset
 from scipy.interpolate import RegularGridInterpolator
 from utide import reconstruct, ut_constants
@@ -21,8 +26,76 @@ _COMPONENTS = {
     'v': ('VRe', 'VIm', 'lon_v', 'lat_v'),
 }
 
+def main(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','O1','P1','Q1'),
+                    tpxo_bathymetry=None):
+    """
+    Add TPXO barotropic tides to an existing FVCOM nest in-place.
+
+    ``harmonics_files`` keys: 'zeta' (required), optionally 'u' and 'v'.
+    Currents need ``tpxo_bathymetry`` explicitly supplied as TPXO grid file;
+    accepted bathy names are 'hu' and 'hv', respectively. No unit guessing.
+    """
+    if 'zeta' not in harmonics_files:
+        raise ValueError("harmonics_files must contain 'zeta'")
+    if ('u' in harmonics_files or 'v' in harmonics_files) and not tpxo_bathymetry:
+        raise ValueError('TPXO transport needs TPXO bathymetry to convert to m/s')
+    
+    # Open file for reading and process all harmonics BEFORE modifying values.
+    with Dataset(nest_file, 'r') as nc:
+        _assert_tpxo_not_applied(nc, nest_file)
+        print(f'\nAdding tidal harmonics to {nest_file}')
+        lon, lat = np.asarray(nc['lon'][:]), np.asarray(nc['lat'][:])
+        lonc, latc = np.asarray(nc['lonc'][:]), np.asarray(nc['latc'][:])
+        t = np.asarray(nc['Itime'][:]) + np.asarray(nc['Itime2'][:])/86_400_000.
+        projected = getattr(nc, 'interpolation_projection', 'degrees') != 'degrees'
+        if projected and any(k in harmonics_files for k in ('u', 'v')):
+            raise NotImplementedError('TPXO currents on projected FVCOM grids require velocity rotation')
+        xcoords = np.asarray(nc['xc'][:]); 
+        ycoords = np.asarray(nc['yc'][:])
+        widths = nc.dimensions['siglay'].size
+
+    predictions = {}
+    for key, path in harmonics_files.items():
+        print(f'  - adding {key}')
+        if key not in _COMPONENTS:
+            raise ValueError(f'Unsupported tide component {key!r}')
+        x, y = (lon, lat) if key == 'zeta' else (lonc, latc)
+        coeff = _load_harmonic_file(path, key, x, y, constituents)
+        if key != 'zeta':
+            with xr.open_dataset(tpxo_bathymetry) as hds:
+                name = {'u': 'hu', 'v': 'hv'}[key]
+                _, _, lonname, latname = _COMPONENTS[key]
+                lon_h, lat_h = _rectilinear_axes(hds[lonname].values, hds[latname].values)
+                h = np.asarray(hds[name].values)
+                if h.shape == (len(lon_h), len(lat_h)):
+                    h = h.T
+                elif h.shape != (len(lat_h), len(lon_h)):
+                    raise ValueError(f'Incompatible shape for TPXO depth {name}')
+                interp = RegularGridInterpolator((lat_h, lon_h), h, bounds_error=True)
+                x2 = x + 360*np.round((np.median(lon_h)-x)/360)
+                bathy_units = str(hds[name].attrs.get('units', '')).lower().strip()
+                if bathy_units in ('cm', 'centimeter', 'centimeters'):
+                    h = h * 0.01
+                    interp = RegularGridInterpolator((lat_h, lon_h), h, bounds_error=True)
+                elif bathy_units not in ('m', 'meter', 'meters'):
+                    raise ValueError(f'Unknown TPXO depth units for {name}: {bathy_units!r}')
+                depth = interp(np.column_stack((y,x2)))
+                if not np.isfinite(depth).all() or np.any(depth <= 0):
+                    raise ValueError('TPXO bathymetry is missing or non-positive on nesting boundary')
+                coeff = coeff / depth[None, :]
+        predictions[key] = _predict_utide(coeff, constituents, t, y)
+
+    # Only mutate on success. Barotropic tide is constant through sigma.
+    with _tpxo_transaction(nest_file) as staging:
+        with Dataset(staging, 'r+') as nc:
+            _write_tpxo_predictions(nc, predictions, constituents)
+
+    return str(nest_file)
+
 def _constituents(con):
-    """Decode TPXO NetCDF 'con' as 1-D strings or 2-D character arrays."""
+    """
+    Decode TPXO NetCDF 'con' as 1-D strings or 2-D character arrays.
+    """
     con = np.asarray(con)
     if con.ndim == 2:
         return [b''.join(row).decode('ascii').strip().upper() if con.dtype.kind == 'S'
@@ -67,6 +140,7 @@ def _interpolate_complex(lon, lat, complex_grid, target_lon, target_lat, *, axes
     complex_grid shape (n_constituents, latitude, longitude) if axes='yx',
     or (n_constituents, longitude, latitude) if axes='xy'.
     """
+    print(f'  - interpolating complex tidal coefficients to the mesh')
     lon, lat = np.asarray(lon, dtype=float), np.asarray(lat, dtype=float)
     z = np.asarray(complex_grid, dtype=complex)
     if axes == 'xy':
@@ -104,6 +178,7 @@ def _interpolate_complex(lon, lat, complex_grid, target_lon, target_lat, *, axes
 
 
 def _load_harmonic_file(filename, key, target_lon, target_lat, constituents):
+    print(f'  - loading harmonics file {filename}')
     re_name, im_name, lon_name, lat_name = _COMPONENTS[key]
     with xr.open_dataset(filename, decode_cf=True) as ds:
         names = _constituents(ds['con'].values)
@@ -145,8 +220,9 @@ def _load_harmonic_file(filename, key, target_lon, target_lat, constituents):
 
 def _predict_utide(harmonics, names, times_mjd, latitudes):
     """
-    UTide astronomical reconstruction, using PyFVCOM's convention.
+    UTide astronomical reconstruction following PyFVCOM's implementation
     """
+    print('  - UTide astronomical reconstruction')
     names = [str(c).upper() for c in names]
     known = list(ut_constants['const']['name'])
     idx = [known.index(name) for name in names]
@@ -154,8 +230,10 @@ def _predict_utide(harmonics, names, times_mjd, latitudes):
     times = np.asarray(times_mjd, dtype=float)
     coeff = np.asarray(harmonics)
     latitude = np.asarray(latitudes)
+
     if coeff.shape != (len(names), len(latitude)):
         raise ValueError('Harmonic coefficients must have shape (constituents, target points)')
+    
     result = np.empty((len(times), len(latitude)))
     for i, lat in enumerate(latitude):
         opts = Bunch(twodim=False, nodsatlint=False, nodsatnone=False,
@@ -171,79 +249,12 @@ def _predict_utide(harmonics, names, times_mjd, latitudes):
         result[:, i] = reconstruct(times, c, epoch='1858-11-17', verbose=False)['h']
     return result
 
-
-def add_tpxo_tides(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','O1','P1','Q1'),
-                    tpxo_bathymetry=None):
+def _assert_tpxo_not_applied(nc, nest_file):
     """
-    Add TPXO barotropic tides to an existing FVCOM nest in-place.
-
-    ``harmonics_files`` keys: 'zeta' (required), optionally 'u' and 'v'.
-    Currents need ``tpxo_bathymetry`` explicitly supplied as TPXO grid file;
-    accepted bathy names are 'hu' and 'hv', respectively. No unit guessing.
+    Refuse both new TPXO markers and the legacy tidal_source metadata.
     """
-    if 'zeta' not in harmonics_files:
-        raise ValueError("harmonics_files must contain 'zeta'")
-    if ('u' in harmonics_files or 'v' in harmonics_files) and not tpxo_bathymetry:
-        raise ValueError('TPXO transport needs TPXO bathymetry to convert to m/s')
-    
-    # Open file for reading and process all harmonics BEFORE modifying values.
-    with Dataset(nest_file, 'r') as nc:
-        _assert_tpxo_not_applied(nc)
-        lon, lat = np.asarray(nc['lon'][:]), np.asarray(nc['lat'][:])
-        lonc, latc = np.asarray(nc['lonc'][:]), np.asarray(nc['latc'][:])
-        t = np.asarray(nc['Itime'][:]) + np.asarray(nc['Itime2'][:])/86_400_000.
-        projected = getattr(nc, 'interpolation_projection', 'degrees') != 'degrees'
-        if projected and any(k in harmonics_files for k in ('u', 'v')):
-            raise NotImplementedError('TPXO currents on projected FVCOM grids require velocity rotation')
-        xcoords = np.asarray(nc['xc'][:]); ycoords = np.asarray(nc['yc'][:])
-        widths = nc.dimensions['siglay'].size
-
-    predictions = {}
-    for key, path in harmonics_files.items():
-        if key not in _COMPONENTS:
-            raise ValueError(f'Unsupported tide component {key!r}')
-        x, y = (lon, lat) if key == 'zeta' else (lonc, latc)
-        coeff = _load_harmonic_file(path, key, x, y, constituents)
-        if key != 'zeta':
-            with xr.open_dataset(tpxo_bathymetry) as hds:
-                name = {'u': 'hu', 'v': 'hv'}[key]
-                _, _, lonname, latname = _COMPONENTS[key]
-                lon_h, lat_h = _rectilinear_axes(hds[lonname].values, hds[latname].values)
-                h = np.asarray(hds[name].values)
-                if h.shape == (len(lon_h), len(lat_h)):
-                    h = h.T
-                elif h.shape != (len(lat_h), len(lon_h)):
-                    raise ValueError(f'Incompatible shape for TPXO depth {name}')
-                interp = RegularGridInterpolator((lat_h, lon_h), h, bounds_error=True)
-                x2 = x + 360*np.round((np.median(lon_h)-x)/360)
-                bathy_units = str(hds[name].attrs.get('units', '')).lower().strip()
-                if bathy_units in ('cm', 'centimeter', 'centimeters'):
-                    h = h * 0.01
-                    interp = RegularGridInterpolator((lat_h, lon_h), h, bounds_error=True)
-                elif bathy_units not in ('m', 'meter', 'meters'):
-                    raise ValueError(f'Unknown TPXO depth units for {name}: {bathy_units!r}')
-                depth = interp(np.column_stack((y,x2)))
-                if not np.isfinite(depth).all() or np.any(depth <= 0):
-                    raise ValueError('TPXO bathymetry is missing or non-positive on nesting boundary')
-                coeff = coeff / depth[None, :]
-        predictions[key] = _predict_utide(coeff, constituents, t, y)
-
-    # Only mutate on success. Barotropic tide is constant through sigma.
-    with _tpxo_transaction(nest_file) as staging:
-        with Dataset(staging, 'r+') as nc:
-            _write_tpxo_predictions(nc, predictions, constituents)
-
-    return str(nest_file)
-
-
-def _assert_tpxo_not_applied(nc):
-    """Refuse both new TPXO markers and the legacy tidal_source metadata."""
-    if ('tpxo_applied' in nc.ncattrs()
-            or 'tpxo' in str(getattr(nc, 'tidal_source', '')).casefold()):
-        raise ValueError(
-            'TPXO tide has already been added to this nesting file. '
-            'Use the original, tide-free nesting file instead.'
-        )
+    if ('tpxo_applied' in nc.ncattrs() or 'tpxo' in str(getattr(nc, 'tidal_source', '')).casefold()):
+        raise ValueError(f'TPXO tide has already been added to {nest_file}. Use an original, tide-free nesting file.')
 
 
 def _write_tpxo_predictions(nc, predictions, constituents):
@@ -270,17 +281,12 @@ def _write_tpxo_predictions(nc, predictions, constituents):
 
 @_tpxo_contextmanager
 def _tpxo_transaction(nest_file):
-    """Lock, recheck, modify a copy, then atomically replace original on success.
+    """
+    Lock, recheck, modify a copy, then atomically replace original on success.
 
     Note: after an unexpected interpreter/process crash, a stale .tpxo.lock
     must be reviewed/removed manually before running again.
     """
-    from pathlib import Path
-    import os
-    import shutil
-    import tempfile
-    from netCDF4 import Dataset
-
     source = Path(nest_file)
     lock_path = source.with_name(source.name + '.tpxo.lock')
     try:
@@ -296,7 +302,7 @@ def _tpxo_transaction(nest_file):
         # Recheck after obtaining lock: another call could have finished while
         # this one was calculating the tidal predictions.
         with Dataset(source, 'r') as nc:
-            _assert_tpxo_not_applied(nc)
+            _assert_tpxo_not_applied(nc, nest_file)
 
         tmp_fd, path = tempfile.mkstemp(
             dir=source.parent, prefix=f'.{source.name}.tpxo.', suffix='.partial'

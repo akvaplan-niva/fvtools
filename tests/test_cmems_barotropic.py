@@ -1,4 +1,4 @@
-"""Barotropic velocity in CMEMS nesting must come from native GLORYS z profiles."""
+"""Offline tests: GLORYS-depth-integrated barotropic mode and moving FVCOM sigma."""
 
 from types import SimpleNamespace
 
@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from fvtools.grid.glorys_grid import GLORYS
 from fvtools.setup.nesting import cmems
 from fvtools.interpolators.glorys_barotropic import depth_average_glorys
 
@@ -28,21 +29,31 @@ def _glorys():
                'depth':z, 'latitude':[60., 61.], 'longitude':[5., 6.]})
 
 
-def _interpolate(ds, *, latlon=True):
-    mask = np.ones((2,2), dtype=bool)
-    corners = np.array([[0,1,2,3]], dtype=int)
-    weights = np.full((1,4), .25)
-    # Two FVCOM sigma layers, with weighting unrelated to GLORYS layer thickness.
-    mat = (np.array([[0],[1]]), np.array([[1],[2]]),
-           np.array([[.5], [.25]]), np.array([[.5], [.75]]))
+def _geometry(ds, *, angle=0.):
+    # Three FVCOM nodes forming one element whose center is the center of
+    # GLORYS' 2x2 source cell. This exercises real interpolation factories.
+    x = np.array([5.25, 5.75, 5.5])
+    y = np.array([60.25, 60.25, 61.])
+    tri = np.array([[0, 1, 2]])
     nest = SimpleNamespace(
-        cell_utm_angle=np.array([0.]),
+        x=x, y=y, xc=np.array([x.mean()]), yc=np.array([y.mean()]),
+        h=np.full(3, 20.), tri=tri,
+        siglay=np.tile([-.15, -.65], (3, 1)),
+        siglay_center=np.array([[-.15, -.65]]),
         siglev_center=np.array([[0., -.2, -1.]]),
-        rotate_vector_to_utm=lambda u,v,angle: (u,v),
+        cell_utm_angle=np.array([angle]),
+        rotate_vector_to_utm=lambda u, v, theta: (
+            u*np.cos(theta)+v*np.sin(theta),
+            -u*np.sin(theta)+v*np.cos(theta)),
     )
-    return cmems._read_and_interpolate(ds, 0, mask, (corners,weights),
-                                       (corners,weights), mat, mat, nest,
-                                       latlon=latlon)
+    model = SimpleNamespace(Proj=lambda lon, lat: (lon, lat))
+    return nest, cmems._prepare_geometry(model, nest, GLORYS(ds))
+
+
+def _interpolate(ds, *, latlon=True, angle=0.):
+    nest, (mask, nm, cm, nv, cv) = _geometry(ds, angle=angle)
+    return cmems._read_and_interpolate(
+        ds, 0, mask, nm, cm, nv, cv, nest, latlon=latlon)
 
 
 def test_barotropic_fields_are_source_integrals():
@@ -54,27 +65,31 @@ def test_barotropic_fields_are_source_integrals():
     )
     np.testing.assert_allclose(out['ua'], ua.mean(), rtol=1e-12)
     np.testing.assert_allclose(out['va'], va.mean(), rtol=1e-12)
-    # 20%/80% relative layer thickness: corrected u/v must match ua/va.
     thickness = np.array([.2, .8])
     np.testing.assert_allclose(out['u'][:,0] @ thickness, out['ua'][0])
     np.testing.assert_allclose(out['v'][:,0] @ thickness, out['va'][0])
-    # Vertical shear from the originally interpolated profile is unchanged.
-    np.testing.assert_allclose(np.diff(out['u'][:,0]), [3.25 - 5.5])
-    np.testing.assert_allclose(np.diff(out['v'][:,0]), [1.0 - 3.0])
+    # For zeta=2 and H=20, sigma midpoints refer to 1.3 and 12.3 m
+    # below the GLORYS mean sea-level reference.
+    target = [-2 + .15*22, -2 + .65*22]
+    raw_u = np.interp(target, ds.depth.values, [1., 10., 1.])
+    raw_v = np.interp(target, ds.depth.values, [2., 4., 0.])
+    np.testing.assert_allclose(np.diff(out['u'][:,0]), np.diff(raw_u))
+    np.testing.assert_allclose(np.diff(out['v'][:,0]), np.diff(raw_v))
     assert out['u'].shape == (2,1)
-    assert out['zeta'].shape == (1,)
+    assert out['zeta'].shape == (3,)
 
 
 def test_missing_static_bathymetry_rejected():
     ds = _glorys().drop_vars('deptho')
+    # The per-timestep routine validates this before writing anything.
+    nest, _ = _geometry(_glorys())
+    mask, nm, cm, nv, cv = _geometry(_glorys())[1]
     with pytest.raises(ValueError, match='requires static deptho'):
-        _interpolate(ds)
+        cmems._read_and_interpolate(ds, 0, mask, nm, cm, nv, cv, nest, latlon=True)
 
 
 def test_baro_interpolated_after_native_depth_integration():
     ds = _glorys()
-    # The integral depends on local GLORYS bathymetry, so it is generally
-    # NOT equivalent to depth-averaging an interpolated u profile.
     ds['deptho'].values[:] = [[10., 15.], [20., 30.]]
     out = _interpolate(ds)
     native_u, _ = depth_average_glorys(
@@ -86,29 +101,61 @@ def test_baro_interpolated_after_native_depth_integration():
 
 
 def test_corrected_nesting_velocity_matches_rotated_barotropic_mode(monkeypatch):
-    from fvtools.setup.nesting import cmems
     ds = _glorys()
     monkeypatch.setattr(cmems, 'depth_average_glorys',
-                        lambda *args, **kwargs: (np.full((2, 2), 3.),
-                                                 np.full((2, 2), 4.)))
-    # 90-degree rotation: u_rot=v, v_rot=-u.
-    original = cmems._read_and_interpolate
-    # Route through an adapter whose nest exposes a real vector rotation.
-    mask = np.ones((2, 2), dtype=bool)
-    corners = np.array([[0, 1, 2, 3]], dtype=int)
-    weights = np.full((1, 4), .25)
-    matrices = (np.array([[0], [1]]), np.array([[1], [2]]),
-                np.full((2, 1), .5), np.full((2, 1), .5))
-    nest = SimpleNamespace(
-        cell_utm_angle=np.array([np.pi/2]),
-        siglev_center=np.array([[0., -.3, -1.]]),
-        rotate_vector_to_utm=lambda u, v, angle: (
-            u*np.cos(angle)+v*np.sin(angle),
-            -u*np.sin(angle)+v*np.cos(angle)),
-    )
-    out = original(ds, 0, mask, (corners, weights), (corners, weights),
-                   matrices, matrices, nest, latlon=False)
+                        lambda *args, **kwargs: (np.full((2,2), 3.),
+                                                 np.full((2,2), 4.)))
+    out = _interpolate(ds, latlon=False, angle=np.pi / 2)
     np.testing.assert_allclose(out['ua'], [4.], atol=1e-12)
     np.testing.assert_allclose(out['va'], [-3.], atol=1e-12)
-    np.testing.assert_allclose(np.dot(out['u'][:, 0], [.3, .7]), [4.], atol=1e-12)
-    np.testing.assert_allclose(np.dot(out['v'][:, 0], [.3, .7]), [-3.], atol=1e-12)
+    np.testing.assert_allclose(np.dot(out['u'][:,0], [.2, .8]), [4.], atol=1e-12)
+    np.testing.assert_allclose(np.dot(out['v'][:,0], [.2, .8]), [-3.], atol=1e-12)
+
+
+def test_changing_zeta_changes_vertical_interpolation_not_baro_consistency():
+    ds = _glorys()
+    z = np.asarray(ds.depth.values)
+    ds['thetao'].values[0] = z[:, None, None] + 5.
+    ds['uo'].values[0] = (z * .1)[:, None, None]
+    ds['vo'].values[0] = (z * .2)[:, None, None]
+    first = _interpolate(ds)
+    np.testing.assert_allclose(first['temp'][:,0], [6.3, 17.3])
+    ds['zos'].values[:] = 0.
+    second = _interpolate(ds)
+    np.testing.assert_allclose(second['temp'][:,0], [8., 18.])
+    # The FVCOM vertical shear follows moving sigma coordinates.
+    assert not np.allclose(np.diff(first['u'][:,0]), np.diff(second['u'][:,0]))
+    for result in (first, second):
+        np.testing.assert_allclose(result['u'][:,0] @ np.array([.2,.8]), result['ua'][0])
+        np.testing.assert_allclose(result['v'][:,0] @ np.array([.2,.8]), result['va'][0])
+
+
+def test_geometry_weights_reused_and_vertical_recomputed_each_timestep(monkeypatch):
+    ds = _glorys()
+    real_horizontal = cmems.structured_bilinear_weights
+    real_vertical = cmems.calc_interp_matrices
+    calls = {'horizontal':0, 'vertical':0}
+
+    def h(*args, **kwargs):
+        calls['horizontal'] += 1
+        return real_horizontal(*args, **kwargs)
+
+    def v(*args, **kwargs):
+        calls['vertical'] += 1
+        return real_vertical(*args, **kwargs)
+
+    monkeypatch.setattr(cmems, 'structured_bilinear_weights', h)
+    monkeypatch.setattr(cmems, 'calc_interp_matrices', v)
+    nest, (mask, nm, cm, nv, cv) = _geometry(ds)
+    assert calls == {'horizontal':2, 'vertical':0}
+    cmems._read_and_interpolate(ds,0,mask,nm,cm,nv,cv,nest,latlon=True)
+    ds['zos'].values[:] = -1.
+    cmems._read_and_interpolate(ds,0,mask,nm,cm,nv,cv,nest,latlon=True)
+    assert calls == {'horizontal':2, 'vertical':4}
+
+
+def test_extreme_negative_zeta_rejected():
+    ds = _glorys()
+    ds['zos'].values[:] = -21.
+    with pytest.raises(ValueError, match='non-positive water columns|invalid deptho or zos'):
+        _interpolate(ds)

@@ -23,13 +23,104 @@ from fvtools.grid.glorys_grid import GLORYS
 from fvtools.interpolators.structured_bilinear import structured_bilinear_weights
 from fvtools.interpolators.vertical_interpolation import calc_interp_matrices
 from fvtools.interpolators.glorys_barotropic import (
-    depth_average_glorys, correct_fvcom_barotropic,
+    depth_average_glorys, correct_fvcom_barotropic, fvcom_target_depths,
 )
 from fvtools.setup.initial.empty_initial import make_initial_file
 from fvtools.setup.nesting.cmems import (
     VARIABLES, _horizontal, _open_cmems, _vertical,
 )
 
+
+def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
+         glorys_file='glorys.nc', uv=False, latlon=False, *,
+         time_method='exact', max_time_difference_hours=12,
+         coastal_max_distance_m=50_000, chunk_size=20_000,
+         overwrite=False):
+    """
+    Initialize an FVCOM restart from a local, combined GLORYS NetCDF.
+
+    Parameters
+    ----------
+    restartfile : path, optional
+        Existing restart to update. If ``restart_date`` is specified, output
+        path of a *new* restart (defaults to ``<casename>_initial.nc``).
+    restart_date : str, optional
+        ``YYYY-MM-DD-HH``; create the restart with ``make_initial_file``.
+        Otherwise read the existing restart's exact time.
+    fvcom_grid : path
+        FVCOM grid with final bathymetry and sigma coordinates.
+    glorys_file : path
+        Combined daily CMEMS NetCDF with thetao, so, uo, vo, zos, deptho.
+    uv : bool
+        Include u/v/ua/va (cells). If false only node-based zeta/temp/salinity.
+    latlon : bool
+        If false rotate east/north velocities into FVCOM projected x/y.
+    time_method : {'exact', 'nearest'}
+        Default exact. For daily-mean GLORYS, explicitly choose ``nearest``
+        with a suitable max_time_difference_hours (default 12).
+    coastal_max_distance_m : float
+        Maximum nearest-wet fallback distance where all source corners are dry.
+    overwrite : bool
+        Permit replacing an existing output when *creating* a new restart.
+        Updating an explicitly supplied existing restart is always permitted.
+
+    Returns the output restart path. A failed interpolation never alters it.
+    """
+    if restart_date is None and restartfile is None:
+        raise ValueError('Specify restartfile or restart_date')
+    grid = FVCOM_grid(str(fvcom_grid))
+    creating = restart_date is not None
+    if creating:
+        # make_initial_file takes exactly this spelling and writes to cwd.
+        datetime.strptime(restart_date, '%Y-%m-%d-%H')
+    destination = Path(restartfile or f'{grid.casename}_initial.nc').resolve()
+    if not creating and not destination.is_file():
+        raise FileNotFoundError(destination)
+    if creating and destination.exists() and not overwrite:
+        raise FileExistsError(f'Restart already exists: {destination}; use overwrite=True')
+    if not destination.parent.is_dir():
+        raise FileNotFoundError(f'Output directory does not exist: {destination.parent}')
+
+    with _open_cmems(glorys_file) as ds:
+        source = GLORYS(ds)
+        if source.bathymetry_source != 'deptho':
+            raise ValueError('GLORYS restart requires static deptho in combined file')
+        with TemporaryDirectory(prefix='.glorys_restart_', dir=destination.parent) as temp:
+            workdir = Path(temp)
+            if creating:
+                # Isolated cwd prevents make_initial_file from overwriting any pre-existing original or leaving stray files on failure.
+                with chdir(workdir):
+                    initial = make_initial_file(grid, restart_date, obc_type=3)
+                staged = workdir / Path(initial).name
+            else:
+                staged = workdir / 'staged_restart.nc'
+                shutil.copy2(destination, staged)
+
+            with Dataset(staged, 'r+') as nc:
+                requested_time = _restart_time(nc)
+                selected = _source_time_index(
+                    ds.time.values, requested_time, method=time_method,
+                    max_hours=max_time_difference_hours)
+                _write_restart(nc, grid, source, ds, selected, uv=uv,
+                               latlon=latlon, chunk_size=chunk_size,
+                               coastal_max_distance_m=coastal_max_distance_m)
+                nc.glorys_source_file = str(glorys_file)
+                nc.glorys_source_time = np.datetime_as_string(
+                    np.datetime64(ds.time.values[selected]), unit='s')
+                nc.glorys_restart_time = np.datetime_as_string(requested_time, unit='s')
+                nc.glorys_velocity_coordinates = 'geographic east/north' if latlon else 'FVCOM projected x/y'
+                nc.glorys_interpolation = 'structured bilinear (wet-corner correction), sigma-to-z via calc_interp_matrices'
+                if uv:
+                    nc.glorys_barotropic_method = (
+                        'GLORYS z-level piecewise-linear depth integral, '
+                        'using deptho and zos before horizontal interpolation; '
+                        'FVCOM sigma u/v corrected to match ua/va without changing shear'
+                    )
+
+            # Atomic replacement on the same filesystem: never publish a
+            # partially interpolated or unvalidated restart.
+            os.replace(staged, destination)
+    return str(destination)
 
 def _restart_time(nc):
     """Read FVCOM time with millisecond accuracy (the ``time`` field is f32)."""
@@ -116,18 +207,8 @@ def _coastal_weights(glorys, model, targets, *, max_distance_m):
 
 
 def _target_depths(sigma, depth, zeta):
-    """Depth below mean sea level at FVCOM sigma midpoints (surface first)."""
-    sigma = np.asarray(sigma, dtype=np.float64)
-    h = np.asarray(depth, dtype=np.float64)
-    z = np.asarray(zeta, dtype=np.float64)
-    if sigma.ndim != 2 or sigma.shape[0] != len(h) or h.shape != z.shape:
-        raise ValueError('FVCOM sigma, h and zeta have incompatible shapes')
-    if not np.isfinite(sigma).all() or not np.isfinite(h).all() or not np.isfinite(z).all():
-        raise ValueError('Nonfinite FVCOM sigma, h or zeta')
-    if np.any(h <= 0) or np.any(h + z <= 0):
-        raise ValueError('FVCOM contains dry or non-positive water columns')
-    # z = zeta + sigma*(h+zeta). GLORYS depth coordinates are positive down.
-    return np.maximum(0., -z[None, :] + np.abs(sigma).T * (h + z)[None, :])
+    """Compatibility alias for the shared FVCOM-to-GLORYS depth formula."""
+    return fvcom_target_depths(sigma, depth, zeta)
 
 
 def _interpolate_profile(field, mask, ids, weights, depths, target_depth):
@@ -259,95 +340,3 @@ def _write_restart(nc, grid, source, ds, time_index, *, uv, latlon,
             data = np.ma.filled(np.ma.asarray(var[0, ..., first:last]), np.nan)
             if not np.isfinite(data).all():
                 raise ValueError(f'Nonfinite {name} in staged FVCOM restart')
-
-
-def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
-         glorys_file='glorys.nc', uv=False, latlon=False, *,
-         time_method='exact', max_time_difference_hours=12,
-         coastal_max_distance_m=50_000, chunk_size=20_000,
-         overwrite=False):
-    """Initialize an FVCOM restart from a local, combined GLORYS NetCDF.
-
-    Parameters
-    ----------
-    restartfile : path, optional
-        Existing restart to update. If ``restart_date`` is specified, output
-        path of a *new* restart (defaults to ``<casename>_initial.nc``).
-    restart_date : str, optional
-        ``YYYY-MM-DD-HH``; create the restart with ``make_initial_file``.
-        Otherwise read the existing restart's exact Itime/Itime2 timestamp.
-    fvcom_grid : path
-        FVCOM grid with final bathymetry and sigma coordinates.
-    glorys_file : path
-        Combined daily CMEMS NetCDF with thetao, so, uo, vo, zos, deptho.
-    uv : bool
-        Include u/v/ua/va (cells). If false only node-based zeta/temp/salinity.
-    latlon : bool
-        If false rotate east/north velocities into FVCOM projected x/y.
-    time_method : {'exact', 'nearest'}
-        Default exact. For daily-mean GLORYS, explicitly choose ``nearest``
-        with a suitable max_time_difference_hours (default 12).
-    coastal_max_distance_m : float
-        Maximum nearest-wet fallback distance where all source corners are dry.
-    overwrite : bool
-        Permit replacing an existing output when *creating* a new restart.
-        Updating an explicitly supplied existing restart is always permitted.
-
-    Returns the output restart path. A failed interpolation never alters it.
-    """
-    if restart_date is None and restartfile is None:
-        raise ValueError('Specify restartfile or restart_date')
-    grid = FVCOM_grid(str(fvcom_grid))
-    creating = restart_date is not None
-    if creating:
-        # make_initial_file takes exactly this spelling and writes to cwd.
-        datetime.strptime(restart_date, '%Y-%m-%d-%H')
-    destination = Path(restartfile or f'{grid.casename}_initial.nc').resolve()
-    if not creating and not destination.is_file():
-        raise FileNotFoundError(destination)
-    if creating and destination.exists() and not overwrite:
-        raise FileExistsError(f'Restart already exists: {destination}; use overwrite=True')
-    if not destination.parent.is_dir():
-        raise FileNotFoundError(f'Output directory does not exist: {destination.parent}')
-
-    with _open_cmems(glorys_file) as ds:
-        source = GLORYS(ds)
-        if source.bathymetry_source != 'deptho':
-            raise ValueError('GLORYS restart requires static deptho in combined file')
-        with TemporaryDirectory(prefix='.glorys_restart_', dir=destination.parent) as temp:
-            workdir = Path(temp)
-            if creating:
-                # Isolated cwd prevents make_initial_file from overwriting any
-                # pre-existing original or leaving stray files on failure.
-                with chdir(workdir):
-                    initial = make_initial_file(grid, restart_date, obc_type=3)
-                staged = workdir / Path(initial).name
-            else:
-                staged = workdir / 'staged_restart.nc'
-                shutil.copy2(destination, staged)
-
-            with Dataset(staged, 'r+') as nc:
-                requested_time = _restart_time(nc)
-                selected = _source_time_index(
-                    ds.time.values, requested_time, method=time_method,
-                    max_hours=max_time_difference_hours)
-                _write_restart(nc, grid, source, ds, selected, uv=uv,
-                               latlon=latlon, chunk_size=chunk_size,
-                               coastal_max_distance_m=coastal_max_distance_m)
-                nc.glorys_source_file = str(glorys_file)
-                nc.glorys_source_time = np.datetime_as_string(
-                    np.datetime64(ds.time.values[selected]), unit='s')
-                nc.glorys_restart_time = np.datetime_as_string(requested_time, unit='s')
-                nc.glorys_velocity_coordinates = 'geographic east/north' if latlon else 'FVCOM projected x/y'
-                nc.glorys_interpolation = 'structured bilinear (wet-corner correction), sigma-to-z via calc_interp_matrices'
-                if uv:
-                    nc.glorys_barotropic_method = (
-                        'GLORYS z-level piecewise-linear depth integral, '
-                        'using deptho and zos before horizontal interpolation; '
-                        'FVCOM sigma u/v corrected to match ua/va without changing shear'
-                    )
-
-            # Atomic replacement on the same filesystem: never publish a
-            # partially interpolated or unvalidated restart.
-            os.replace(staged, destination)
-    return str(destination)

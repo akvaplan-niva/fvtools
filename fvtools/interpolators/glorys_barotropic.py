@@ -104,6 +104,35 @@ def depth_average_glorys(uo, vo, depth, deptho, zos, *, wet_mask=None):
     return result_u, result_v
 
 
+def fvcom_target_depths(sigma, depth, zeta):
+    """FVCOM sigma midpoint depths relative to the GLORYS z-level datum.
+
+    The FVCOM vertical coordinate is ``z = zeta + sigma * (h + zeta)``
+    (sigma is negative, surface first). GLORYS depth is positive down,
+    measured from mean sea level. Above-datum targets are clipped to zero
+    because there are no GLORYS z-levels above the surface reference.
+
+    Parameters
+    ----------
+    sigma : ndarray (point, siglay)
+    depth, zeta : ndarray (point,)
+
+    Returns
+    -------
+    ndarray (siglay, point), positive-down reference depths.
+    """
+    sigma = np.asarray(sigma, dtype=np.float64)
+    h = np.asarray(depth, dtype=np.float64)
+    z = np.asarray(zeta, dtype=np.float64)
+    if sigma.ndim != 2 or h.ndim != 1 or sigma.shape[0] != len(h) or h.shape != z.shape:
+        raise ValueError('FVCOM sigma, h and zeta have incompatible shapes')
+    if not (np.isfinite(sigma).all() and np.isfinite(h).all() and np.isfinite(z).all()):
+        raise ValueError('Nonfinite FVCOM sigma, h or zeta')
+    if np.any(h <= 0) or np.any(h + z <= 0):
+        raise ValueError('FVCOM contains dry or non-positive water columns')
+    return np.maximum(0., -z[None, :] + np.abs(sigma).T * (h + z)[None, :])
+
+
 def correct_fvcom_barotropic(u, v, ua, va, siglev_center):
     """Match the sigma-weighted 3-D velocity means to GLORYS ua/va.
 
