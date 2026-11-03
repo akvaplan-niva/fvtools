@@ -16,7 +16,8 @@ from .roms.coastal_mask import probe_hindcast_wet_crop
 
 from fvtools.util.thredds_io import is_retryable_netcdf_error
 from fvtools.util.thredds_io import SourcePool
-
+from fvtools.util.thredds_io import source_dataset
+from fvtools.util.thredds_io import retry_read
 
 def get_roms_time_variable(nc):
     """Get the time axis of operational or hindcast ROMS NetCDF files.
@@ -616,7 +617,6 @@ class RomsDownloader:
     @contextmanager
     def _roms_dataset(self, filepath):
         """Use the shared connection context, with damage-aware eviction."""
-        from fvtools.util.thredds_io import source_dataset
         pool = getattr(self, '_roms_reader_cache', None)
         with source_dataset(filepath, Dataset, pool=pool,
                             classifier=self._is_retryable_roms_io_error) as nc:
@@ -625,7 +625,6 @@ class RomsDownloader:
     def read_timestep(self, index_here, filepath, variables=None, sigma=None,
                       *, max_retries=5, retry_delay=30):
         """Read a single ROMS timestep with shared bounded NetCDF/DAP retry."""
-        from fvtools.util.thredds_io import retry_read
         if variables is None:
             variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']
         return retry_read(
