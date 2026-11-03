@@ -117,6 +117,8 @@ def make_initial_file(M, initial_time, obc_type = 0):
                 else:
                     initial[key][:] = getattr(M, aliases[key])
 
+        # Set spunge values
+
         # Set initial values to zero, give obc_nodes and set OBC type to desired value
         for key in requested_by_restart.keys():
             if key == 'obc_type':

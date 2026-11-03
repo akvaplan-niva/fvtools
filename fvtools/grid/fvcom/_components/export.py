@@ -58,10 +58,28 @@ class ExportGrid:
                 f.write(line)
         print(f'  - Wrote : {filename}')
 
-    def write_sponge(self, filename = None):
+    @property
+    def sponge_nodes(self):
+        '''
+        Sponges from the obc
+        - In BuildCase, we assume that sponges are always applied near the OBC, but remember that they can also be put in the domain.
+        '''
+        if self.sponge_factor > 0:
+            sponges = []
+            for nodestring in self.nodestrings:
+                sponges.extend(nodestring.tolist())
+            return np.array(sponges)
+        else:
+            return np.empty(0)
+
+
+    def write_sponge(self, filename = None, sponge_radius = 0.0, sponge_factor = 0.0):
         '''
         - Generates an ascii FVCOM 5.x formatted sponge file
         '''
+        self.sponge_radius = sponge_radius
+        self.sponge_factor = sponge_factor
+
         if filename is None: 
             filename = f'input/{self.casename}_spg.dat'
 

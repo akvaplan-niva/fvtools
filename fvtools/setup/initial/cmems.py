@@ -33,7 +33,6 @@ from fvtools.interpolators.glorys_fields import (
     VARIABLES, _horizontal, _open_cmems, _vertical,
 )
 
-
 def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
          glorys_file='glorys.nc', uv=False, latlon=False, *,
          time_method='exact', max_time_difference_hours=12,
@@ -70,8 +69,15 @@ def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
     print('\nInterpolate CMEMS/Glorys oceanographic properties to the FVCOM grid')
     if restart_date is None and restartfile is None:
         raise ValueError('Specify restartfile or restart_date')
-    
-    grid = FVCOM_grid(str(fvcom_grid))
+
+    # Load the grid
+    if type(fvcom_grid) == str:
+        grid = FVCOM_grid(fvcom_grid)
+    elif type(fvcom_grid) == FVCOM_grid:
+        grid = fvcom_grid
+    else:
+        raise ValueError(f'the fvcom_grid must either lead to a valid FVCOM_grid object or to a file that FVCOM_grid can read')
+
     creating = restart_date is not None
     if creating:
         datetime.strptime(restart_date, '%Y-%m-%d-%H')

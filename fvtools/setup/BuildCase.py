@@ -227,7 +227,7 @@ Vertical layers
         print('- Write necessary .dat files')
         self.write_grd(latlon = self.latlon)
         self.write_obc()
-        self.write_sponge()
+        self.write_sponge(sponge_radius = self.sponge_radius, sponge_factor = self.sponge_factor)
         self.write_cor(latlon = self.latlon)
 
         print('- Dumping all setup info to M.npy')
@@ -237,7 +237,7 @@ Vertical layers
     def Proj_2dm(self):
         '''Proj method for the 2dm input file'''
         return Proj(self.dm_projection)
-
+        
     @cached_property
     def Proj_target(self):
         '''Proj method for coordinates we will use in the model'''
@@ -247,20 +247,6 @@ Vertical layers
     def Proj_depth(self):
         '''Proj method for coordinates depth is provided in'''
         return Proj(self.depth_projection)
-
-    @property
-    def sponge_nodes(self):
-        '''
-        Sponges from the obc
-        - In BuildCase, we assume that sponges are always applied near the OBC, but remember that they can also be put in the domain.
-        '''
-        if self.sponge_factor > 0:
-            sponges = []
-            for nodestring in self.nodestrings:
-                sponges.extend(nodestring.tolist())
-            return np.array(sponges)
-        else:
-            return np.empty(0)
 
     def add_dict_info(self):
         """Add some info so that one can track who made it using what input"""
