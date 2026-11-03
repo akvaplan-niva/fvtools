@@ -274,7 +274,9 @@ def _write_tpxo_predictions(nc, predictions, constituents):
 
     nc.tidal_source = 'TPXO'
     nc.tidal_constituents = ','.join(constituents)
-    nc.tpxo_applied = 1
+    # Python int becomes NC_INT64 in NETCDF4 files. The FVCOM reader
+    # (mod_nctools.F:READ_ATT_TYPE) supports NC_INT, but not NC_INT64.
+    nc.setncattr('tpxo_applied', np.int32(1))
 
 
 def _replace_staged_tpxo_file(staged, destination, *, attempts=6, delay=0.05):

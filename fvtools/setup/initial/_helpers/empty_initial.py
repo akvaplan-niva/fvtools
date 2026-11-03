@@ -68,8 +68,11 @@ def make_initial_file(M, initial_time, obc_type = 0):
     aliases = {'nv': 'tri',
                'h_center': 'hc'}
 
-    # Write to the initial file
-    with netCDF4.Dataset(f'{M.casename}_initial.nc', 'w') as initial:
+    # Keep the HDF5/NetCDF-4 container, but restrict variable and attribute
+    # types to the classic NetCDF model understood by FVCOM's READ_ATT_TYPE.
+    # In particular, NC_INT64 attributes are not supported by that reader.
+    with netCDF4.Dataset(f'{M.casename}_initial.nc', 'w',
+                         format='NETCDF4_CLASSIC') as initial:
         timedim  = initial.createDimension('time', None)
         nodedim  = initial.createDimension('node', len(M.x))
         celldim  = initial.createDimension('nele', len(M.xc))
