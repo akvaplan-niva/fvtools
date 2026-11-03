@@ -12,6 +12,9 @@ from netCDF4 import Dataset
 from dataclasses import dataclass, field
 from .roms.cropper_roms import ROMSCropper
 
+from fvtools.util.thredds_io import is_retryable_netcdf_error
+from fvtools.util.thredds_io import SourcePool
+
 def get_roms_grid(mother, projection = None):
     '''
     Returns a ROMS object for the mother model of question
@@ -452,7 +455,6 @@ class RomsDownloader:
     @staticmethod
     def _is_retryable_roms_io_error(exc):
         """Same bounded classification as MetCoOp: DAP/curl are transient."""
-        from fvtools.util.thredds_io import is_retryable_netcdf_error
         return is_retryable_netcdf_error(exc)
 
     @contextmanager
@@ -462,7 +464,6 @@ class RomsDownloader:
         No global cache: parallel workers and standalone reads remain isolated.
         All users of RomsDownloader (nesting and restart) share this behavior.
         """
-        from fvtools.util.thredds_io import SourcePool
         if getattr(self, '_roms_reader_cache', None) is not None:
             raise RuntimeError('Nested ROMS Dataset reuse scopes are not supported')
         pool = SourcePool(Dataset, max_open=1, mode=None)

@@ -162,10 +162,8 @@ def make_fileList(start, stop, ROMS):
         print(f'  - checking: {file}')
         with netCDF4.Dataset(file) as d:
             ocean_time = d.variables['ocean_time']
-            t_roms = netCDF4.num2date(ocean_time[:], units=ocean_time.units,
-                                       only_use_cftime_datetimes=False)
-            t_fvcom = np.atleast_1d(netCDF4.date2num(
-                t_roms, units='days since 1858-11-17 00:00:00'))
+            t_roms = netCDF4.num2date(ocean_time[:], units=ocean_time.units, only_use_cftime_datetimes=False)
+            t_fvcom = np.atleast_1d(netCDF4.date2num(t_roms, units='days since 1858-11-17 00:00:00'))
 
         # Append the timesteps, paths and indices to a fileList
         # ----
