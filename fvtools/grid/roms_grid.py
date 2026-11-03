@@ -12,6 +12,7 @@ from netCDF4 import Dataset
 from dataclasses import dataclass, field
 from .roms.cropper_roms import ROMSCropper
 from .roms.source_adapter import NATIVE_ROMS, NORKYST_V3_HINDCAST
+from .roms.coastal_mask import probe_hindcast_wet_crop
 
 from fvtools.util.thredds_io import is_retryable_netcdf_error
 from fvtools.util.thredds_io import SourcePool
@@ -346,10 +347,30 @@ class METNorKystV3Hindcast(METNorKystV3):
             # hc is a scalar NetCDF variable: use [()], not [:].
             self.hc = nc.variables['hc'][()]
 
+        self._hindcast_grid_path = path
         # Aliases, not copies; ROMSCropper and N4ROMS already know these names.
         self.lon_u = self.lon_v = self.lon_rho
         self.lat_u = self.lat_v = self.lat_rho
         self.u_mask = self.v_mask = self.rho_mask
+
+    def load_grid(self, *args, **kwargs):
+        """Build the effective wet mask before interpolation weights or MatchTopo.
+
+        A hindcast field can be masked even where static sea_mask == 1.
+        Open the already selected source file once more and only read the
+        requested spatial crop at the first timestep; no full-domain reads.
+        """
+        super().load_grid(*args, **kwargs)
+        window = (slice(self.m_ri, self.x_ri + 1),
+                  slice(self.m_rj, self.x_rj + 1))
+        with Dataset(self._hindcast_grid_path, 'r') as nc:
+            self._hindcast_wet_crop = probe_hindcast_wet_crop(
+                nc, window, self.rho_mask[window], self.h_rho[window]
+            )
+        n_static = int((~self.rho_mask[window]).sum())
+        n_valid = int(self._hindcast_wet_crop.sum())
+        print(f'  - Hindcast effective wet mask: {n_valid} / '
+              f'{n_static} static ocean source cells are valid for all fields')
 
     def get_x_y_z(self):
         # One projection call rather than three, because all points coincide.

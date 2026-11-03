@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from fvtools.grid.roms.cropper_roms import CropRho, CropU, CropV
+from fvtools.grid.roms.coastal_mask import repair_wet_corners
 from .nearest4 import N4
 
 class N4_interpolation(CropRho, CropU, CropV):
@@ -128,6 +129,26 @@ class N4ROMS(N4):
         except ValueError:
             self.domain_exception_plot(self.psi_points)
             raise DomainError('Your FVCOM domain is outside of the ROMS domain, it needs to be changed.')
+
+        # The hindcast static sea_mask may mark some *masked data* as wet.
+        # Repair only the affected source QUADS while retaining their geometry,
+        # before MatchTopo and the vertical weights are computed. Native ROMS
+        # retains its original interpolation coefficients and strict checks.
+        if getattr(self.ROMS, 'is_collocated', False):
+            wet_crop = getattr(self.ROMS, '_hindcast_wet_crop', None)
+            if wet_crop is not None:
+                valid_rho = wet_crop[self.ROMS.cropped_rho_mask]
+                self.rho_index, self.rho_coef, n_rho = repair_wet_corners(
+                    self.rho_index, self.rho_coef, valid_rho, coordinate='rho')
+                n_uv = 0
+                if self.uv:
+                    valid_uv = wet_crop[self.ROMS.cropped_u_mask]
+                    self.u_index, self.u_coef, n_uv = repair_wet_corners(
+                        self.u_index, self.u_coef, valid_uv, coordinate='uv')
+                    self.v_index, self.v_coef = self.u_index, self.u_coef
+                if n_rho or n_uv:
+                    print(f'  - Hindcast coastal correction: {n_rho} nodal and '
+                          f'{n_uv} element targets use renormalized wet corners')
 
         # Check if your mesh covers ROMS land, if so kill the routine and force the user to change the grid
         self.check_if_ROMS_land_in_FVCOM_mesh(M)
