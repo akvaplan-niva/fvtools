@@ -16,6 +16,7 @@ from fvtools.util.tools import Filelist
 
 from ._helpers.empty_initial import make_initial_file
 from ._helpers.plot_restart import plot_interps
+from ._helpers.restart_io import atomic_update_restart
 
 
 global versionnr
@@ -57,7 +58,7 @@ def main(
     child_fn = get_child_file(child_fn, startdate, child_grid)
     nodefield, cellfield, alias = interpolation_fields(speed)
 
-    with netCDF4.Dataset(child_fn,'r+', format='NETCDF4') as child:
+    with atomic_update_restart(child_fn) as child:
         mother_fn = get_mother_file(result_folder, filelist, name, child)
 
         print('Load grid files:')

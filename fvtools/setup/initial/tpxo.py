@@ -18,6 +18,8 @@ from netCDF4 import Dataset
 from scipy.interpolate import RegularGridInterpolator
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.setup.nesting import tpxo
+from ._helpers.restart_time import restart_mjd
+from ._helpers.fields import validate_restart_fields, VELOCITY
 from utide.harmonics import sat, const
 from utide.astronomy import ut_astron
 
@@ -107,16 +109,8 @@ def main(
 
 def _restart_metadata(nc, currents):
     """Get a single, millisecond-accurate restart time and target locations."""
-    if ('Itime' not in nc.variables or 'Itime2' not in nc.variables
-            or len(nc['Itime']) != 1 or len(nc['Itime2']) != 1):
-        raise ValueError('TPXO restart requires one Itime/Itime2 timestamp')
-    day = int(nc['Itime'][0])
-    msec = int(nc['Itime2'][0])
-    if not 0 <= msec < 86_400_000:
-        raise ValueError('Invalid restart Itime2; expected milliseconds in one day')
-    t = np.array([day + msec / 86_400_000.0], dtype=np.float64)
-    if 'zeta' not in nc.variables or nc['zeta'].dimensions != ('time', 'node'):
-        raise ValueError('Restart must contain zeta(time,node)')
+    t = restart_mjd(nc)
+    validate_restart_fields(nc, ('zeta',))
     if len(nc.dimensions['time']) != 1:
         raise ValueError('TPXO restart requires exactly one time record')
     for name in ('lon', 'lat') + (('lonc', 'latc') if currents else ()):
@@ -132,14 +126,7 @@ def _restart_metadata(nc, currents):
         latc = np.asarray(nc['latc'][:], dtype=np.float64)
         if (lonc.shape != latc.shape or lonc.size != len(nc.dimensions['nele'])):
             raise ValueError('Restart element coordinates have invalid dimensions')
-        for name, dims in (
-            ('u', ('time', 'siglay', 'nele')),
-            ('v', ('time', 'siglay', 'nele')),
-            ('ua', ('time', 'nele')),
-            ('va', ('time', 'nele')),
-        ):
-            if name not in nc.variables or nc[name].dimensions != dims:
-                raise ValueError(f'Restart must contain {name}{dims} for tidal currents')
+        validate_restart_fields(nc, VELOCITY)
     if not all(np.isfinite(x).all() for x in (lon, lat) + ((lonc, latc) if currents else ())):
         raise ValueError('Restart contains nonfinite target coordinates')
     return t, lon, lat, lonc, latc

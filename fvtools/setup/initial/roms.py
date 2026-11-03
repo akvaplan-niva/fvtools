@@ -15,6 +15,8 @@ from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
 
 
 from ._helpers.empty_initial import make_initial_file
+from ._helpers.restart_io import atomic_update_restart
+from ._helpers.fields import ROMS_TO_FVCOM
 
 def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother = None, uv = False, latlon = False):
     '''
@@ -299,7 +301,7 @@ class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
         '''
         Dump the fields to the restart file
         '''
-        with netCDF4.Dataset(self.restartfile, 'r+') as nc:
+        with atomic_update_restart(self.restartfile) as nc:
             if 'zeta' in variables:
                 nc.variables['zeta'][0,:]       = timestep.zeta
                 print('  - Updated zeta')
@@ -309,7 +311,7 @@ class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
                 print('  - Updated temp')
 
             if 'salt' in variables:
-                nc.variables['salinity'][0,:,:] = timestep.salt
+                nc.variables[ROMS_TO_FVCOM['salt']][0,:,:] = timestep.salt
                 print('  - Updated salinity')
 
             if 'u' in variables:

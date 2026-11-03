@@ -91,6 +91,21 @@ def inputs(tmp_path, monkeypatch):
     return src, output
 
 
+def test_vertical_coefficients_reused_for_tracers_and_currents(inputs, monkeypatch):
+    """One node matrix and one cell matrix per chunk, not one per field."""
+    src, output = inputs
+    calls = []
+    original = restart.calc_interp_matrices
+
+    def spy(source_depth, target_depth):
+        calls.append(target_depth.shape)
+        return original(source_depth, target_depth)
+
+    monkeypatch.setattr(restart, 'calc_interp_matrices', spy)
+    restart.main(restartfile=output, glorys_file=src, uv=True, latlon=True)
+    assert len(calls) == 2, f'Expected node and cell weight sets, got {calls}'
+
+
 def test_exact_time_hydrography_and_zeta_shift(inputs):
     src, output = inputs
     restart.main(restartfile=output, glorys_file=src, latlon=True)

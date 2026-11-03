@@ -15,7 +15,7 @@ import os
 import shutil
 
 import numpy as np
-from netCDF4 import Dataset, num2date
+from netCDF4 import Dataset
 from scipy.spatial import cKDTree
 
 from fvtools.grid.fvcom_grd import FVCOM_grid
@@ -26,7 +26,10 @@ from fvtools.interpolators.glorys_barotropic import (
     depth_average_glorys, correct_fvcom_barotropic, fvcom_target_depths,
 )
 from ._helpers.empty_initial import make_initial_file
-from fvtools.setup.nesting.cmems import (
+from ._helpers.fields import required_fields, validate_restart_fields
+from ._helpers.restart_time import restart_datetime64
+from ._helpers.restart_io import publish_staged_restart
+from fvtools.interpolators.glorys_fields import (
     VARIABLES, _horizontal, _open_cmems, _vertical,
 )
 
@@ -123,22 +126,11 @@ def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
 
             # Atomic replacement on the same filesystem: never publish a
             # partially interpolated or unvalidated restart.
-            os.replace(staged, destination)
+            publish_staged_restart(staged, destination)
 
 def _restart_time(nc):
-    """Read FVCOM time with millisecond accuracy (the ``time`` field is f32)."""
-    if ('Itime' in nc.variables and 'Itime2' in nc.variables
-            and len(nc['Itime']) and len(nc['Itime2'])):
-        days = int(nc['Itime'][0])
-        msecs = int(nc['Itime2'][0])
-        return (np.datetime64('1858-11-17T00:00:00', 'ms')
-                + np.timedelta64(days, 'D')
-                + np.timedelta64(msecs, 'ms'))
-    if 'time' not in nc.variables or not len(nc['time']):
-        raise ValueError('FVCOM restart has no valid time coordinate')
-    value = num2date(nc['time'][0], units=nc['time'].units,
-                     only_use_cftime_datetimes=False)
-    return np.datetime64(value.strftime('%Y-%m-%dT%H:%M:%S'), 'ms')
+    """Read the restart timestamp using the shared millisecond-accurate reader."""
+    return restart_datetime64(nc)
 
 
 def _source_time_index(times, target, *, method='exact', max_hours=12):
@@ -214,11 +206,17 @@ def _target_depths(sigma, depth, zeta):
     return fvcom_target_depths(sigma, depth, zeta)
 
 
-def _interpolate_profile(field, mask, ids, weights, depths, target_depth):
+def _profile_matrices(depths, target_depth):
+    """One vertical weight set for all variables on the same FVCOM targets."""
+    depth = np.asarray(depths)
+    source = np.broadcast_to(depth[:, None], (len(depth), target_depth.shape[1]))
+    return calc_interp_matrices(source, target_depth)
+
+
+def _interpolate_profile(field, mask, ids, weights, depths, target_depth, *, matrices=None):
     value = _horizontal(field, mask, ids, weights)
-    source_depth = np.broadcast_to(np.asarray(depths)[:, None],
-                                   (len(depths), value.shape[0]))
-    matrices = calc_interp_matrices(source_depth, target_depth)
+    if matrices is None:  # preserve the existing direct-call API
+        matrices = _profile_matrices(depths, target_depth)
     out = _vertical(value, matrices)
     if not np.isfinite(out).all():
         raise ValueError('Nonfinite GLORYS restart profile after interpolation')
@@ -228,18 +226,8 @@ def _interpolate_profile(field, mask, ids, weights, depths, target_depth):
 def _validate_restart(nc, grid, uv):
     nnode, ncell = len(grid.x), len(grid.xc)
     nsigma = grid.siglay.shape[1]
-    required = {'zeta': ('time', 'node'),
-                'temp': ('time', 'siglay', 'node'),
-                'salinity': ('time', 'siglay', 'node')}
-    if uv:
-        required.update({
-            'u': ('time', 'siglay', 'nele'),
-            'v': ('time', 'siglay', 'nele'),
-            'ua': ('time', 'nele'), 'va': ('time', 'nele'),
-        })
-    for name, dims in required.items():
-        if name not in nc.variables or nc[name].dimensions != dims:
-            raise ValueError(f'FVCOM restart missing {name} or dimensions {dims}')
+    required = required_fields(uv)
+    validate_restart_fields(nc, required)
     for dim, length in [('node', nnode), ('nele', ncell), ('siglay', nsigma)]:
         if dim not in nc.dimensions or len(nc.dimensions[dim]) != length:
             raise ValueError(f'FVCOM restart {dim} dimension does not match the grid')
@@ -292,10 +280,11 @@ def _write_restart(nc, grid, source, ds, time_index, *, uv, latlon,
         last = min(first + chunk_size, len(zeta))
         target = _target_depths(grid.siglay[first:last],
                                 np.asarray(grid.h)[first:last], zeta[first:last])
+        node_matrices = _profile_matrices(source.depth, target)
         for name in ('temp', 'salinity'):
             nc[name][0, :, first:last] = _interpolate_profile(
                 values[name], node_mask, node_ids[first:last],
-                node_w[first:last], source.depth, target)
+                node_w[first:last], source.depth, target, matrices=node_matrices)
 
     if uv:
         mask, ids, weights = cell_data
@@ -313,10 +302,13 @@ def _write_restart(nc, grid, source, ds, time_index, *, uv, latlon,
             last = min(first + chunk_size, len(grid.xc))
             target = _target_depths(
                 grid.siglay_center[first:last], h_cell[first:last], z_cell[first:last])
+            cell_matrices = _profile_matrices(source.depth, target)
             u = _interpolate_profile(values['u'], mask, ids[first:last],
-                                     weights[first:last], source.depth, target)
+                                     weights[first:last], source.depth, target,
+                                     matrices=cell_matrices)
             v = _interpolate_profile(values['v'], mask, ids[first:last],
-                                     weights[first:last], source.depth, target)
+                                     weights[first:last], source.depth, target,
+                                     matrices=cell_matrices)
             if not latlon:
                 u, v = grid.rotate_vector_to_utm(u, v, angles[None, first:last])
             if not np.isfinite(u).all() or not np.isfinite(v).all():
