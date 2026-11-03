@@ -28,6 +28,9 @@ class N4_interpolation(CropRho, CropU, CropV):
             for field in ['fv_u_mask', 'fv_v_mask', 'angle', 'u_index', 'v_index', 'u_coef', 'v_coef', 'vi_ind1_u', 'vi_ind2_u', 
                           'vi_weigths1_u', 'vi_weigths2_u', 'vi_ind1_v', 'vi_ind2_v', 'vi_weigths1_v', 'vi_weigths2_v']:
                 d[field] = getattr(self, field)
+
+        if getattr(self, 'varnames', None) is not None:
+            d['varnames'] = self.varnames
         
         np.save('nearest4roms.npy', d)
 
@@ -101,6 +104,12 @@ class N4ROMS(N4):
         '''
         Create nearest four indices and weights for all of the fields
         '''
+        # The box centres used to find the 4 points around each FVCOM point: on a staggered grid the u boxes are
+        # centred on v points and the v boxes on u points; with u and v at the rho points, every box is a rho box.
+        staggered = getattr(self.ROMS, 'staggered', True)
+        u_centres = self.v_points if staggered else self.psi_points
+        v_centres = self.u_points if staggered else self.psi_points
+
         # Compute interpolation coefficients for nearest4 interpolation
         try:
             self.rho_index, self.rho_coef = self.get_interpolation_matrices(xy_source = self.rho_points, 
@@ -110,13 +119,13 @@ class N4ROMS(N4):
                                                                             )
             if self.uv:
                 self.u_index, self.u_coef = self.get_interpolation_matrices(xy_source = self.u_points,
-                                                                            xy_source_center = self.v_points,
+                                                                            xy_source_center = u_centres,
                                                                             xy_fvcom = self.fv_cells,
                                                                             widget_title = 'u'
                                                                             )
 
                 self.v_index, self.v_coef = self.get_interpolation_matrices(xy_source = self.v_points,
-                                                                            xy_source_center = self.u_points,
+                                                                            xy_source_center = v_centres,
                                                                             xy_fvcom = self.fv_cells,
                                                                             widget_title = 'v'
                                                                             )
@@ -187,6 +196,7 @@ class N4ROMS(N4):
         smallerN4 = self._set_attributes_to_dump(smallerN4, self.ROMS, ['cropped_dsigma_u', 'cropped_dsigma_v', 'fv_rho_mask'])
         smallerN4 = self._set_attributes_to_dump(smallerN4, self.FV, ['cell_utm_angle'])
         smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['rho_index', 'rho_coef'])
+        smallerN4.varnames = dict(getattr(self.ROMS, 'varnames', {}) or {}) or None   # names in the mother's files
 
         try:
             smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['vi_ind1_rho', 'vi_ind2_rho', 'vi_weigths1_rho', 'vi_weigths2_rho']) 

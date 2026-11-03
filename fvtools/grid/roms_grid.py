@@ -14,7 +14,8 @@ from .cropper_roms import ROMSCropper
 def get_roms_grid(mother, projection = None):
     '''
     Returns a ROMS object for the mother model of question
-    - we currently have readers for NorShelf (mother=NS) and the MET NorKyst models (NKv2 and NKv3).
+    - we currently have readers for NorShelf (mother=NS) and the MET NorKyst models (NKv2 and NKv3, and the
+      NorKyst v3 hindcast: NKv3-hindcast).
 
     NorKyst is a 800 m grid spacing ROMS model intended for Norway-scale fjord studies. NorShelf is a data assimilated
     ROMS model often used for SAR operational forecasting and other outside-of-the-coast applications.
@@ -30,6 +31,9 @@ def get_roms_grid(mother, projection = None):
     
     elif mother == 'NKv3':
         ROMS = METNorKystV3()
+
+    elif mother == 'NKv3-hindcast':
+        ROMS = METNorKystV3Hindcast()
 
     elif mother == 'IMR-NF':
         ROMS = IMRNorFjords()
@@ -71,12 +75,18 @@ class ROMSdepths:
     def h_rho(self, var):
         self._h_rho = var
 
+    # u and v points: halfway between rho points on a staggered (Arakawa C) grid, the rho points themselves
+    # when the mother model's velocities are given at the rho points (staggered = False)
     @property
     def h_u(self):
+        if not getattr(self, 'staggered', True):
+            return self.h_rho
         return (self.h_rho[:, 1:]   + self.h_rho[:, :-1])/2
     
     @property
     def h_v(self):
+        if not getattr(self, 'staggered', True):
+            return self.h_rho
         return (self.h_rho[1:, :]   + self.h_rho[:-1, :])/2
 
     @property
@@ -113,18 +123,26 @@ class ROMSdepths:
 
     @property
     def z_u(self):
+        if not getattr(self, 'staggered', True):
+            return self.z_rho
         return(self.z_rho[:, 1:, :] + self.z_rho[:, :-1, :])/2
 
     @property
     def zw_u(self):
+        if not getattr(self, 'staggered', True):
+            return self.zw_rho
         return (self.zw_rho[:, :, 1:] + self.zw_rho[:, :, :-1])/2
 
     @property
     def z_v(self):
+        if not getattr(self, 'staggered', True):
+            return self.z_rho
         return (self.z_rho[1:, :, :] + self.z_rho[:-1, :, :])/2
 
     @property
     def zw_v(self):
+        if not getattr(self, 'staggered', True):
+            return self.zw_rho
         return (self.zw_rho[:, 1:, :] + self.zw_rho[:, :-1, :])/2
 
     @cached_property
@@ -140,6 +158,12 @@ class ROMSbase(ROMSdepths, ROMSCropper):
     '''
     Containing methods we need when trying to couple a FVCOM and ROMS model
     '''
+    # How the mother model's files name things. ROMS output by default; a reader for post-processed files
+    # (e.g. METNorKystV3Hindcast) sets its own. The downloader reads the names through N4.varnames.
+    time_name = 'ocean_time'
+    varnames  = {'salt': 'salt', 'temp': 'temp', 'zeta': 'zeta', 'u': 'u', 'v': 'v', 'ua': 'ubar', 'va': 'vbar'}
+    staggered = True   # u, v on their own grids and along the grid axes (rotated to east/north by angle)
+
     def load_grid(self, xbounds=None, ybounds=None, offset=7500, date = None):
         '''
         Load grid from ROMS output file
@@ -228,7 +252,7 @@ class ROMSbase(ROMSdepths, ROMSCropper):
         for attempt in range(retries):
             try:
                 with Dataset(file, 'r') as d:
-                    n_steps = len(d.variables['ocean_time'][:])
+                    n_steps = len(d.variables[self.time_name][:])
                 break
             except FileNotFoundError as error:
                 raise NoAvailableData(f'{file} does not exist') from error
@@ -297,6 +321,97 @@ class METNorKystV3(ROMSbase):
         day         = '{:02d}'.format(date.day)
         return f'{https}{year}/{month}/{day}/norkyst800_his_sdepth_{year}{month}{day}T00Z_m00_AN.nc'
     
+class METNorKystV3Hindcast(ROMSbase):
+    '''
+    MET Norway's NorKyst v3 hindcast (thredds romshindcast/norkyst_v3/sdepth), one file per day with 24 hourly steps.
+
+    The files are post-processed from the model output, so they differ from the operational NKv3 files:
+    - every field is at the rho points; u and v here use the rho grid (staggered = False);
+    - the currents are already east/north (u_eastward, v_northward, ubar_eastward, vbar_northward): angle = 0,
+      and only the turn from east/north into the FVCOM grid (latlon = False) remains;
+    - other names: temperature, salinity, time (seconds since 1970), lon, lat, sea_mask;
+    - no angle, u/v grids or Vtransform: the vertical grid is ROMS Vtransform 2 (s_rho is ocean_s_coordinate_g2,
+      checked when the grid is read), from hc, s_rho, Cs_r, s_w and Cs_w.
+    u_eastward and v_northward are not masked on land (they are near zero there), while ubar_eastward and
+    vbar_northward are masked on land and also at sea cells next to it (about 1 % of the sea cells near Tampen,
+    the same in every step). So the rho land mask comes from sea_mask, and the u and v land masks add every
+    cell where the first step of ubar_eastward or vbar_northward is masked: no velocity is taken from there.
+    '''
+    time_name = 'time'
+    varnames  = {'salt': 'salinity', 'temp': 'temperature', 'zeta': 'zeta', 'u': 'u_eastward', 'v': 'v_northward',
+                 'ua': 'ubar_eastward', 'va': 'vbar_northward'}
+    staggered = False
+    grid_date = datetime(2024, 1, 1)   # a day in the hindcast, to read the grid from when load_grid gets no date
+
+    def __str__(self):
+        return 'MET Norway NorKyst version 3 hindcast'
+
+    def test_day(self, date):
+        '''
+        Check if the file exists that day, and that it has enough data
+        '''
+        file = self.get_norkyst_url(date)
+        self.test_ncfile(file)
+        return file
+
+    def get_norkyst_url(self, date):
+        '''
+        Give it a date, and you will get the corresponding url in return
+        '''
+        https = 'https://thredds.met.no/thredds/dodsC/romshindcast/norkyst_v3/sdepth/'
+        return f'{https}{date.year}/{date.month:02d}/norkyst800-{date.year}{date.month:02d}{date.day:02d}.nc'
+
+    def load_grid(self, xbounds=None, ybounds=None, offset=7500, date = None):
+        # the base class looks for today's file when no date is given, and the hindcast has none
+        super().load_grid(xbounds, ybounds, offset, date = self.grid_date if date is None else date)
+
+    def _read_grid_fields(self, path):
+        '''
+        Read the grid; the u and v grids are the rho grid, and the angle is zero (currents are east/north)
+        '''
+        with Dataset(path, 'r') as ncdata:
+            for load in ['lon', 'lat', 'h', 'sea_mask', 's_rho', 'Cs_r', 's_w', 'Cs_w', 'hc']:
+                if load not in ncdata.variables:
+                    raise TypeError(f'{load} is not available in {path}.')
+            kind = getattr(ncdata.variables['s_rho'], 'standard_name', '')
+            if kind != 'ocean_s_coordinate_g2':
+                raise TypeError(f'{path}: s_rho is {kind!r}, but the depths here assume ROMS Vtransform 2 (ocean_s_coordinate_g2)')
+
+            self.lon_rho = np.asarray(ncdata.variables['lon'][:])
+            self.lat_rho = np.asarray(ncdata.variables['lat'][:])
+            self.h_rho   = np.asarray(ncdata.variables['h'][:], dtype = float)
+            for load in ['Cs_r', 's_rho', 'Cs_w', 's_w', 'hc']:
+                setattr(self, load, ncdata.variables[load][:])
+
+            # True on land
+            self.rho_mask = np.ma.filled(ncdata.variables['sea_mask'][:], 0) != 1
+
+            # and for the velocities, also where the depth-mean currents are masked (sea cells next to land)
+            uv_land = self.rho_mask.copy()
+            for load in ['ubar_eastward', 'vbar_northward']:
+                if load in ncdata.variables:
+                    uv_land |= np.ma.getmaskarray(ncdata.variables[load][0])
+
+        self.u_mask, self.v_mask = uv_land, uv_land
+        self.lon_u, self.lat_u   = self.lon_rho, self.lat_rho
+        self.lon_v, self.lat_v   = self.lon_rho, self.lat_rho
+        self.angle = np.zeros(self.lon_rho.shape)
+
+    # The nearest-4 search looks for the box centre closest to each FVCOM point. With u and v at the rho points,
+    # every box is a rho box, and its centre is the mean of its four corners.
+    def _psi_from_rho(self, field):
+        m = self.fv_rho_mask
+        inside = m[1:, 1:] & m[1:, :-1] & m[:-1, 1:] & m[:-1, :-1]
+        return ((field[1:, 1:] + field[1:, :-1] + field[:-1, 1:] + field[:-1, :-1])/4)[inside]
+
+    @property
+    def cropped_x_psi(self):
+        return self._psi_from_rho(self.x_rho)
+
+    @property
+    def cropped_y_psi(self):
+        return self._psi_from_rho(self.y_rho)
+
 class NorShelf(ROMSbase):
     '''
     for accessing NorShelf data
@@ -485,6 +600,7 @@ class RomsDownloader:
         '''
         supported = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']
         timestep = ROMSTimeStep(index_here)
+        names = getattr(self.N4, 'varnames', None) or ROMSbase.varnames   # the mother model's names in its files
  
         with Dataset(filepath) as nc:
             for var in variables:
@@ -493,33 +609,33 @@ class RomsDownloader:
 
             if 'salt' in variables:
                 if sigma is None:
-                    timestep.salt = nc['salt'][index_here, :, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
+                    timestep.salt = nc[names['salt']][index_here, :, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
                 else:
-                    timestep.salt = nc['salt'][index_here, sigma, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
+                    timestep.salt = nc[names['salt']][index_here, sigma, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
 
             if 'temp' in variables:
                 if sigma is None:
-                   timestep.temp = nc['temp'][index_here, :, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
+                   timestep.temp = nc[names['temp']][index_here, :, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
                 else:
-                    timestep.temp = nc['temp'][index_here, sigma, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
+                    timestep.temp = nc[names['temp']][index_here, sigma, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
             if 'zeta' in variables:
-                timestep.zeta = nc['zeta'][index_here, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
+                timestep.zeta = nc[names['zeta']][index_here, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
 
             if 'u' in variables:
-                timestep.u    = nc['u'][index_here, :, self.N4.m_ui:(self.N4.x_ui+1), self.N4.m_uj:(self.N4.x_uj+1)]
+                timestep.u    = nc[names['u']][index_here, :, self.N4.m_ui:(self.N4.x_ui+1), self.N4.m_uj:(self.N4.x_uj+1)]
 
             if 'v' in variables:
-                timestep.v    = nc['v'][index_here, :, self.N4.m_vi:(self.N4.x_vi+1), self.N4.m_vj:(self.N4.x_vj+1)]
+                timestep.v    = nc[names['v']][index_here, :, self.N4.m_vi:(self.N4.x_vi+1), self.N4.m_vj:(self.N4.x_vj+1)]
 
             if 'ua' in variables:
                 try:
-                    timestep.ua = nc['ubar'][index_here, self.N4.m_ui:(self.N4.x_ui+1), self.N4.m_uj:(self.N4.x_uj+1)]
+                    timestep.ua = nc[names['ua']][index_here, self.N4.m_ui:(self.N4.x_ui+1), self.N4.m_uj:(self.N4.x_uj+1)]
                 except:
                     timestep.ua = np.sum(timestep.u*self.N4.cropped_dsigma_u, axis = 0)
 
             if 'va' in variables:
                 try:
-                    timestep.va = nc['vbar'][index_here, self.N4.m_vi:(self.N4.x_vi+1), self.N4.m_vj:(self.N4.x_vj+1)]
+                    timestep.va = nc[names['va']][index_here, self.N4.m_vi:(self.N4.x_vi+1), self.N4.m_vj:(self.N4.x_vj+1)]
                 except:
                     timestep.va = np.sum(timestep.v*self.N4.cropped_dsigma_v, axis = 0)
 

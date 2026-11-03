@@ -27,7 +27,7 @@ def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother =
     _or_
     restart_date - time (date string 'yyyy-mm-dd-hh') to create a new restart file
 
-    mother       - 'NKv2' or 'NKv3' for NorKyst-800
+    mother       - 'NKv2' or 'NKv3' for NorKyst-800, 'NKv3-hindcast' for the NorKyst-800 v3 hindcast
                    'H-NS' for hourly- or 'D-NS' for daily averaged NorShelf 2.4km files
     uv           - set True if you want to interpolate velocity fields to the mesh
     proj         - set projection, default: epsg:32633 (UTM33)
@@ -253,8 +253,9 @@ class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
         '''
         downloads zeta in same shape as ROMS grid
         '''
+        zeta = (getattr(self.N4, 'varnames', None) or {}).get('zeta', 'zeta')
         with netCDF4.Dataset(self.path) as nc:
-            z = nc['zeta'][self.index_here,:,:]
+            z = nc[zeta][self.index_here,:,:]
         return z
 
     def download(self, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']):
@@ -324,8 +325,9 @@ class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
         self.index_here = self.indices[ind[0][0]]
 
         if verbose:
+            time_name = getattr(self.ROMS, 'time_name', 'ocean_time')
             with netCDF4.Dataset(self.path) as nc:
-                print(f"    - Found data for {netCDF4.num2date(nc['ocean_time'][self.index_here], units = nc['ocean_time'].units)}")
+                print(f"    - Found data for {netCDF4.num2date(nc[time_name][self.index_here], units = nc[time_name].units)}")
 
     def _prepare_search(self, days = 2):
         '''

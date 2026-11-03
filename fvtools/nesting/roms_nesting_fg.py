@@ -45,6 +45,7 @@ def main(fvcom_grd,
                  - 'HI-NK'    for NorKyst-800 version 1
                  - 'NKv2' for NorKyst-800 version 2, with data from 2017-02-20 to 2025-10-17
                  - 'NKv3' for NorKyst-800 version 3, with data from 2023-05-07 to present
+                 - 'NKv3-hindcast' for the NorKyst-800 version 3 hindcast (romshindcast/norkyst_v3/sdepth)
                  - 'H-NS' or 'D-NS' for hourly values or daily averages from NorShelf-2.4km
                  - 'IMR-NF'   for NorFjords-150 data from the IMR. Assu
     weights    - tuple giving the weight interval for the nest nodes and cells. By default, weights = [2.5e-4, 2.5e-5].
@@ -125,8 +126,9 @@ def make_fileList(start, stop, ROMS):
             continue
 
         print(f'  - checking: {file}')
-        d        = netCDF4.Dataset(file)
-        t_roms   = netCDF4.num2date(d.variables['ocean_time'][:], units = d.variables['ocean_time'].units, only_use_cftime_datetimes=False)
+        time_name = getattr(ROMS, 'time_name', 'ocean_time')
+        with netCDF4.Dataset(file) as d:
+            t_roms = netCDF4.num2date(d.variables[time_name][:], units = d.variables[time_name].units, only_use_cftime_datetimes=False)
         t_fvcom  = netCDF4.date2num(t_roms, units = 'days since 1858-11-17 00:00:00')
 
         # Append the timesteps, paths and indices to a fileList
