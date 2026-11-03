@@ -8,6 +8,7 @@ import fvtools.interpolators.vertical_interpolation as vi
 
 from datetime import timedelta
 from fvtools.util.kdtree import KDTree
+from fvtools.interpolators.barotropic import correct_fvcom_barotropic
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.grid.roms_grid import get_roms_grid
 from fvtools.grid.roms_grid import RomsDownloader
@@ -302,6 +303,12 @@ class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
         Dump the fields to the restart file
         '''
         with atomic_update_restart(self.restartfile) as nc:
+            # Only after horizontal and vertical interpolation plus rotation.
+            # Use the target grid sigma interfaces, not a simple layer mean.
+            if {'u', 'v', 'ua', 'va'}.issubset(variables):
+                timestep.u, timestep.v = correct_fvcom_barotropic(
+                    timestep.u, timestep.v, timestep.ua, timestep.va,
+                    np.asarray(nc.variables['siglev_center'][:]).T)
             if 'zeta' in variables:
                 nc.variables['zeta'][0,:]       = timestep.zeta
                 print('  - Updated zeta')

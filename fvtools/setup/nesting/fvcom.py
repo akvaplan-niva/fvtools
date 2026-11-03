@@ -10,6 +10,7 @@ from netCDF4 import Dataset
 from fvtools.grid.fvcom_grd import NEST_grid, FVCOM_grid
 from fvtools.util.tools import Filelist
 from fvtools.interpolators.vertical_interpolation import calc_interp_matrices
+from fvtools.interpolators.barotropic import correct_fvcom_barotropic
 
 def main(ngrd        = 'ngrd.npy',
          fileList    = "fileList.txt",
@@ -64,18 +65,18 @@ def main(ngrd        = 'ngrd.npy',
                 out_nest['Itime'][counter]  = d.variables['Itime'][index]
                 out_nest['Itime2'][counter] = d.variables['Itime2'][index]
                 out_nest['zeta'][counter, :] = np.transpose(d.variables['zeta'][index, :][ngrd.nid])
-                out_nest['ua'][counter, :] = np.transpose(d.variables['ua'][index, :][ngrd.cid])
-                out_nest['va'][counter, :] = np.transpose(d.variables['va'][index, :][ngrd.cid])
+                ua = np.transpose(d.variables['ua'][index, :][ngrd.cid])
+                va = np.transpose(d.variables['va'][index, :][ngrd.cid])
+                out_nest['ua'][counter, :] = ua
+                out_nest['va'][counter, :] = va
 
                 # Interpolate in the vertical if needbe
                 if vertical_interpolation:
                     print('    - vertical interpolation step')
                     ui = d.variables['u'][index, :, :][:, ngrd.cid]
                     ui = ui[ind1_c, range(0, ngrd.cid.shape[0])]*w1_c + ui[ind2_c, range(0, ngrd.cid.shape[0])]*w2_c
-                    out_nest['u'][counter, :, :] = ui
                     vi = d.variables['v'][index, :, :][:, ngrd.cid]
                     vi = vi[ind1_c, range(0, ngrd.cid.shape[0])]*w1_c + vi[ind2_c, range(0, ngrd.cid.shape[0])]*w2_c
-                    out_nest['v'][counter, :, :] = vi
 
                     if not tidal_mother:
                         tempi = d.variables['temp'][index, :, :][:, ngrd.nid]
@@ -86,13 +87,20 @@ def main(ngrd        = 'ngrd.npy',
                         out_nest['salinity'][counter, :, :] = salti
 
                 else:
-                    out_nest['u'][counter, :, :] = d.variables['u'][index, :, :][:, ngrd.cid]
-                    out_nest['v'][counter, :, :] = d.variables['v'][index, :, :][:, ngrd.cid]
+                    ui = d.variables['u'][index, :, :][:, ngrd.cid]
+                    vi = d.variables['v'][index, :, :][:, ngrd.cid]
 
 
                     if not tidal_mother:
                         out_nest['temp'][counter, :, :] = d.variables['temp'][index, :, :][:, ngrd.nid]
                         out_nest['salinity'][counter, :, :] = d.variables['salinity'][index, :, :][:, ngrd.nid]
+
+                # After optional vertical interpolation: match mother-model
+                # ua/va using the child FVCOM cell sigma layer thicknesses.
+                ui, vi = correct_fvcom_barotropic(
+                    ui, vi, ua, va, ngrd.siglev_center)
+                out_nest['u'][counter, :, :] = ui
+                out_nest['v'][counter, :, :] = vi
 
 def terminal_main():
     '''

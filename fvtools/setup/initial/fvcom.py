@@ -6,11 +6,12 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-import fvtools.interpolators.vertical_interpolation as vi # This script will be moved to another folder in due time
+import fvtools.interpolators.vertical_interpolation as vi
 import seawater as sw
 import cmocean as cmo
 import datetime
 
+from fvtools.interpolators.barotropic import correct_fvcom_barotropic
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.util.tools import Filelist
 
@@ -84,6 +85,12 @@ def main(
 
         print('\n- Vertical interpolation') 
         data = vertical_interpolation(data, child, dpt) 
+        if speed and all(name in data for name in ('u', 'v', 'ua', 'va')):
+            # Keep interpolated mother-model ua/va as the target depth mean.
+            # The restart stores sigma interfaces as (siglev, nele).
+            data['u'], data['v'] = correct_fvcom_barotropic(
+                data['u'], data['v'], data['ua'], data['va'],
+                np.asarray(child['siglev_center'][:]).T)
 
         # Dump to netCDF
         child = dump_data(data, child)

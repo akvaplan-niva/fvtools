@@ -25,15 +25,15 @@ def main(model: FVCOM_grid, start: datetime, stop: datetime) -> None:
         months = [f'{m:2d}' for m in range(1,13)]
 
     variables = [
-        "10m_u_component_of_wind",
-        "10m_v_component_of_wind",
-        "2m_temperature",
-        "surface_pressure",
-        "total_precipitation",
-        "mean_surface_downward_long_wave_radiation_flux",
-        "mean_surface_net_short_wave_radiation_flux",
-        "total_cloud_cover",
-        "evaporation",
+        #"10m_u_component_of_wind",
+        #"10m_v_component_of_wind",
+        #"2m_temperature",
+        #"surface_pressure",
+        #"total_precipitation",
+        #"mean_surface_downward_long_wave_radiation_flux",
+        #"mean_surface_net_short_wave_radiation_flux",
+        #"total_cloud_cover",
+        #"evaporation",
         "2m_dewpoint_temperature",
         "land_sea_mask"
     ]

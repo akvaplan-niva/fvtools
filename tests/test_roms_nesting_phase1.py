@@ -193,19 +193,53 @@ def test_parallel_worker_failure_raises_and_closes_file(monkeypatch):
 
 
 def test_hyw_scalar_zero_fits_siglev_node_shape():
-    obj=object.__new__(roms.Roms2FVCOMNest)
-    obj.N4=SimpleNamespace(siglev=np.zeros((3, 4)), weight_node=np.ones(3),
-                           weight_cell=np.ones(2))
-    shape={
-        'u': (1,3,2), 'v': (1,3,2), 'ua': (1,2), 'va': (1,2),
-        'hyw': (1,4,3), 'zeta': (1,3), 'temp': (1,3,3),
-        'salinity': (1,3,3), 'weight_node': (1,3), 'weight_cell': (1,2),
+    obj = object.__new__(roms.Roms2FVCOMNest)
+    obj.N4 = SimpleNamespace(
+        siglev=np.zeros((3, 4)),
+        weight_node=np.ones(3),
+        weight_cell=np.ones(2),
+    )
+
+    shape = {
+        'u': (1, 3, 2), 'v': (1, 3, 2),
+        'ua': (1, 2), 'va': (1, 2),
+        'hyw': (1, 4, 3), 'zeta': (1, 3),
+        'temp': (1, 3, 3), 'salinity': (1, 3, 3),
+        'weight_node': (1, 3), 'weight_cell': (1, 2),
+        'siglev_center': (4, 2),
     }
-    obj.out=SimpleNamespace(variables={name:np.full(dims,np.nan) for name,dims in shape.items()})
-    timestep=SimpleNamespace(counter=0,u=np.ones((3,2)),v=np.ones((3,2)),
-        ua=np.ones(2),va=np.ones(2),zeta=np.ones(3),
-        temp=np.ones((3,3)),salt=np.ones((3,3)))
+
+    obj.out = SimpleNamespace(
+        variables={
+            name: np.full(dims, np.nan)
+            for name, dims in shape.items()
+        }
+    )
+
+    # Sigma interfaces: (siglev, nele)
+    obj.out.variables['siglev_center'][:] = np.array([
+        [ 0.0,  0.0],
+        [-0.2, -0.1],
+        [-0.6, -0.6],
+        [-1.0, -1.0],
+    ])
+
+    timestep = SimpleNamespace(
+        counter=0,
+        u=np.ones((3, 2)),
+        v=np.ones((3, 2)),
+        ua=np.ones(2),
+        va=np.ones(2),
+        zeta=np.ones(3),
+        temp=np.ones((3, 3)),
+        salt=np.ones((3, 3)),
+    )
+
     obj.dump_timestep_to_nest(timestep)
-    np.testing.assert_array_equal(obj.out.variables['hyw'],np.zeros((1,4,3)))
+
+    np.testing.assert_array_equal(
+        obj.out.variables['hyw'],
+        np.zeros((1, 4, 3)),
+    )
 
 

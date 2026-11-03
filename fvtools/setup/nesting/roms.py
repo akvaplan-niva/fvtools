@@ -18,10 +18,12 @@ from datetime import datetime
 
 # fvtools
 from fvtools.interpolators import vertical_interpolation as vi
+from fvtools.interpolators.barotropic import correct_fvcom_barotropic
 from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
 from fvtools.interpolators.roms_interpolators import N4ROMSNESTING, LinearInterpolation
 from fvtools.setup.nesting.matchtopo import MatchTopo
 from fvtools.grid.roms_grid import get_roms_grid, NoAvailableData, RomsDownloader, ROMSTimeStep
+from fvtools.util.thredds_io import retry_read
 
 def main(fvcom_grd,
          nest_grd,
@@ -146,7 +148,6 @@ def make_fileList(start, stop, ROMS):
     for date in dates:
         # Pause two second to avoid being stopped
         time_module.sleep(2)
-        from fvtools.util.thredds_io import retry_read
         # NorKyst.test_ncfile may mask DAP errors as NoAvailableData.
         # Retry the whole probe rather than silently omitting a day.
         file = retry_read(
@@ -393,9 +394,18 @@ class Roms2FVCOMNest(RomsDownloader, LinearInterpolation):
         '''
         Write the data to the output file
         '''
-        # Velocities
-        self.out.variables['u'][timestep.counter, :, :]   = timestep.u
-        self.out.variables['v'][timestep.counter, :, :]   = timestep.v
+        # Correct after the existing ROMS interpolation, rotation and validation.
+        # The sigma interfaces are read once from the locally staged nest file,
+        # so no THREDDS calls or additional multiprocessing payload are needed.
+        interfaces = getattr(self, '_barotropic_siglev_center', None)
+        if interfaces is None:
+            interfaces = np.asarray(
+                self.out.variables['siglev_center'][:], dtype=np.float64).T
+            self._barotropic_siglev_center = interfaces
+        u, v = correct_fvcom_barotropic(
+            timestep.u, timestep.v, timestep.ua, timestep.va, interfaces)
+        self.out.variables['u'][timestep.counter, :, :]   = u
+        self.out.variables['v'][timestep.counter, :, :]   = v
         self.out.variables['ua'][timestep.counter, :]     = timestep.ua
         self.out.variables['va'][timestep.counter, :]     = timestep.va
         self.out.variables['hyw'][timestep.counter, :, :] = 0.0  # keep legacy h/L << 1 approximation
