@@ -67,12 +67,19 @@ class N4ROMS(N4):
     # ----
     @property
     def angle(self):
+        adapter = getattr(self.ROMS, 'source_adapter', None)
+        if adapter is not None and adapter.velocity_frame == 'east_north':
+            # Already geographic: no xi/eta angle is available or needed.
+            return np.zeros(len(self.xc))
         return np.mean(np.sum(self.ROMS.angle[self.ROMS.fv_rho_mask][self.rho_index] * self.rho_coef, axis=1)[self.tri], axis=1)
 
     # Points we need to find nearest 4
     # ----
     @property
     def psi_points(self):
+        if getattr(self.ROMS, 'is_collocated', False):
+            # Used for the domain-error plot only; no native PSI grid exists.
+            return self.rho_points
         return np.array([self.ROMS.cropped_x_psi, self.ROMS.cropped_y_psi]).transpose()
 
     @property
@@ -111,9 +118,12 @@ class N4ROMS(N4):
                     xy_source=self.u_points, source_mask=self.ROMS.fv_u_mask,
                     xy_fvcom=self.fv_cells, widget_title='u')
 
-                self.v_index, self.v_coef = self.get_interpolation_matrices(
-                    xy_source=self.v_points, source_mask=self.ROMS.fv_v_mask,
-                    xy_fvcom=self.fv_cells, widget_title='v')
+                if getattr(self.ROMS, 'is_collocated', False):
+                    self.v_index, self.v_coef = self.u_index, self.u_coef
+                else:
+                    self.v_index, self.v_coef = self.get_interpolation_matrices(
+                        xy_source=self.v_points, source_mask=self.ROMS.fv_v_mask,
+                        xy_fvcom=self.fv_cells, widget_title='v')
 
         except ValueError:
             self.domain_exception_plot(self.psi_points)
@@ -178,6 +188,8 @@ class N4ROMS(N4):
         '''
         # Copy attributes we need later from mother class to copy class
         smallerN4 = N4_interpolation()
+        # Preserve the source schema even after N4 is sent to a worker.
+        smallerN4.source_adapter = getattr(self.ROMS, 'source_adapter', None)
         smallerN4 = self._set_attributes_to_dump(smallerN4, self.ROMS, ['cropped_dsigma_u', 'cropped_dsigma_v', 'fv_rho_mask'])
         smallerN4 = self._set_attributes_to_dump(smallerN4, self.FV, ['cell_utm_angle'])
         smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['rho_index', 'rho_coef'])

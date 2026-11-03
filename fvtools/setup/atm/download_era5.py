@@ -25,15 +25,15 @@ def main(model: FVCOM_grid, start: datetime, stop: datetime) -> None:
         months = [f'{m:2d}' for m in range(1,13)]
 
     variables = [
-        #"10m_u_component_of_wind",
-        #"10m_v_component_of_wind",
-        #"2m_temperature",
-        #"surface_pressure",
-        #"total_precipitation",
-        #"mean_surface_downward_long_wave_radiation_flux",
-        #"mean_surface_net_short_wave_radiation_flux",
-        #"total_cloud_cover",
-        #"evaporation",
+        "10m_u_component_of_wind",
+        "10m_v_component_of_wind",
+        "2m_temperature",
+        "surface_pressure",
+        "total_precipitation",
+        "mean_surface_downward_long_wave_radiation_flux",
+        "mean_surface_net_short_wave_radiation_flux",
+        "total_cloud_cover",
+        "evaporation",
         "2m_dewpoint_temperature",
         "land_sea_mask"
     ]
@@ -70,7 +70,7 @@ def main(model: FVCOM_grid, start: datetime, stop: datetime) -> None:
             ],
             "data_format": "netcdf",
             "download_format": "unarchived",
-            "area": [model.lat.max(), model.lon.min(), model.lat.min(), model.lon.max()]
+            "area": [model.lat.max() + 0.5, model.lon.min() - 0.5, model.lat.min() - 0.5, model.lon.max() + 0.5]
         }
         
         client = cdsapi.Client()
@@ -84,7 +84,7 @@ def process_era5(folder, era5_file = 'ERA5.nc'):
     :param era5_file: str, name of the ERA5 file you will pass to the interpolation routine
     '''
     # Combine all files to one
-    files = [f for f in os.listdir(folder) if len(f) > 26 and '.nc' in f]
+    files = [folder + f for f in os.listdir(folder) if len(f) > 26 and '.nc' in f]
     with xr.open_mfdataset(files) as df:
         # Rename netCDF attributes to the format expected by interpolate_regular
         df = df.rename_dims({'valid_time': 'time', 'longitude': 'lon', 'latitude': 'lat'})

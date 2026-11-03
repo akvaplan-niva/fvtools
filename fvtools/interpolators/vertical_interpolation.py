@@ -8,8 +8,24 @@ def add_vertical_interpolation2N4(N4, coords = ['rho', 'u', 'v'], widget_tile = 
     '''    
     for c in coords:
         print(f'  - Finding vertical {c} weights:')
-        z_roms = getattr(N4.ROMS, f'z_{c}')                  # z at all points in ROMS grid
-        z_roms = z_roms[getattr(N4.ROMS, f'fv_{c}_mask'), :] # z cropped
+        collocated = getattr(N4.ROMS, 'is_collocated', False)
+        if collocated and c == 'v' and 'u' in coords:
+            # Same source grid, target cell depths and horizontal weights.
+            for field in ('ind1', 'ind2', 'weigths1', 'weigths2'):
+                setattr(N4, f'vi_{field}_v', getattr(N4, f'vi_{field}_u'))
+            continue
+        if collocated:
+            # Compute z only at selected source points, not over 3.15M x 40
+            # ROMS grid points. Keep the native ROMS stretching formula.
+            depth = np.asarray(N4.ROMS.h_rho[N4.ROMS.fv_rho_mask])
+            s = np.asarray(N4.ROMS.s_rho)[None, :]
+            cs = np.asarray(N4.ROMS.Cs_r)[None, :]
+            hc = N4.ROMS.hc
+            z_roms = depth[:, None] * ((hc * s + depth[:, None] * cs)
+                                          / (hc + depth[:, None]))
+        else:
+            z_roms = getattr(N4.ROMS, f'z_{c}')
+            z_roms = z_roms[getattr(N4.ROMS, f'fv_{c}_mask'), :]
 
         # z interpolated to fvcom-points
         z_roms = np.sum(z_roms[getattr(N4, f'{c}_index'), :] * getattr(N4, f'{c}_coef')[:, :, None], axis=1)
