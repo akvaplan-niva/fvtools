@@ -67,16 +67,21 @@ def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
     print('\nInterpolate TPXO tidal constituents to the FVCOM grid')
     if restart_date is None and restartfile is None:
         raise ValueError('Specify restartfile or restart_date')
+    
     grid = FVCOM_grid(str(fvcom_grid))
     creating = restart_date is not None
     if creating:
-        # make_initial_file takes exactly this spelling and writes to cwd.
         datetime.strptime(restart_date, '%Y-%m-%d-%H')
     destination = Path(restartfile or f'{grid.casename}_initial.nc').resolve()
+
+    # Make sure that the routine has been given sufficient information to make a new hotstart for FVCOM
+    # ----
     if not creating and not destination.is_file():
         raise FileNotFoundError(destination)
+    
     if creating and destination.exists() and not overwrite:
         raise FileExistsError(f'Restart already exists: {destination}; use overwrite=True')
+    
     if not destination.parent.is_dir():
         raise FileNotFoundError(f'Output directory does not exist: {destination.parent}')
 

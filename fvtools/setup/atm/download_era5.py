@@ -31,7 +31,7 @@ def main(model: FVCOM_grid, start: datetime, stop: datetime) -> None:
         "surface_pressure",
         "total_precipitation",
         "mean_surface_downward_long_wave_radiation_flux",
-        "mean_surface_net_short_wave_radiation_flux"
+        "mean_surface_net_short_wave_radiation_flux",
         "total_cloud_cover",
         "evaporation",
         "2m_dewpoint_temperature",
