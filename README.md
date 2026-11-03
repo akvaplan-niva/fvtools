@@ -83,9 +83,11 @@ You can call most scripts via the `main` function, which will create input/forci
 - `atmospheric forcing: fvtools.setup.atm.read_metCoop.main`
   - interpolates atmospheric forcing to your domain
 
-Boundary forcing for ROMS and FVCOM nested models is prepared the following:
-- `fvtools.setup.nesting.roms_nesting_fg.main`
-- `fvtools.setup.nesting.fvcom2fvcom_nesting.main`
+Boundary forcing is created by these modules:
+- `fvtools.setup.nesting.roms.main` (ROMS / NorKyst)
+- `fvtools.setup.nesting.fvcom.main` (FVCOM mother)
+- `fvtools.setup.nesting.cmems.main` (CMEMS/GLORYS)
+- `fvtools.setup.nesting.tpxo.main` (add TPXO tides to a nesting file)
 
 they will produce `.nc` forcing files for the boundary and `.dat` depth files, where the depth near the open boundaries is set equal to that of the forcing model, with a relaxation zone connecting it to the bathymetry set by BuildCase.
 
@@ -118,9 +120,10 @@ bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 `BuildCase` returns `casename_*.dat` FVCOM input files to the `input` folder and a file called `M.npy` used by other setup routines.
 
 #### The mesh in the nesting zone
-fvtools support two nesting types:
-- From `ROMS` (either `NorKyst` or `NorShelf`)
+fvtools supports ROMS, FVCOM and CMEMS/GLORYS nesting (using the same `ngrd.npy` nesting grid):
+- From `ROMS` (`NorKyst`, `NorShelf`, or IMR NorFjords)
 - From `FVCOM` (from any `FVCOM` model that overlaps with this mesh)
+- From `CMEMS/GLORYS` (local combined NetCDF)
 
 ```python
 import fvtools.setup.nesting.get_ngrd as gn
@@ -141,7 +144,7 @@ Interpolating ocean state to the FVCOM nesting zone.
 
 `FVCOM to FVCOM nesting` requires a [filelist](#a-filelist-linking-to-fvcom-results).
 ```python
-import fvtools.setup.nesting.fvcom2fvcom_nesting as f2f
+import fvtools.setup.nesting.fvcom as f2f
 f2f.main(ngrd = 'ngrd.npy', 
          fileList = 'fileList.txt', 
          output_file = '/input/my_experiment_nest.nc', 
@@ -152,19 +155,51 @@ f2f.main(ngrd = 'ngrd.npy',
 
 `ROMS-FVCOM nesting` will automatically find the forcing it needs at thredds.met.no:
 ```python
-import fvtools.setup.nesting.roms_nesting_fg as rn
+import fvtools.setup.nesting.roms as rn
 rn.main('M.npy', 'ngrd.npy', './input/casename_nest.nc', '2018-01-01-00', '2018-02-01-00', mother='H-NS')
 ```
 
 MET Norway does _not_ guarantee data is continuous in time. We must keep the tides continuous; for that, we use `fvtools.setup.nesting.fill_nesting_gaps`. It performs a tidal analysis for `zeta` at every `node`, `ua, va` at every `cell`, and `u, v` in every `sigma layer` at every `cell` to fill gaps. Temperature and salinity are interpolated linearly in time. See `fvtools.setup.nesting.fill_nesting_gaps` for the gap-filling implementation.
 
-`ROMS2FVCOM currently supports these ROMS models/setups`
-- Met office NorKyst `MET-NK`
-- IMR NorKyst `HI-NK`
-- Hourly NorShelf `H-NS`
-- Daily averaged NorShelf `D-NS`
+`fvtools.setup.nesting.roms` supports these model identifiers (`mother=`):
+- `NKv2` — NorKyst v2
+- `NKv3` — operational NorKyst v3 forecast (staggered ROMS C-grid)
+- `NKv3-hindcast` or `NKv3H` — NorKyst v3 hindcast (collocated lon/lat grid)
+- `H-NS` and `D-NS` — hourly/daily NorShelf
+- `IMR-NF` — IMR NorFjords
 
 Adding a ROMS reader to `fvtools.grid.roms_grid` can support other ROMS experiments.
+
+#### CMEMS/GLORYS and TPXO nesting
+
+CMEMS nesting starts from a **local combined GLORYS NetCDF** containing `thetao`, `so`, `uo`, `vo`, `zos` and static `deptho`. The download helper can create this combined file using the Copernicus Marine service (requires access to its data):
+
+```python
+from fvtools.grid.fvcom_grd import FVCOM_grid
+from fvtools.setup.nesting.cmems_download import download_cmems
+import fvtools.setup.nesting.cmems as cmems_nest
+
+M = FVCOM_grid('M.npy')
+download_cmems(M, '2024-04-01', '2024-04-30', outfile='input/cmems/glorys.nc')
+cmems_nest.main('M.npy', 'ngrd.npy', 'input/cmems/glorys.nc',
+                'input/casename_nest.nc', latlon=True)
+```
+
+CMEMS/GLORYS supplies temperature, salinity, sea-surface elevation and currents on its native daily timestamps. The routine matches nesting-zone bathymetry and computes horizontal/vertical interpolation without resampling time; FVCOM handles time interpolation. Run it using an original, **unmatched** FVCOM `M.npy` when changing the mother model.
+
+Add TPXO tides **after** CMEMS nesting (do not add the same tides twice):
+
+```python
+import fvtools.setup.nesting.tpxo as tpxo_nest
+
+tpxo_nest.main(
+    'input/casename_nest.nc',
+    harmonics_files={'zeta': 'tpxo/h.nc', 'u': 'tpxo/u.nc', 'v': 'tpxo/v.nc'},
+    tpxo_bathymetry='tpxo/grid.nc',
+)
+```
+
+The TPXO U/V harmonics are transports and require TPXO `hu`/`hv` bathymetry to convert them to velocities. For elevation-only tides, pass only `{'zeta': 'tpxo/h.nc'}` and omit `tpxo_bathymetry`. **Projected FVCOM nesting with TPXO currents is not yet supported** by `nesting.tpxo`; use a spherical (lat/lon) setup for that combination.
 
 ### River runoff
 The river runoff is given for geographical catchment areas ids (vassdrag), and the ids are mapped at [nve atlas](https://atlas.nve.no/).
@@ -210,7 +245,38 @@ import fvtools.setup.initial.roms as ir
 ir.main(restartfile="casename_restart_0001.nc", mother="H-NS", uv=True)
 ```
 
-Other restart sources are available as `fvtools.setup.initial.cmems` (GLORYS/CMEMS) and `fvtools.setup.initial.tpxo` (TPXO harmonics).
+#### CMEMS/GLORYS restart, followed by TPXO
+
+`fvtools.setup.initial.cmems` reads a **local combined GLORYS NetCDF** (including `deptho`). It updates an existing FVCOM restart or creates a new one with `restart_date`. The source provides `zeta`, temperature and salinity and, with `uv=True`, cell-centred `u/v/ua/va`. Use `time_method='nearest'` explicitly when the restart time differs from the native daily CMEMS timestamp.
+
+```python
+import fvtools.setup.initial.cmems as cmems_restart
+
+cmems_restart.main(
+    restartfile='input/casename_restart.nc',
+    restart_date='2024-04-18-12',  # omit for an existing restart file
+    fvcom_grid='M.npy',
+    glorys_file='input/cmems/glorys.nc',
+    uv=True,
+    latlon=True,
+    time_method='nearest',
+    max_time_difference_hours=12,
+)
+```
+
+Add TPXO to the resulting restart **after** interpolating CMEMS. Tide elevation is added to `zeta`; optional U/V currents are depth-uniform and are also added to `ua/va`. The routine is atomic and rejects applying TPXO twice.
+
+```python
+import fvtools.setup.initial.tpxo as tpxo_restart
+
+tpxo_restart.main(
+    'input/casename_restart.nc',
+    harmonics_files={'zeta': 'tpxo/h.nc', 'u': 'tpxo/u.nc', 'v': 'tpxo/v.nc'},
+    tpxo_bathymetry='tpxo/grid.nc',
+)
+```
+
+For elevation-only TPXO, provide only `zeta`. If the restart has no `glorys_velocity_coordinates` metadata and you add currents, specify `latlon=True` or `False` explicitly. See [examples/README.md](examples/README.md) for the current import paths.
 
 ## After an experiment
 ### A filelist linking to FVCOM results

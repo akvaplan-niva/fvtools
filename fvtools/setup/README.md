@@ -67,3 +67,30 @@ Switches:
 - uv: True if you want to interpolate a velocity field to the mesh
 - latlon: True if you run FVCOM in spherical model, will otherwise correct currents for meridional convergence in UTM coordinates
 
+### CMEMS/GLORYS + TPXO nesting
+Create `ngrd.npy` first (see `fvtools.setup.nesting.get_ngrd`). CMEMS uses a local combined NetCDF with `deptho` and native time steps. TPXO is applied afterwards:
+
+```python
+import fvtools.setup.nesting.cmems as cmems_nest
+import fvtools.setup.nesting.tpxo as tpxo_nest
+
+cmems_nest.main('M.npy', 'ngrd.npy', 'input/cmems/glorys.nc', 'input/casename_nest.nc', latlon=True)
+tpxo_nest.main('input/casename_nest.nc', harmonics_files={'zeta': 'tpxo/h.nc'})
+```
+
+For TPXO currents also provide `u` and `v` harmonic files and `tpxo_bathymetry` (`hu/hv`); the nesting TPXO routine currently supports projected grids for elevation-only tides, not projected currents.
+
+### CMEMS/GLORYS + TPXO restart
+
+```python
+import fvtools.setup.initial.cmems as cmems_restart
+import fvtools.setup.initial.tpxo as tpxo_restart
+
+cmems_restart.main(restartfile='input/casename_restart.nc', fvcom_grid='M.npy',
+                   glorys_file='input/cmems/glorys.nc', uv=True, latlon=True,
+                   time_method='nearest')
+tpxo_restart.main('input/casename_restart.nc', harmonics_files={'zeta': 'tpxo/h.nc'})
+```
+
+The restart must exist when `restart_date` is omitted. Pass `restart_date='YYYY-MM-DD-HH'` to create it. TPXO must be applied only once and after the CMEMS interpolation.
+
