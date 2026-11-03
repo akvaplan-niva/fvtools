@@ -15,6 +15,20 @@ from .roms.cropper_roms import ROMSCropper
 from fvtools.util.thredds_io import is_retryable_netcdf_error
 from fvtools.util.thredds_io import SourcePool
 
+
+def get_roms_time_variable(nc):
+    """Get the time axis of operational or hindcast ROMS NetCDF files.
+
+    Prefer ``ocean_time`` when both names are present, as in the original
+    operational products. Hindcast files may use ``time`` instead.
+    This only selects a NetCDF variable; it performs no remote data read.
+    """
+    for name in ('ocean_time', 'time'):
+        if name in nc.variables:
+            return nc.variables[name]
+    raise ValueError("ROMS source has neither 'ocean_time' nor 'time'")
+
+
 def get_roms_grid(mother, projection = None):
     '''
     Returns a ROMS object for the mother model of question
@@ -244,7 +258,7 @@ class METNorKystV2(ROMSbase):
     def test_ncfile(self, file):
         try:
             with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
+                if len(get_roms_time_variable(d)) < 24:
                     raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
         except:
             raise NoAvailableData
@@ -275,7 +289,7 @@ class METNorKystV3(ROMSbase):
     def test_ncfile(self, file):
         try:
             with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
+                if len(get_roms_time_variable(d)) < 24:
                     raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
         except:
             raise NoAvailableData
@@ -316,7 +330,7 @@ class NorShelf(ROMSbase):
                 except:
                     raise NoAvailableData
 
-                if len(d.variables['ocean_time'][:])<self.min_len:  # Check to see if empty
+                if len(get_roms_time_variable(d)) < self.min_len:  # Check to see if empty
                     raise NoAvailableData
                 else:
                     break
@@ -382,7 +396,7 @@ class IMRNorFjords(ROMSbase):
     def test_ncfile(self, file):
         try:
             with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
+                if len(get_roms_time_variable(d)) < 24:
                     raise NoAvailableData(f'{file} does not have a complete timeseries')
         except:
             raise NoAvailableData

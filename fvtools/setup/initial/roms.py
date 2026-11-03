@@ -10,8 +10,7 @@ from datetime import timedelta
 from fvtools.util.kdtree import KDTree
 from fvtools.interpolators.barotropic import correct_fvcom_barotropic
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.roms_grid import get_roms_grid
-from fvtools.grid.roms_grid import RomsDownloader
+from fvtools.grid.roms_grid import get_roms_grid, get_roms_time_variable, RomsDownloader
 from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
 
 
@@ -354,7 +353,11 @@ class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
 
         if verbose:
             with netCDF4.Dataset(self.path) as nc:
-                print(f"    - Found data for {netCDF4.num2date(nc['ocean_time'][self.index_here], units = nc['ocean_time'].units)}")
+                source_time = get_roms_time_variable(nc)
+                found_date = netCDF4.num2date(
+                    source_time[self.index_here], units=source_time.units,
+                )
+                print(f'    - Found data for {found_date}')
 
     def _prepare_search(self, days = 2):
         '''

@@ -22,7 +22,10 @@ from fvtools.interpolators.barotropic import correct_fvcom_barotropic
 from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
 from fvtools.interpolators.roms_interpolators import N4ROMSNESTING, LinearInterpolation
 from fvtools.setup.nesting.matchtopo import MatchTopo
-from fvtools.grid.roms_grid import get_roms_grid, NoAvailableData, RomsDownloader, ROMSTimeStep
+from fvtools.grid.roms_grid import (
+    get_roms_grid, get_roms_time_variable, NoAvailableData,
+    RomsDownloader, ROMSTimeStep,
+)
 from fvtools.util.thredds_io import retry_read
 
 def main(fvcom_grd,
@@ -161,8 +164,11 @@ def make_fileList(start, stop, ROMS):
 
         print(f'  - checking: {file}')
         with netCDF4.Dataset(file) as d:
-            ocean_time = d.variables['ocean_time']
-            t_roms = netCDF4.num2date(ocean_time[:], units=ocean_time.units, only_use_cftime_datetimes=False)
+            source_time = get_roms_time_variable(d)
+            t_roms = netCDF4.num2date(
+                source_time[:], units=source_time.units,
+                only_use_cftime_datetimes=False,
+            )
             t_fvcom = np.atleast_1d(netCDF4.date2num(t_roms, units='days since 1858-11-17 00:00:00'))
 
         # Append the timesteps, paths and indices to a fileList

@@ -12,7 +12,7 @@ import pyproj
 import progressbar as pb
 import matplotlib.animation as manimation
 from netCDF4 import Dataset
-from fvtools.grid.roms_grid import get_roms_grid, RomsDownloader
+from fvtools.grid.roms_grid import get_roms_grid, get_roms_time_variable, RomsDownloader
 from fvtools.plot.geoplot import geoplot
 
 def main(start, 
@@ -195,7 +195,11 @@ class FilledAnimation(RomsDownloader):
 
         # Title to get timestamp of this frame
         with Dataset(self.files[i]) as nc:
-            plt.title(netCDF4.num2date(nc['ocean_time'][self.index[i]], units = nc['ocean_time'].units).strftime('%m/%d, %H:%M:%S'))
+            source_time = get_roms_time_variable(nc)
+            timestamp = netCDF4.num2date(
+                source_time[self.index[i]], units=source_time.units,
+            )
+            plt.title(timestamp.strftime('%m/%d, %H:%M:%S'))
         return cont
 
     def get_cmap(self, var, cb):

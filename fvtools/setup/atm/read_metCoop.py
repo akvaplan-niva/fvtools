@@ -115,16 +115,14 @@ def metcoop_make_fileList(start_time, stop_time, OldAROME = None, NewAROME = Non
     # Loop over all relevant dates
     # ----
     for date in dates:
-        # Check if files for a given date are available on thredds
+        # Select candidates using retry_read(). A genuine 404 may skip a day;
+        # 403/429/5xx and unknown DAP errors must not be silently skipped.
         # --------------------------------------------------------
+        arome = OldAROME if date < datetime(2020, 2, 5) else NewAROME
         try:
-            if date < datetime(2020,2,5):
-                file, file_acc, file_rad = OldAROME.test_day(date)
-            else:
-                file, file_acc, file_rad = NewAROME.test_day(date)
-
+            file, file_acc, file_rad = arome.test_day(date)
         except NoAvailableData:
-            missing+=1
+            missing += 1
             continue
 
         if missing == 1:
@@ -133,23 +131,40 @@ def metcoop_make_fileList(start_time, stop_time, OldAROME = None, NewAROME = Non
             print(f'  - {date} - is unavailable')
             continue
 
-        # Just to check that the file is not empty
-        # --------------------------------------------------------
-        with netCDF4.Dataset(file, 'r') as d:
-            if len(d.variables['time']) == 0: # Check to see if empty
-                print(f'  - file for {date} is empty')
-                continue
-            missing = 0
+        # test_day() has already opened the primary file and read its time.
+        # Fall back to a retried read for test doubles or custom grid classes.
+        cached = getattr(arome, '_verified_time', None)
+        if cached is not None and cached[0] == file:
+            source_time, units = cached[1], cached[2]
+        else:
+            def read_time():
+                with netCDF4.Dataset(file, 'r') as ds:
+                    variable = ds.variables['time']
+                    return np.ma.asarray(variable[:]).copy(), variable.units
 
-            # We can't use the first two indexes due to accumulated values and NaNs at the beginning of some of the files.
-            # ----
-            t_arome  = netCDF4.num2date(d.variables['time'][accdelay:-2], units = d['time'].units, only_use_cftime_datetimes = False)
-            t_fvcom  = netCDF4.date2num(t_arome, units = 'days since 1858-11-17 00:00:00')
-            time     = np.append(time, t_fvcom)
-            path     = path + [file]*len(t_fvcom)
-            path_acc = path_acc + [file_acc]*len(t_fvcom)
-            path_rad = path_rad + [file_rad]*len(t_fvcom)
-            index.extend(list(range(accdelay, len(t_fvcom)+accdelay)))
+            source_time, units = retry_read(
+                read_time, max_retries=3, retry_delay=10,
+                classifier=is_retryable_error, sleep=time_mod.sleep,
+                failure_message=f'Could not read MetCoOp time from {file}',
+                log_prefix='  - MetCoOp time I/O error',
+            )
+
+        if len(source_time) == 0:
+            print(f'  - file for {date} is empty')
+            continue
+        missing = 0
+
+        # Preserve the original accumulation offset and last-two-hour trim.
+        t_arome = netCDF4.num2date(
+            source_time[accdelay:-2], units=units,
+            only_use_cftime_datetimes=False)
+        t_fvcom = netCDF4.date2num(
+            t_arome, units='days since 1858-11-17 00:00:00')
+        time = np.append(time, t_fvcom)
+        path.extend([file] * len(t_fvcom))
+        path_acc.extend([file_acc] * len(t_fvcom))
+        path_rad.extend([file_rad] * len(t_fvcom))
+        index.extend(range(accdelay, len(t_fvcom) + accdelay))
         print(f'  - found data for {date}')
 
     if len(time) == 0:
