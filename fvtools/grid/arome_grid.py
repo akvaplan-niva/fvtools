@@ -94,6 +94,8 @@ class AROMEbase(BaseGrid):
         for folder in folders:
             for file in files:
                 checkout_files.append(f'{folder}{file}')
+        return checkout_files
+
     def _test_netCDF(self, path, *, capture_time=False):
         """Open one candidate once and optionally retain its time coordinate.
 

@@ -118,3 +118,13 @@ def test_unknown_access_failure_is_not_reported_as_missing(monkeypatch):
     with pytest.raises(RuntimeError, match='after 4 attempts') as exc:
         grid._test_paths(['unavailable.nc'])
     assert isinstance(exc.value.__cause__, OSError)
+
+
+def test_files_in_folders_returns_expected_paths():
+    grid = arome_grid.NewAromeGrid(None)
+    assert grid.files_in_folders(
+        ['https://first', 'https://second'], ['/a.nc', '/b.nc']
+    ) == [
+        'https://first/a.nc', 'https://first/b.nc',
+        'https://second/a.nc', 'https://second/b.nc',
+    ]

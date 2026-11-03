@@ -11,6 +11,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from fvtools.util.thredds_io import SourcePool, is_retryable_netcdf_error
+
 ROOT = Path(__file__).resolve().parents[1]
 GRID = ROOT / 'fvtools/grid/roms_grid.py'
 NEST = ROOT / 'fvtools/setup/nesting/roms.py'
@@ -28,6 +30,8 @@ def _compile_reader(dataset_factory):
         'time_mod': SimpleNamespace(sleep=lambda seconds: None),
         'ROMSTimeStep': lambda idx: SimpleNamespace(index=idx),
         'InputError': type('InputError', (Exception,), {}),
+        'SourcePool': SourcePool,
+        'is_retryable_netcdf_error': is_retryable_netcdf_error,
     }
     exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
                  str(GRID), 'exec'), env)
