@@ -14,7 +14,7 @@ from fvtools.grid.roms_grid import RomsDownloader
 from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
 
 
-from .initial.empty_initial import make_initial_file
+from ._helpers.empty_initial import make_initial_file
 
 def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother = None, uv = False, latlon = False):
     '''

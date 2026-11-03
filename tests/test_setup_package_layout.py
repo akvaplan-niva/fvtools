@@ -1,4 +1,4 @@
-"""Regression tests for the six preprocessing package relocations."""
+"""Regression tests for preprocessing package relocations."""
 import ast
 import importlib.util
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PKGS = ('rivers', 'bathymetry', 'fabm', 'gridding', 'nesting', 'atm')
+PKGS = ('rivers', 'bathymetry', 'fabm', 'gridding', 'nesting', 'atm', 'initial')
 
 
 @pytest.mark.parametrize('name', PKGS)

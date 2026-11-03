@@ -25,7 +25,7 @@ from fvtools.interpolators.vertical_interpolation import calc_interp_matrices
 from fvtools.interpolators.glorys_barotropic import (
     depth_average_glorys, correct_fvcom_barotropic, fvcom_target_depths,
 )
-from fvtools.setup.initial.empty_initial import make_initial_file
+from ._helpers.empty_initial import make_initial_file
 from fvtools.setup.nesting.cmems import (
     VARIABLES, _horizontal, _open_cmems, _vertical,
 )
@@ -64,7 +64,7 @@ def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
 
     Returns the output restart path. A failed interpolation never alters it.
     """
-    print('\nInterpolate TPXO tidal constituents to the FVCOM grid')
+    print('\nInterpolate CMEMS/Glorys oceanographic properties to the FVCOM grid')
     if restart_date is None and restartfile is None:
         raise ValueError('Specify restartfile or restart_date')
     

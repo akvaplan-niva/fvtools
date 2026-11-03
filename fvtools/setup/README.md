@@ -44,23 +44,25 @@ There is something odd about the interpolation routines in the module that acces
 je.ModifyForcing('tides.nc', 'M.npy')
 ```
 
-### interpol_restart
+### fvtools.setup.initial.fvcom
 Interpolates inital fields from a FVCOM mother to you restartfile
 ```python
-import fvtools.setup.interpol_restart as ir 
+import fvtools.setup.initial.fvcom as ir
 ir.main(child_fn='my_experiment_restart_0001.nc', filelist='filelist.txt', speed=True)
 ```
 Options:
-- Vertical interpolation is performed within `interpol_restart.main()`.
+- Vertical interpolation is performed within `fvtools.setup.initial.fvcom.main()`.
 - `speed=True` also initializes velocity fields.
 
 
-### interpol_roms_restart
+### fvtools.setup.initial.roms
 Interpolated initial fields from a ROMS model to your restartfile
 ```python
-import fvtools.setup.interpol_roms_restart as ir 
+import fvtools.setup.initial.roms as ir
 ir.main(restartfile='my_experiment_restart_0001.nc', mother='NKv3', uv=True, latlon=True)
 ```
+Also available: `fvtools.setup.initial.cmems` (GLORYS/CMEMS restart) and `fvtools.setup.initial.tpxo` (TPXO tides).
+
 Switches:
 - uv: True if you want to interpolate a velocity field to the mesh
 - latlon: True if you run FVCOM in spherical model, will otherwise correct currents for meridional convergence in UTM coordinates

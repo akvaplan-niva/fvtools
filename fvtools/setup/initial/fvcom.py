@@ -14,8 +14,8 @@ import datetime
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.util.tools import Filelist
 
-from .initial.empty_initial import make_initial_file
-from .initial.plot_restart import plot_interps
+from ._helpers.empty_initial import make_initial_file
+from ._helpers.plot_restart import plot_interps
 
 
 global versionnr

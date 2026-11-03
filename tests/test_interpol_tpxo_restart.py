@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-from fvtools.setup import interpol_tpxo_restart as restart
+from fvtools.setup.initial import tpxo as restart
 
 
 def _make_restart(path, *, coordinate_system='geographic east/north'):
@@ -42,6 +42,20 @@ def inputs(tmp_path, monkeypatch):
     _make_restart(outfile)
     calls = []
 
+    class FakeGrid:
+        """These synthetic restart files contain no full FVCOM mesh."""
+        def __init__(self, filename):
+            assert isinstance(filename, str)
+            assert filename == str(outfile)
+            self.casename = 'synthetic'
+            self.cell_utm_angle = np.zeros(2)
+
+        @staticmethod
+        def rotate_vector_to_utm(u, v, angle):
+            return u, v
+
+    monkeypatch.setattr(restart, 'FVCOM_grid', FakeGrid)
+
     def fake_load(path, component, x, y, cons):
         calls.append(('load', component, len(x)))
         # Return 2 m elevation or 2 m2/s transports, converted by hu/hv.
@@ -56,6 +70,21 @@ def inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(restart, '_tpxo_depth_at_elements',
                         lambda fname, component, lon, lat: np.array([2., 4.]))
     return outfile, calls
+
+
+def test_zeta_only_still_loads_fvcom_grid(inputs, monkeypatch):
+    outfile, _ = inputs
+    opened = []
+
+    class RecordingGrid:
+        def __init__(self, filename):
+            opened.append(filename)
+            self.casename = 'synthetic'
+
+    monkeypatch.setattr(restart, 'FVCOM_grid', RecordingGrid)
+    restart.main(outfile, harmonics_files={'zeta': 'h.nc'},
+                 constituents=('M2',))
+    assert opened == [str(outfile)]
 
 
 def test_only_zeta_preserves_other_fields_and_marks_once(inputs):
@@ -102,6 +131,9 @@ def test_projected_currents_use_fvcom_rotation(inputs, monkeypatch):
 
     class FakeGrid:
         def __init__(self, path):
+            assert isinstance(path, str)
+            assert path == str(outfile)
+            self.casename = 'synthetic'
             self.xc = np.array([1., 2.])
             self.lonc = np.array([5.25, 5.75])
             self.latc = np.array([60., 60.])
@@ -111,10 +143,9 @@ def test_projected_currents_use_fvcom_rotation(inputs, monkeypatch):
         def rotate_vector_to_utm(u, v, angle):
             return u*np.cos(angle)+v*np.sin(angle), -u*np.sin(angle)+v*np.cos(angle)
 
-    import fvtools.grid.fvcom_grd as grids
-    monkeypatch.setattr(grids, 'FVCOM_grid', FakeGrid)
+    monkeypatch.setattr(restart, 'FVCOM_grid', FakeGrid)
     restart.main(outfile, harmonics_files={k: k+'.nc' for k in ('zeta', 'u', 'v')},
-                 constituents=('M2',), tpxo_bathymetry='bathy.nc', fvcom_grid='M.npy')
+                 constituents=('M2',), tpxo_bathymetry='bathy.nc')
     with Dataset(outfile) as nc:
         # Eastward+Northward tide [1,.5] rotates to [.5,-1] at pi/2.
         np.testing.assert_allclose(nc['ua'][0], [3., 3.5], atol=1e-6)

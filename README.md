@@ -182,13 +182,13 @@ rm.main("M.npy", "./input/casename_atm.nc", "2018-01-01-00", "2018-02-01-00")
 ```
 
 ### Initial conditions
-#### interpol_restart
+#### fvtools.setup.initial.fvcom
 It interpolates initial fields from an FVCOM mother to a restart file.
 - using an existing `restartfile.nc`
 - make a restartfile for a `startdate`
 
 ```python
-import fvtools.setup.interpol_restart as ir
+import fvtools.setup.initial.fvcom as ir
 ir.main(child_fn="casename_restart_0001.nc", 
         filelist="filelist_restart.txt")
 
@@ -203,12 +203,14 @@ ir.main(child_fn="casename_restart_0001.nc",
         name = "mother_restart")
 ```
 
-#### interpol_roms_restart
+#### fvtools.setup.initial.roms
 Interpolate initial fields from a ROMS model to your restart file, but be warned: the model may crash if you set `uv=True`.
 ```python
-import fvtools.setup.interpol_roms_restart as ir 
+import fvtools.setup.initial.roms as ir
 ir.main(restartfile="casename_restart_0001.nc", mother="H-NS", uv=True)
 ```
+
+Other restart sources are available as `fvtools.setup.initial.cmems` (GLORYS/CMEMS) and `fvtools.setup.initial.tpxo` (TPXO harmonics).
 
 ## After an experiment
 ### A filelist linking to FVCOM results

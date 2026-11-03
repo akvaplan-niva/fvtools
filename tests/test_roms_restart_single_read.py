@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from fvtools.setup import interpol_roms_restart as restart
+from fvtools.setup.initial import roms as restart
 
 
 @pytest.mark.parametrize('uv', [False, True])

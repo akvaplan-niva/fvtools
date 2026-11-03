@@ -18,6 +18,8 @@ from netCDF4 import Dataset
 from scipy.interpolate import RegularGridInterpolator
 from fvtools.grid.fvcom_grd import FVCOM_grid
 from fvtools.setup.nesting import tpxo
+from utide.harmonics import sat, const
+from utide.astronomy import ut_astron
 
 DEFAULT_CONSTITUENTS = ('M2', 'S2', 'N2', 'K2', 'K1', 'O1', 'P1', 'Q1')
 
@@ -31,14 +33,14 @@ def main(
     ``'v'``. Transport files require ``tpxo_bathymetry`` (hu/hv). Tidal
     velocities are uniform through sigma and added to both u/v and ua/va.
 
-    For projected FVCOM velocities, ``fvcom_grid`` is used to rotate E/N into
-    FVCOM's x/y coordinates; ``latlon`` is inferred from the GLORYS restart
-    metadata if present, otherwise it must be specified for currents.
+    FVCOM_grid is always initialized from the restart file. For projected
+    FVCOM velocities it rotates TPXO E/N into model x/y; ``latlon`` is inferred
+    from the GLORYS metadata or must be specified for tidal currents.
 
     Atomic copy-on-write with a lock prevents a partial update or double add.
     The method does not modify temperature, salinity, or other restart state.
     """
-    M = FVCOM_grid(restartfile)
+    M = FVCOM_grid(str(restartfile))
     print(f'Interpolate TPXO tides to the {M.casename} grid')
     destination = Path(restartfile)
     if not destination.is_file():
@@ -236,10 +238,6 @@ def _predict_one_time(harmonics, constituents, time_mjd, latitudes, *, chunk_siz
         raise ValueError('Nonfinite TPXO coefficients, coordinates, or time')
     if chunk_size <= 0:
         raise ValueError('chunk_size must be positive')
-
-    from utide.harmonics import sat, const
-    from utide.astronomy import ut_astron
-
     names = [str(x).upper() for x in constituents]
     known = list(tpxo.ut_constants['const']['name'])
     indices = np.asarray([known.index(name) for name in names])

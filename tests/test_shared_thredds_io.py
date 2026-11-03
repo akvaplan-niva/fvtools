@@ -125,7 +125,7 @@ def test_retry_exhausted_preserves_original_failure():
 def test_roms_nesting_and_restart_inherit_same_reader():
     from fvtools.grid.roms_grid import RomsDownloader
     from fvtools.setup.nesting.roms import Roms2FVCOMNest
-    from fvtools.setup.interpol_roms_restart import Roms2FVCOMRestart
+    from fvtools.setup.initial.roms import Roms2FVCOMRestart
     assert issubclass(Roms2FVCOMNest, RomsDownloader)
     assert issubclass(Roms2FVCOMRestart, RomsDownloader)
     assert Roms2FVCOMNest._roms_dataset is RomsDownloader._roms_dataset

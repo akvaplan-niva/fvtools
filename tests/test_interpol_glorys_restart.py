@@ -8,7 +8,7 @@ import pytest
 import xarray as xr
 from netCDF4 import Dataset, date2num
 
-from fvtools.setup import interpol_glorys_restart as restart
+from fvtools.setup.initial import cmems as restart
 from fvtools.grid.glorys_grid import GLORYS
 
 
