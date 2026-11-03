@@ -7,7 +7,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from fvtools.util.thredds_io import SourcePool, is_retryable_netcdf_error
+from fvtools.util.thredds_io import (
+    SourcePool, is_retryable_netcdf_error, source_dataset, retry_read,
+)
 
 SOURCE = Path(__file__).resolve().parents[1] / 'fvtools/grid/roms_grid.py'
 
@@ -91,7 +93,8 @@ def reader(backend):
                InputError=ValueError,
                ROMSTimeStep=lambda idx: SimpleNamespace(index=idx),
                SourcePool=SourcePool,
-               is_retryable_netcdf_error=is_retryable_netcdf_error)
+               is_retryable_netcdf_error=is_retryable_netcdf_error,
+               source_dataset=source_dataset, retry_read=retry_read)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])),
                  str(SOURCE), 'exec'), env)
     obj = env['RomsDownloader']()

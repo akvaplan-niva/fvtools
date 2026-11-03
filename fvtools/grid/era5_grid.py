@@ -13,6 +13,8 @@ class ERA5(BaseGrid):
         self.Proj = Proj 
         with xr.open_dataset(ncera5) as df:
             self.lon, self.lat = np.meshgrid(df.lon, df.lat) # meshgrid lon,lat
-            land_mask = df.lsm.isel(time=0).data # Assuming that wetting/drying isn't too dramatic in ERA5
-            self.land_mask = land_mask > 0
+            # lsm is *land* fraction (0=sea, 1=land). N4Coefficients
+            # expects the opposite convention: land_mask == 1 means sea.
+            lsm = np.asarray(df.lsm.isel(time=0).data)
+            self.land_mask = np.isfinite(lsm) & (lsm < 0.5)
             self.x, self.y = self.Proj(self.lon, self.lat)

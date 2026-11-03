@@ -78,12 +78,13 @@ def main(grd_file, outfile, era5file, start_time, stop_time):
                     elif era_variable[1] == 'ocean':
                         d[this_fvcom][i,:] = np.sum(g[era_variable[0]].isel(time = 0).data[N4.fv_domain_mask][N4.nindex_ocean] * N4.ncoef_ocean, axis = 1)
 
-            # Rotate the wind vectors if the projection is not in lat/lon
-            if M.reference != 'epsg:4326':
-                u =  d['u_wind'][i, :]*np.cos(N4.cell_utm_angle) + d['v_wind'][i, :]*np.sin(N4.cell_utm_angle)
-                v = -d['u_wind'][i, :]*np.sin(N4.cell_utm_angle) + d['v_wind'][i, :]*np.cos(N4.cell_utm_angle)
-                d['u_wind'][i,:] = u
-                d['v_wind'][i,:] = v
+            # ERA5 u10/v10 are east/north; rotate once into projected FVCOM axes.
+            if M.reference.lower() != 'epsg:4326':
+                u, v = _rotate_vector(
+                    d['uwind_speed'][i, :], d['vwind_speed'][i, :],
+                    N4.cell_utm_angle)
+                d['uwind_speed'][i, :] = u
+                d['vwind_speed'][i, :] = v
 
     bar.finish()
     print(f'Finished! ERA5 data interpolated to {outfile}')
@@ -175,13 +176,13 @@ def create_surface_forcing_file(M, ncfile, format = 'NETCDF4', precision = 'f4',
         Itime2.units       = 'msec since 00:00:00'
         Itime2.time_zone   = 'UTC'
 
-        lons = {'units': 'degrees_north', 'standard_name': 'latitude'}
-        lats = {'units': 'degrees_east', 'standard_name': 'longitude'}
-        
+        lons = {'units': 'degrees_east', 'standard_name': 'longitude'}
+        lats = {'units': 'degrees_north', 'standard_name': 'latitude'}
+
         print('Adding grid variables to netCDF')
         for g in ['x', 'y']:
             atts = {'units': 'meters', 'long_name': f'nodal {g}-coordinate'}
-            add_variable(atmfile, g, M.x, ['node'], attributes=atts, ncopts=ncopts)
+            add_variable(atmfile, g, getattr(M, g), ['node'], attributes=atts, ncopts=ncopts)
 
         atts = {'long_name': 'nodal longitude'} | lons
         add_variable(atmfile, 'lon', M.lon, ['node'], attributes=atts, ncopts=ncopts)
@@ -222,8 +223,8 @@ def create_surface_forcing_file(M, ncfile, format = 'NETCDF4', precision = 'f4',
             'cloud_cover': {'long_name': 'Cloud Area Fraction', 'units': 'cloud covered fraction of sky [0,1]'},
             'air_pressure': {'long_name': 'Surface Air Pressure', 'units': 'Pa'},
             'air_temperature': {'long_name': 'Sea Surface Air Temperature', 'units': 'Degree (C)'},
-            'uwind_speed': {'long_name': 'Eastward Wind Speed', 'units': 'm/s'},
-            'vwind_speed': {'long_name': 'Eastward Wind Speed', 'units': 'm/s'},
+            'uwind_speed': {'long_name': 'Wind x/east component', 'units': 'm/s'},
+            'vwind_speed': {'long_name': 'Wind y/north component', 'units': 'm/s'},
         }
 
         # Add grid identifier metadata to the netCDF file

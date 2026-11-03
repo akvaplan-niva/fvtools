@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 import numpy as np
 import xarray as xr
 
@@ -276,6 +277,23 @@ def _write_tpxo_predictions(nc, predictions, constituents):
     nc.tpxo_applied = 1
 
 
+def _replace_staged_tpxo_file(staged, destination, *, attempts=6, delay=0.05):
+    """Publish an already-closed NetCDF copy, tolerating brief Windows locks.
+
+    Retrying only the final rename keeps the calculation and staging atomic.
+    On persistent access denial the original remains untouched and the
+    transaction context removes the staged file and lock.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(staged, destination)
+            return
+        except PermissionError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(delay * (attempt + 1))
+
+
 @_tpxo_contextmanager
 def _tpxo_transaction(nest_file):
     """
@@ -308,7 +326,7 @@ def _tpxo_transaction(nest_file):
         temp = Path(path)
         shutil.copy2(source, temp)
         yield temp
-        os.replace(temp, source)
+        _replace_staged_tpxo_file(temp, source)
         temp = None
     finally:
         if temp is not None:
