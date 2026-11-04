@@ -43,3 +43,7 @@ dev = [
     "ipympl",
     "OWSLib",
 ]
+# What CI installs on top of the runtime dependencies: `uv sync --no-dev --group test`.
+test = [
+    "pytest>=8.4.2",
+]
