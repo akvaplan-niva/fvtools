@@ -42,6 +42,28 @@ mamba/hpc-container-wrapper environment after verifying the environment.
 No tests should require a live THREDDS server to pass. Reference mesh fixtures
 may be skipped when optional external files are unavailable.
 
+## Continuous integration
+
+`.github/workflows/tests.yml` runs the suite on GitHub Actions for every pull
+request and every push to `main` (Ubuntu, Python 3.12 and 3.15). It installs
+only the runtime dependencies and the `test` group, and points `http_proxy` /
+`https_proxy` at a closed port, so a test that tries to reach THREDDS or any
+other server fails instead of downloading. To run offline the same way in an
+existing environment (`--no-sync`, because uv itself can't reach PyPI through
+the dead proxy either):
+
+```powershell
+$env:http_proxy = "http://127.0.0.1:9"; $env:https_proxy = "http://127.0.0.1:9"
+uv run --no-sync pytest -q
+```
+
+```bash
+http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 uv run --no-sync pytest -q
+```
+
+A test that really needs the internet gets `@pytest.mark.network`; such tests
+are skipped by default and run only with `pytest -m network`, never in CI.
+
 Do not compare test counts across runs without accounting for parametrization,
 optional reference data, and version-dependent skips. Test coverage of model
 results matters more than a fixed number of tests.
