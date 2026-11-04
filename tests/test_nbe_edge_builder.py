@@ -20,7 +20,7 @@ def legacy_nbe(nt, mt, nv):
     its original fixed-width temporary array.
     """
     nbe = -np.ones((nt, 3), dtype=np.int64)
-    cells = -np.ones((nt, 50), dtype=np.int64)
+    cells = -np.ones((mt, 50), dtype=np.int64)
     counts = np.zeros(mt, dtype=np.int64)
     for i in range(nt):
         for k in range(3):
