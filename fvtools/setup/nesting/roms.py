@@ -21,7 +21,7 @@ from fvtools.interpolators import vertical_interpolation as vi
 from fvtools.interpolators.barotropic import correct_fvcom_barotropic
 from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
 from fvtools.interpolators.roms_interpolators import N4ROMSNESTING, LinearInterpolation
-from fvtools.setup.nesting.matchtopo import MatchTopo
+from fvtools.setup.nesting.grid.matchtopo import MatchTopo
 from fvtools.grid.roms_grid import (
     get_roms_grid, get_roms_time_variable, NoAvailableData,
     RomsDownloader, ROMSTimeStep,

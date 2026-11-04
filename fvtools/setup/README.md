@@ -68,7 +68,7 @@ Switches:
 - latlon: True if you run FVCOM in spherical model, will otherwise correct currents for meridional convergence in UTM coordinates
 
 ### CMEMS/GLORYS + TPXO nesting
-Create `ngrd.npy` first (see `fvtools.setup.nesting.get_ngrd`). CMEMS uses a local combined NetCDF with `deptho` and native time steps. TPXO is applied afterwards:
+Create `ngrd.npy` first (see `fvtools.setup.nesting.grid.get_ngrd`). CMEMS uses a local combined NetCDF with `deptho` and native time steps. TPXO is applied afterwards:
 
 ```python
 import fvtools.setup.nesting.cmems as cmems_nest

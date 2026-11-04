@@ -26,7 +26,7 @@ from fvtools.grid.fvcom_grd import FVCOM_grid, NEST_grid
 from fvtools.grid.glorys_grid import GLORYS
 
 from fvtools.setup.nesting.roms import create_nc_forcing_file
-from fvtools.setup.nesting.matchtopo import MatchTopo
+from fvtools.setup.nesting.grid.matchtopo import MatchTopo
 
 def main(
         fvcom_grd, nest_grd, cmems_file, outfile, *,

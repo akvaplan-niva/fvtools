@@ -58,20 +58,6 @@ class ExportGrid:
                 f.write(line)
         print(f'  - Wrote : {filename}')
 
-    @property
-    def sponge_nodes(self):
-        '''
-        Sponges from the obc
-        - In BuildCase, we assume that sponges are always applied near the OBC, but remember that they can also be put in the domain.
-        '''
-        if self.sponge_factor > 0:
-            sponges = []
-            for nodestring in self.nodestrings:
-                sponges.extend(nodestring.tolist())
-            return np.array(sponges)
-        else:
-            return np.empty(0)
-
 
     def write_sponge(self, filename = None, sponge_radius = 0.0, sponge_factor = 0.0):
         '''
@@ -85,7 +71,7 @@ class ExportGrid:
 
         with open(filename, 'w') as f:
             f.write(f'Sponge Node Number = {len(self.sponge_nodes)}\n')
-            if any(self.sponge_nodes):
+            if len(self.sponge_nodes):
                 for node in self.sponge_nodes:
                     line = str(node+1) + ' ' + '{0:.6f}'.format(self.sponge_radius) + ' ' + '{0:.6f}'.format(self.sponge_factor)+'\n'
                     f.write(line)

@@ -3,7 +3,7 @@
                             In development - Status: Testing (beta)
 --------------------------------------------------------------------------------------------------------
 BuildCase - Creates all the input files needed to initialize an FVCOM experiment
-          - Works together with get_ngrd.py, obcgridding.py (obcgridding should be run before BC,
+          - Works together with nesting/grid/get_ngrd.py, nesting/grid/obcgridding.py (obcgridding should be run before BC,
             get_ngrd should be run after)
           - new in v4: no longer writes read_obc_nodes (expect FVCOM_grid to do that if needbe)
 --------------------------------------------------------------------------------------------------------
@@ -266,6 +266,7 @@ Vertical layers
         self.info['scipt version'] = version_number
         self.info['casename']   = self.casename
         self.info['reference']  = self.target_projection
+        self.info['latlon']     = bool(self.latlon)  # FVCOM's SPHERICAL compile mode
 
     show_depth = BathymetryPlotter.show_depth
 

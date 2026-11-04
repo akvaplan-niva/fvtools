@@ -2,8 +2,8 @@
 #           Create a ngrd.npy file for the nesting routines
 # ---------------------------------------------------------------------
 import sys
-import fvtools.setup.nesting.get_roms_ngrd as grn
-import fvtools.setup.nesting.get_fvcom_ngrd as gfn
+import fvtools.setup.nesting.grid.get_roms_ngrd as grn
+import fvtools.setup.nesting.grid.get_fvcom_ngrd as gfn
 
 def main(mesh, **kwargs):
     """

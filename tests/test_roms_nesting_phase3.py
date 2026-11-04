@@ -11,7 +11,7 @@ from fvtools.interpolators.vertical_interpolation import (
     add_vertical_interpolation2N4,
     calc_interp_matrices,
 )
-from fvtools.setup.nesting import matchtopo
+from fvtools.setup.nesting.grid import matchtopo
 from fvtools.interpolators.roms_interpolators import LinearInterpolation
 
 

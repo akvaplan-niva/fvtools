@@ -1,4 +1,5 @@
 import numpy as np
+from pathlib import Path
 from numba import njit
 
 from fvtools.grid.fvcom._components.grid_loader import GridLoader
@@ -19,13 +20,14 @@ from fvtools.grid.fvcom._components.compatibility import (
 )
 from fvtools.grid.fvcom._components.interpolation import InterpolateToZ
 from fvtools.grid.fvcom._components.export import ExportGrid
+from fvtools.grid.fvcom._components.sponge import Sponge
 from fvtools.grid.fvcom._components.nesting import (
     NEST_grid, LegacyNestPropertyAliases, LoadNest, NestROMS2FVCOM,
 )
 
 class FVCOM_grid(GridLoader, InputCoordinates, Coordinates, PropertiesFromTGE, LegacyPropertyAliases, CellTriangulation, OutputLoader,
                  PlotFVCOM, ControlVolumePlotter, InterpolateToZ, LegacyFunctions, SectionMaker, ExportGrid, CropGrid, AnglesAndPhysics,
-                 CoastLine, OBC, GridProximity):
+                 CoastLine, OBC, GridProximity, Sponge):
     '''FVCOM grid class compatible with ApN FVCOM workflows, and Akvaplan-branch uk-fvcom.
 
 Attributes:
@@ -163,6 +165,7 @@ Extended features through the mesh-connectivity TGE (.T) class:
           people unfamiliar with sigma layer discretizations too much.
         '''
         self._casename      = 'FVCOM experiment'
+        self._sponge_source_directory = Path.cwd().resolve()
         self.filepath       = pathToFile
         self.reference      = reference
         self.verbose        = verbose

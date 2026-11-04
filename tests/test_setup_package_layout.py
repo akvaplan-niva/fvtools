@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PKGS = ('rivers', 'bathymetry', 'fabm', 'gridding', 'nesting', 'atm', 'initial')
+PKGS = ('rivers', 'bathymetry', 'fabm', 'gridding', 'nesting', 'atm', 'initial', 'download')
 
 
 @pytest.mark.parametrize('name', PKGS)

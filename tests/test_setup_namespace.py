@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ('rivers', 'bathymetry', 'fabm', 'gridding', 'nesting', 'atm', 'initial')
+PACKAGES = ('rivers', 'bathymetry', 'fabm', 'gridding', 'nesting', 'atm', 'initial', 'download')
 
 
 def test_setup_replaces_prepro():

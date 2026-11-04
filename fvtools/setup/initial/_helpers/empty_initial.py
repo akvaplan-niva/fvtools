@@ -4,16 +4,29 @@ import numpy as np
 from fvtools.util.tools import date2num
 
 # Make an empty restartfile
-def make_initial_file(M, initial_time, obc_type = 0):
+def make_initial_file(M, initial_time, obc_type = 0, *, sponge_file=None, spherical=None):
     '''
     Empty restartfile for this experiment
     - M:            FVCOM_grid
     - initial_time: Date string 'yyyy-mm-dd-hh'
     - obc_type:     1 (fvcom2fvcom), 2 (??), 3 (??)
+    - sponge_file:  Optional FVCOM _spg.dat; auto-discovered by FVCOM_grid if omitted
+    - spherical:    True for FVCOM SPHERICAL, otherwise metre-based projected grid
     '''
     print(f"- Create {M.casename}_initial.nc\n")
     nums   = [int(number) for number in initial_time.split('-')]
     fvtime = date2num([datetime.datetime(nums[0], nums[1], nums[2], nums[3], tzinfo = datetime.timezone.utc)])
+
+    # Calculate before opening the output, so malformed sponge files cannot
+    # leave a partially written initial NetCDF. Existing duck-typed grids
+    # without sponge support retain their previous all-zero behaviour.
+    calculate_sponge = getattr(M, 'calculate_cc_sponge', None)
+    if callable(calculate_sponge):
+        cc_sponge = calculate_sponge(sponge_file, spherical=spherical)
+    elif sponge_file is None and spherical is None:
+        cc_sponge = np.zeros(len(M.xc), dtype=np.float32)
+    else:
+        raise TypeError('A FVCOM_grid is required when selecting sponge_file or spherical')
 
     requested_by_restart = {
         'zeta': (('time', 'node'), 'single'),
@@ -126,6 +139,9 @@ def make_initial_file(M, initial_time, obc_type = 0):
 
             elif key == 'obc_nodes':
                 initial[key][:] = np.array(M.obc_nodes) + 1 # Offset for Fortran indexing
+
+            elif key == 'cc_sponge':
+                initial[key][:] = cc_sponge
 
             else:
                 initial[key][:] = 0

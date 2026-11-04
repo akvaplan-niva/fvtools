@@ -7,7 +7,7 @@ from scipy.spatial import cKDTree
 
 from fvtools.grid.glorys_grid import GLORYS
 from fvtools.setup.nesting import cmems
-from fvtools.setup.nesting.matchtopo import MatchTopo
+from fvtools.setup.nesting.grid.matchtopo import MatchTopo
 
 
 def _source(*, dry=False):

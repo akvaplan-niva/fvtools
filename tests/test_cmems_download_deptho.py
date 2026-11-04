@@ -10,7 +10,7 @@ import pytest
 import xarray as xr
 
 from fvtools.grid.glorys_grid import GLORYS
-from fvtools.setup.nesting.cmems_download import download_cmems
+from fvtools.setup.download.cmems import download_cmems
 
 
 def dynamic_dataset():
