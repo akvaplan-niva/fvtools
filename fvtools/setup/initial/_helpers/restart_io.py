@@ -11,12 +11,24 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import os
 import shutil
+import time
 from netCDF4 import Dataset
 
 
-def publish_staged_restart(staged, destination):
-    """Atomically publish a fully written, closed staged NetCDF file."""
-    os.replace(staged, destination)
+def publish_staged_restart(staged, destination, *, attempts=6, delay=0.05):
+    """Atomically publish a closed NetCDF file, retrying transient Windows locks.
+
+    The staged file and original remain separate until os.replace succeeds.
+    A persistent lock raises PermissionError without deleting the original.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(staged, destination)
+            return
+        except PermissionError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(delay * (attempt + 1))
 
 
 @contextmanager

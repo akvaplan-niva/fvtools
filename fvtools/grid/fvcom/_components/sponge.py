@@ -10,7 +10,6 @@ import re
 
 import numpy as np
 from scipy.spatial import cKDTree
-
 from fvtools.setup.initial._helpers.restart_io import atomic_update_restart
 
 _EARTH_RADIUS_M = 6_371_000.0  # FVCOM mod_main.F:REARTH
@@ -136,7 +135,8 @@ class Sponge:
                 np.allclose(self.y, self.lat, atol=1e-5, rtol=0))
 
     def calculate_cc_sponge(self, sponge_file=None, *, spherical=None):
-        """Return float32 ``cc_sponge[nele]`` as FVCOM's SETUP_SPONGE does.
+        """
+        Return float32 ``cc_sponge[nele]`` as FVCOM's SETUP_SPONGE does.
 
         ``spherical=True`` uses great-circle distances (FVCOM SPHERICAL);
         otherwise metre-based projected x/y distances are used. For BuildCase

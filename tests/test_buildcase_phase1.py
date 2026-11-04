@@ -116,6 +116,8 @@ def test_main_pipeline_preserves_original_step_order():
         latlon = False
         sigmafile = 'input/sigma.dat'
         h_raw = np.array([2., 3., 4.])
+        sponge_radius = 0.0
+        sponge_factor = 0.0
         def __init__(self):
             self.calls = []
         def __getattr__(self, name):
@@ -135,6 +137,7 @@ def test_main_pipeline_preserves_original_step_order():
     ]
     np.testing.assert_array_equal(obj.h, obj.h_raw)
     assert obj.calls[7][2] == {'latlon': False}
+    assert obj.calls[9][2] == {'sponge_radius': 0.0, 'sponge_factor': 0.0}
     assert obj.calls[10][2] == {'latlon': False}
 
 

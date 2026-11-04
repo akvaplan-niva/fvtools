@@ -144,11 +144,10 @@ def test_write_cor_writes_latitude_and_correct_horizontal_coordinates(tmp_path, 
 
 def test_write_sponge_one_based_node_indices(tmp_path, small_grid_file):
     grid = FVCOM_grid(str(small_grid_file))
-    grid.sponge_nodes = [1, 3]
-    grid.sponge_radius = 100.0
-    grid.sponge_factor = 0.12
+    # sponge_nodes is derived from the OBC; it has no public setter.
+    grid.nodestrings = [np.array([1, 3], dtype=np.int64)]
     output = tmp_path / 'spg.dat'
-    grid.write_sponge(str(output))
+    grid.write_sponge(str(output), sponge_radius=100.0, sponge_factor=0.12)
     assert output.read_text().splitlines() == [
         'Sponge Node Number = 2', '2 100.000000 0.120000', '4 100.000000 0.120000'
     ]

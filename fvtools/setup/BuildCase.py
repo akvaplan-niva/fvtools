@@ -16,6 +16,7 @@ import numpy as np
 from pyproj import Proj
 from datetime import datetime
 from fvtools.grid.fvcom_grd import GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropGrid, ExportGrid, CellTriangulation, PropertiesFromTGE, GridProximity, CoastLine, AnglesAndPhysics
+from fvtools.grid.fvcom._components.sponge import Sponge
 from functools import cached_property
 from fvtools.setup._buildcase.depth import DepthHandler
 from fvtools.setup._buildcase.mesh_validation import validate_boundary_triangles
@@ -77,7 +78,7 @@ def main(dmfile = None,
     )
 
 class BuildCase(GridLoader, InputCoordinates, Coordinates, OBC, PlotFVCOM, CropGrid, GridProximity, CoastLine,
-                ExportGrid, DepthHandler, CellTriangulation, PropertiesFromTGE, AnglesAndPhysics):
+                ExportGrid, Sponge, DepthHandler, CellTriangulation, PropertiesFromTGE, AnglesAndPhysics):
     '''
     Class to eat up the functionality in the rest of the script :)
     '''
