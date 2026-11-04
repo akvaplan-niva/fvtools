@@ -61,6 +61,10 @@ uv run --no-sync pytest -q
 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 uv run --no-sync pytest -q
 ```
 
+CI also sets `NUMBA_BOUNDSCHECK=1`, so an out-of-range index in a Numba kernel
+raises `IndexError` instead of silently corrupting memory (which shows up later
+as a random segfault). Set it locally the same way when a run crashes.
+
 A test that really needs the internet gets `@pytest.mark.network`; such tests
 are skipped by default and run only with `pytest -m network`, never in CI.
 

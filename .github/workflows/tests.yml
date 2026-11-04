@@ -43,10 +43,14 @@ jobs:
         # reads the lower-case names; requests and urllib read both. Keys in
         # `env` are case-insensitive, so the upper-case copies are exported in
         # the script.
+        # NUMBA_BOUNDSCHECK=1 makes an out-of-range index in a Numba kernel
+        # raise IndexError. Without it such a write silently corrupts memory
+        # and the suite crashes later, at random, somewhere else.
         env:
           http_proxy: http://127.0.0.1:9
           https_proxy: http://127.0.0.1:9
           no_proxy: ""
+          NUMBA_BOUNDSCHECK: "1"
         run: |
           export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$https_proxy" NO_PROXY=""
           uv run --no-sync pytest -q -ra
