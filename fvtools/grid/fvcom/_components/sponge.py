@@ -204,3 +204,4 @@ class Sponge:
                     if not np.allclose(actual, expected, atol=1e-4, rtol=0):
                         raise ValueError(f"Restart {name} differs from the FVCOM grid")
             var[:] = values
+        print('- Updated the restartfile with sponge settigs defined in {sponge_file}')
