@@ -26,6 +26,7 @@ def _make_restart(path, *, coordinate_system='geographic east/north'):
         nc.createVariable('Itime', 'i4', ('time',))[:] = [60000]
         nc.createVariable('Itime2', 'i4', ('time',))[:] = [3600000]
         nc.createVariable('zeta', 'f4', ('time', 'node'))[:] = 2.
+        nc.createVariable('h_center', 'f4', ('nele',))[:] = [2., 4.]
         nc.createVariable('temp', 'f4', ('time', 'siglay', 'node'))[:] = 12.
         nc.createVariable('salinity', 'f4', ('time', 'siglay', 'node'))[:] = 35.
         for name in ('u', 'v'):

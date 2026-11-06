@@ -4,9 +4,10 @@ Run *after* GLORYS restart interpolation.  Reuses the same harmonic
 interpolator, UTide prediction, duplicate-application guard, and atomic
 transaction as ``fvtools.setup.nesting.tpxo``.
 
-TPXO U/V files contain transports (m2/s), converted to m/s using the
-matching TPXO hu/hv, not FVCOM bathymetry. Tidal velocities are depth
-uniform and therefore do not change the vertical shear of GLORYS.
+TPXO U/V files contain transports (m2/s), converted to m/s using FVCOM
+cell bathymetry so that volume transport is preserved even when TPXO
+hu/hv depths differ. Tidal velocities are depth uniform and therefore
+do not change the vertical shear of GLORYS.
 """
 from __future__ import annotations
 
@@ -34,6 +35,8 @@ def main(
     ``harmonics_files`` contains ``'zeta'`` and optionally both ``'u'`` and
     ``'v'``. Transport files require ``tpxo_bathymetry`` (hu/hv). Tidal
     velocities are uniform through sigma and added to both u/v and ua/va.
+    The source hu/hv depths are validated; FVCOM h_center (or h/nv) is
+    used for transport-preserving conversion.
 
     FVCOM_grid is always initialized from the restart file. For projected
     FVCOM velocities it rotates TPXO E/N into model x/y; ``latlon`` is inferred
@@ -68,6 +71,7 @@ def main(
         tpxo._assert_tpxo_not_applied(nc, destination)
         time_mjd, lon, lat, lonc, latc = _restart_metadata(nc, currents)
         geographic = _velocity_is_geographic(nc, latlon) if currents else True
+        fvcom_depth = tpxo._fvcom_depth_at_elements(nc) if currents else None
 
     predictions = {}
     for component in (('zeta', 'u', 'v') if currents else ('zeta',)):
@@ -77,7 +81,8 @@ def main(
         if component != 'zeta':
             depth = _tpxo_depth_at_elements(
                 tpxo_bathymetry, component, xx, yy)
-            harmonics = harmonics / depth[None, :]
+            # Retain the interpolated TPXO transport across FVCOM bathymetry.
+            harmonics = (harmonics / depth[None, :]) * (depth / fvcom_depth)[None, :]
         predicted = _predict_one_time(harmonics, constituents, time_mjd, yy)
         if predicted.shape != (1, len(yy)) or not np.isfinite(predicted).all():
             raise ValueError(f'Invalid TPXO {component} prediction at restart time')

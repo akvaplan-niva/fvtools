@@ -20,7 +20,6 @@ from netCDF4 import Dataset
 from scipy.interpolate import RegularGridInterpolator
 from utide import reconstruct, ut_constants
 from utide.utilities import Bunch
-from fvtools.utils.tools import num2date
 
 _COMPONENTS = {
     'zeta': ('hRe', 'hIm', 'lon_z', 'lat_z'),
@@ -34,7 +33,9 @@ def main(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','
 
     ``harmonics_files`` keys: 'zeta' (required), optionally 'u' and 'v'.
     Currents need ``tpxo_bathymetry`` explicitly supplied as TPXO grid file;
-    accepted bathy names are 'hu' and 'hv', respectively. No unit guessing.
+    its 'hu'/'hv' depths are validated. TPXO transports (m2/s) are
+    converted using FVCOM element depths, preserving transport when the
+    TPXO and FVCOM bathymetries differ.
     """
     if 'zeta' not in harmonics_files:
         raise ValueError("harmonics_files must contain 'zeta'")
@@ -51,7 +52,15 @@ def main(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','
         lonc, latc = np.asarray(nc['lonc'][:]), np.asarray(nc['latc'][:])
 
         # Load nesting grid time
-        t = num2date(Itime = nc['Itime'][:]), Itime2 = np.asarray(nc['Itime2'][:])
+        # UTide with epoch='1858-11-17' expects numeric Modified Julian
+        # Days, not datetime objects. Itime2 contains milliseconds of day.
+        itime = np.ma.filled(
+            np.ma.asarray(nc['Itime'][:], dtype=np.float64), np.nan)
+        itime2 = np.ma.filled(
+            np.ma.asarray(nc['Itime2'][:], dtype=np.float64), np.nan)
+        t = itime + itime2 / 86_400_000.0
+        if t.ndim != 1 or not np.isfinite(t).all():
+            raise ValueError('Invalid FVCOM nesting Itime/Itime2')
 
         projected = getattr(nc, 'interpolation_projection', 'degrees') != 'degrees'
         if projected and any(k in harmonics_files for k in ('u', 'v')):
@@ -60,6 +69,8 @@ def main(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','
         xcoords = np.asarray(nc['xc'][:]); 
         ycoords = np.asarray(nc['yc'][:])
         widths = nc.dimensions['siglay'].size
+        fvcom_depth = _fvcom_depth_at_elements(nc) if any(
+            key in harmonics_files for key in ('u', 'v')) else None
 
     # Interpolate tidal constituents to the FVCOM nestingzone
     predictions = {}
@@ -94,13 +105,45 @@ def main(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','
                 depth = interp(np.column_stack((y,x2)))
                 if not np.isfinite(depth).all() or np.any(depth <= 0):
                     raise ValueError('TPXO bathymetry is missing or non-positive on nesting boundary')
-                coeff = coeff / depth[None, :]
+                # Preserve TPXO depth-integrated transport in FVCOM's
+                # different bathymetry (reference still-water depth).
+                coeff = (coeff / depth[None, :]) * (depth / fvcom_depth)[None, :]
         predictions[key] = _predict_utide(coeff, constituents, t, y)
 
     # Only mutate on success. Barotropic tide is constant through sigma.
     with _tpxo_transaction(nest_file) as staging:
         with Dataset(staging, 'r+') as nc:
             _write_tpxo_predictions(nc, predictions, constituents)
+
+def _fvcom_depth_at_elements(nc):
+    """FVCOM still-water depth (m) at velocity cells, from the target file.
+
+    Prefer h_center in nesting/restart NetCDFs. Older restarts can
+    reconstruct it from nodal h and 1-based nv. Refuse invalid depth.
+    """
+    nele = len(nc.dimensions['nele'])
+    if 'h_center' in nc.variables:
+        depth = np.ma.filled(
+            np.ma.asarray(nc['h_center'][:], dtype=np.float64), np.nan)
+    elif 'h' in nc.variables and 'nv' in nc.variables:
+        h_node = np.ma.filled(
+            np.ma.asarray(nc['h'][:], dtype=np.float64), np.nan)
+        triangles = np.ma.filled(np.ma.asarray(nc['nv'][:]), -1)
+        if triangles.shape == (3, nele):
+            triangles = triangles.T
+        elif triangles.shape != (nele, 3):
+            raise ValueError('FVCOM nv shape does not match number of elements')
+        if (h_node.ndim != 1 or not np.issubdtype(triangles.dtype, np.integer)
+                or np.any(triangles < 1) or np.any(triangles > h_node.size)):
+            raise ValueError('FVCOM h/nv contains invalid node indices')
+        depth = np.mean(h_node[triangles - 1], axis=1)
+    else:
+        raise ValueError('FVCOM cell depth requires h_center or h and nv')
+    if (depth.shape != (nele,) or not np.isfinite(depth).all()
+            or np.any(depth <= 0)):
+        raise ValueError('FVCOM cell depth is missing, nonfinite or non-positive')
+    return depth
+
 
 def _constituents(con):
     """

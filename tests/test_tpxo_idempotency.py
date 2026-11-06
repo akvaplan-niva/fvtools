@@ -24,6 +24,7 @@ def _make_nest(filename):
         ):
             nc.createVariable(name, 'f8', (dimension,))[:] = vals
         nc.createVariable('zeta', 'f8', ('time', 'node'))[:] = 2.
+        nc.createVariable('h_center', 'f8', ('nele',))[:] = 2.
         for key in ('u', 'v'):
             nc.createVariable(key, 'f8', ('time', 'siglay', 'nele'))[:] = 3.
         for key in ('ua', 'va'):
@@ -125,3 +126,28 @@ def test_error_during_write_keeps_original_pristine(tmp_path, monkeypatch):
         tpxo.main(str(nest), harmonics_files={'zeta': 'z.nc'})
     assert nest.read_bytes() == original
     assert sorted(p.name for p in tmp_path.iterdir()) == ['nest.nc']
+
+
+def test_nesting_prediction_receives_numeric_mjd_with_milliseconds(tmp_path, monkeypatch):
+    """Two records one hour apart must be 1/24 MJD apart for UTide."""
+    nest = tmp_path / 'nest.nc'
+    _make_nest(nest)
+    received = []
+
+    def fake_load(path, key, x, y, constituents):
+        return np.ones((len(constituents), len(x)), dtype=complex)
+
+    def fake_predict(harmonics, constituents, times, latitudes):
+        received.append(np.asarray(times))
+        return np.zeros((len(times), len(latitudes)))
+
+    monkeypatch.setattr(tpxo, '_load_harmonic_file', fake_load)
+    monkeypatch.setattr(tpxo, '_predict_utide', fake_predict)
+    tpxo.main(nest, harmonics_files={'zeta': 'z.nc'}, constituents=('M2',))
+
+    assert len(received) == 1
+    assert np.issubdtype(received[0].dtype, np.floating)
+    np.testing.assert_allclose(
+        received[0], [60000.0, 60000.0 + 1.0 / 24.0],
+        rtol=0, atol=1e-10,
+    )
