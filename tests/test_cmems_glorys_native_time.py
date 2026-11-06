@@ -52,8 +52,8 @@ def test_native_times_preserved_and_filtered_without_interpolation():
         start_time='2023-07-01T12', stop_time='2023-07-04T00')
     np.testing.assert_array_equal(idx, [1, 2])
     np.testing.assert_array_equal(src[idx], src[[1, 2]])
-    assert not hasattr(cmems, '_time_bracket')
-    assert not hasattr(cmems, '_output_times')
+    assert cmems._time_bracket(src, '2023-07-01T12') == (0, 1, 0.5)
+    assert len(cmems._output_times(src, interval_hours=1)) == 73
     with pytest.raises(ValueError, match='strictly increasing'):
         cmems._native_time_indices(src[[0, 0]])
     with pytest.raises(ValueError, match='coverage'):

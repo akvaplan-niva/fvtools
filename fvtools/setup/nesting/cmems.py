@@ -6,7 +6,6 @@ network access takes place in this module.
 """
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 import os
@@ -30,11 +29,11 @@ from fvtools.setup.nesting.grid.matchtopo import MatchTopo
 
 def main(
         fvcom_grd, nest_grd, cmems_file, outfile, *,
-        start_time=None, stop_time=None, latlon=True,
-        weights=(2.5e-4, 2.5e-5)
+        start_time=None, stop_time=None, interval_hours=None,
+        latlon=True, weights=(2.5e-4, 2.5e-5)
         ):
     """
-    Write FVCOM nesting from CMEMS native time samples.
+    Write FVCOM nesting from CMEMS, with optional linear time interpolation.
 
     The FVCOM grid is matched to GLORYS bathymetry (and sigma recomputed)
     before interpolation weights are prepared.
@@ -43,8 +42,11 @@ def main(
     -----
     MatchTopo also updates M.npy and the FVCOM input bathymetry file the first time.
 
-    start_time, stop_time are optional - the script will by default interpolate all timesteps
-    to the FVCOM nesting file.
+    By default the nest contains the original CMEMS timestamps. Specify
+    interval_hours (for example 1) to create regularly spaced output times
+    and linearly interpolate all seven FVCOM fields between surrounding
+    native CMEMS snapshots. No extrapolation is permitted. Only two native
+    snapshots are kept in memory at a time.
     """
     print('Interpolating CMEMS/GLORYS data to the open boundary')
     ds = _open_cmems(cmems_file)
@@ -63,27 +65,49 @@ def main(
         M, NEST = match.add_GLORYS_bathymetry_to_FVCOM_and_NEST()
 
         times = np.asarray(ds.time.values, dtype='datetime64[ns]')
-        chosen = _native_time_indices(times, start_time=start_time,
-                                      stop_time=stop_time)
-        if not len(chosen):
-            raise ValueError('No native CMEMS timestamps within the requested period')
-        output_times = times[chosen]
+        output_times = _output_times(
+            times, start_time=start_time, stop_time=stop_time,
+            interval_hours=interval_hours,
+        )
+        if not len(output_times):
+            raise ValueError('No CMEMS timestamps within the requested period')
         wet, node_horizontal, cell_horizontal, node_vertical, cell_vertical = _prepare_geometry(M, NEST, CMEMS)
 
         python_times = output_times.astype('datetime64[us]').astype(object).tolist()
         mjd = date2num(python_times, units='days since 1858-11-17 00:00:00', calendar='standard')
         create_nc_forcing_file(str(temporary), NEST, 'CMEMS', mjd, latlon, M.reference)
 
+        cache = {}
         with Dataset(str(temporary), mode='r+') as out:
             out.source_dataset = str(cmems_file)
-            for dst_i, src_i in enumerate(chosen):
-                result = _read_and_interpolate(
-                    ds, int(src_i), wet, 
-                    node_horizontal, cell_horizontal,
-                    node_vertical, cell_vertical, 
-                    NEST, latlon=latlon
-                    )
-                
+            out.time_interpolation = ('linear' if interval_hours is not None
+                                      else 'native CMEMS samples')
+            for dst_i, target in enumerate(output_times):
+                left, right, fraction = _time_bracket(times, target)
+
+                # Discard unused snapshots BEFORE reading new ones, keeping
+                # at most two fully interpolated native timesteps in RAM.
+                needed = {left, right}
+                for old in tuple(cache):
+                    if old not in needed:
+                        del cache[old]
+                for src_i in (left, right):
+                    if src_i not in cache:
+                        cache[src_i] = _read_and_interpolate(
+                            ds, src_i, wet,
+                            node_horizontal, cell_horizontal,
+                            node_vertical, cell_vertical,
+                            NEST, latlon=latlon,
+                        )
+
+                if left == right:
+                    result = cache[left]
+                else:
+                    result = {
+                        key: (1.0 - fraction) * value + fraction * cache[right][key]
+                        for key, value in cache[left].items()
+                    }
+
                 for key, value in result.items():
                     out.variables[key][dst_i, ...] = value
                 out.variables['weight_node'][dst_i, :] = NEST.weight_node
@@ -112,6 +136,55 @@ def _native_time_indices(source_times, *, start_time=None, stop_time=None):
     if first < times[0] or last > times[-1]:
         raise ValueError('Requested period must be within CMEMS time coverage')
     return np.flatnonzero((times >= first) & (times <= last))
+
+
+def _output_times(source_times, *, start_time=None, stop_time=None,
+                  interval_hours=None):
+    """Native or regularly spaced timestamps, without extrapolation.
+
+    The end time is included only when it falls on the requested interval.
+    """
+    times = np.asarray(source_times, dtype='datetime64[ns]')
+    chosen = _native_time_indices(times, start_time=start_time,
+                                  stop_time=stop_time)
+    if interval_hours is None:
+        return times[chosen]
+
+    try:
+        hours = float(interval_hours)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError('interval_hours must be a positive finite number') from exc
+    if not np.isfinite(hours) or hours <= 0:
+        raise ValueError('interval_hours must be a positive finite number')
+    step_ns = round(hours * 3_600_000_000_000)
+    if step_ns < 1 or step_ns > np.iinfo(np.int64).max:
+        raise ValueError('interval_hours is outside supported nanosecond resolution')
+
+    first = times[0] if start_time is None else np.datetime64(start_time, 'ns')
+    last = times[-1] if stop_time is None else np.datetime64(stop_time, 'ns')
+    first_ns, last_ns = int(first.astype('int64')), int(last.astype('int64'))
+    count = (last_ns - first_ns) // step_ns
+    values = first_ns + np.arange(count + 1, dtype=np.int64) * step_ns
+    return values.astype('datetime64[ns]')
+
+
+def _time_bracket(source_times, target_time):
+    """Two native snapshots bracketing target time and their linear weight."""
+    times = np.asarray(source_times, dtype='datetime64[ns]')
+    target = np.datetime64(target_time, 'ns')
+    if times.ndim != 1 or not len(times) or np.isnat(times).any():
+        raise ValueError('CMEMS time must be a nonempty, valid 1D coordinate')
+    if np.any(times[1:] <= times[:-1]):
+        raise ValueError('CMEMS times must be strictly increasing')
+    if np.isnat(target) or target < times[0] or target > times[-1]:
+        raise ValueError('Target time falls outside available CMEMS time coverage')
+
+    right = int(np.searchsorted(times, target))
+    if right < len(times) and times[right] == target:
+        return right, right, 0.0
+    left = right - 1
+    fraction = float((target - times[left]) / (times[right] - times[left]))
+    return left, right, fraction
 
 
 def _prepare_geometry(M, NEST, CMEMS):

@@ -32,8 +32,8 @@ def test_cmems_keeps_native_time_samples():
     indices = cm._native_time_indices(times,
         start_time='2026-01-01T12', stop_time='2026-01-04T00')
     np.testing.assert_array_equal(indices, [1, 2])
-    assert not hasattr(cm, '_time_bracket')
-    assert not hasattr(cm, '_output_times')
+    assert cm._time_bracket(times, '2026-01-01T12') == (0, 1, 0.5)
+    assert len(cm._output_times(times, interval_hours=1)) == 73
     with pytest.raises(ValueError, match='coverage'):
         cm._native_time_indices(times, stop_time='2026-01-05')
 

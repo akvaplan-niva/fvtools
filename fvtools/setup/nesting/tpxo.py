@@ -20,6 +20,7 @@ from netCDF4 import Dataset
 from scipy.interpolate import RegularGridInterpolator
 from utide import reconstruct, ut_constants
 from utide.utilities import Bunch
+from fvtools.utils.tools import num2date
 
 _COMPONENTS = {
     'zeta': ('hRe', 'hIm', 'lon_z', 'lat_z'),
@@ -44,23 +45,34 @@ def main(nest_file, *, harmonics_files, constituents=('M2','S2','N2','K2','K1','
     with Dataset(nest_file, 'r') as nc:
         _assert_tpxo_not_applied(nc, nest_file)
         print(f'\nAdding tidal harmonics to {nest_file}')
+
+        # Load nesting grid lon, lat
         lon, lat = np.asarray(nc['lon'][:]), np.asarray(nc['lat'][:])
         lonc, latc = np.asarray(nc['lonc'][:]), np.asarray(nc['latc'][:])
-        t = np.asarray(nc['Itime'][:]) + np.asarray(nc['Itime2'][:])/86_400_000.
+
+        # Load nesting grid time
+        t = num2date(Itime = nc['Itime'][:]), Itime2 = np.asarray(nc['Itime2'][:])
+
         projected = getattr(nc, 'interpolation_projection', 'degrees') != 'degrees'
         if projected and any(k in harmonics_files for k in ('u', 'v')):
             raise NotImplementedError('TPXO currents on projected FVCOM grids require velocity rotation')
+
         xcoords = np.asarray(nc['xc'][:]); 
         ycoords = np.asarray(nc['yc'][:])
         widths = nc.dimensions['siglay'].size
 
+    # Interpolate tidal constituents to the FVCOM nestingzone
     predictions = {}
     for key, path in harmonics_files.items():
         print(f'  - adding {key}')
         if key not in _COMPONENTS:
             raise ValueError(f'Unsupported tide component {key!r}')
         x, y = (lon, lat) if key == 'zeta' else (lonc, latc)
+
+        # Read the consituent from the harmonics file
         coeff = _load_harmonic_file(path, key, x, y, constituents)
+
+        # We need to treat velocities separate since tehy need to be adjusted for volume
         if key != 'zeta':
             with xr.open_dataset(tpxo_bathymetry) as hds:
                 name = {'u': 'hu', 'v': 'hv'}[key]
