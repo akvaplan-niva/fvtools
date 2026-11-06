@@ -1,6 +1,7 @@
 # ==================================================================================================================
 #                                Routines to access specific ROMS models
 # =================================================================================================================
+from contextlib import contextmanager
 import numpy as np
 import time as time_mod
 import os
@@ -9,7 +10,27 @@ from datetime import datetime, timedelta
 from functools import cached_property
 from netCDF4 import Dataset
 from dataclasses import dataclass, field
-from .cropper_roms import ROMSCropper
+from .roms.cropper_roms import ROMSCropper
+from .roms.source_adapter import NATIVE_ROMS, NORKYST_V3_HINDCAST
+from .roms.coastal_mask import probe_hindcast_wet_crop
+
+from fvtools.util.thredds_io import is_retryable_netcdf_error
+from fvtools.util.thredds_io import SourcePool
+from fvtools.util.thredds_io import source_dataset
+from fvtools.util.thredds_io import retry_read
+
+def get_roms_time_variable(nc):
+    """Get the time axis of operational or hindcast ROMS NetCDF files.
+
+    Prefer ``ocean_time`` when both names are present, as in the original
+    operational products. Hindcast files may use ``time`` instead.
+    This only selects a NetCDF variable; it performs no remote data read.
+    """
+    for name in ('ocean_time', 'time'):
+        if name in nc.variables:
+            return nc.variables[name]
+    raise ValueError("ROMS source has neither 'ocean_time' nor 'time'")
+
 
 def get_roms_grid(mother, projection = None):
     '''
@@ -30,6 +51,9 @@ def get_roms_grid(mother, projection = None):
     
     elif mother == 'NKv3':
         ROMS = METNorKystV3()
+
+    elif mother in ('NKv3-hindcast', 'NKv3H'):
+        ROMS = METNorKystV3Hindcast()
 
     elif mother == 'IMR-NF':
         ROMS = IMRNorFjords()
@@ -140,6 +164,11 @@ class ROMSbase(ROMSdepths, ROMSCropper):
     '''
     Containing methods we need when trying to couple a FVCOM and ROMS model
     '''
+    source_adapter = NATIVE_ROMS
+
+    @property
+    def is_collocated(self):
+        return self.source_adapter.collocated
     def load_grid(self, xbounds=None, ybounds=None, offset=7500, date = None):
         '''
         Load grid from ROMS output file
@@ -240,7 +269,7 @@ class METNorKystV2(ROMSbase):
     def test_ncfile(self, file):
         try:
             with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
+                if len(get_roms_time_variable(d)) < 24:
                     raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
         except:
             raise NoAvailableData
@@ -260,21 +289,136 @@ class METNorKystV3(ROMSbase):
 
     def get_norkyst_url(self, date):
         '''
-        Give it a date, and you will get the corresponding url in return
+        Operational NorKyst v3 on the native staggered ROMS C-grid.
         '''
-        https       = 'https://thredds.met.no/thredds/dodsC/fou-hi/new_norkyst800m/norkyst_v3_test/his/'
-        year        = str(date.year)
-        month       = '{:02d}'.format(date.month)
-        day         = '{:02d}'.format(date.day)
-        return f'{https}{year}/{month}/{day}/norkyst800_his_sdepth_{year}{month}{day}T00Z_m00_AN.nc'
+        https = 'https://thredds.met.no/thredds/dodsC/fou-hi/new_norkyst800m/norkyst_v3_test/his/'
+        year = str(date.year)
+        month = f'{date.month:02d}'
+        day = f'{date.day:02d}'
+        return (f'{https}{year}/{month}/{day}/'
+                f'norkyst800_his_sdepth_{year}{month}{day}T00Z_m00_AN.nc')
     
     def test_ncfile(self, file):
         try:
             with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
+                if len(get_roms_time_variable(d)) < 24:
                     raise NoAvailableData(f'{file} does not have a complete timeseries, discard the date.')
         except:
             raise NoAvailableData
+
+class METNorKystV3Hindcast(METNorKystV3):
+    """Postprocessed sdepth NorKyst v3: collocated, geographic velocities.
+
+    Keeps the native ROMS grid/interpolator API.  The physical source arrays
+    have shape (time, s_rho, Y, X) for 3-D fields and (time, Y, X) for 2-D.
+    """
+    source_adapter = NORKYST_V3_HINDCAST
+
+    def __str__(self):
+        return 'MET Norway NorKyst version 3 hindcast (sdepth)'
+
+    def get_norkyst_url(self, date):
+        base = 'https://thredds.met.no/thredds/dodsC/romshindcast/norkyst_v3/sdepth'
+        return (f'{base}/{date.year}/{date.month:02d}/'
+                f'norkyst800-{date.year}{date.month:02d}{date.day:02d}.nc')
+
+    def load_grid_from_nc(self, path):
+        """Read the one collocated source grid exactly once per setup."""
+        with Dataset(path, 'r') as nc:
+            required = ('lon', 'lat', 'h', 'sea_mask', 's_rho', 's_w',
+                        'Cs_r', 'Cs_w', 'hc')
+            absent = [name for name in required if name not in nc.variables]
+            if absent:
+                raise ValueError(f'NorKyst v3 hindcast is missing {absent}: {path}')
+            for name in ('lon', 'lat', 'h', 'sea_mask'):
+                if tuple(nc.variables[name].dimensions) != ('Y', 'X'):
+                    raise ValueError(f'Hindcast {name} must have (Y, X) dimensions')
+            for name in ('s_rho', 'Cs_r'):
+                if tuple(nc.variables[name].dimensions) != ('s_rho',):
+                    raise ValueError(f'Hindcast {name} must have (s_rho,) dimensions')
+            for name in ('s_w', 'Cs_w'):
+                if tuple(nc.variables[name].dimensions) != ('s_w',):
+                    raise ValueError(f'Hindcast {name} must have (s_w,) dimensions')
+            self.lon_rho = nc.variables['lon'][:]
+            self.lat_rho = nc.variables['lat'][:]
+            self.h_rho = nc.variables['h'][:]
+            self.rho_mask = np.asarray(nc.variables['sea_mask'][:]) != 1
+            for name in ('s_rho', 's_w', 'Cs_r', 'Cs_w'):
+                setattr(self, name, nc.variables[name][:])
+            # hc is a scalar NetCDF variable: use [()], not [:].
+            self.hc = nc.variables['hc'][()]
+
+        self._hindcast_grid_path = path
+        # Aliases, not copies; ROMSCropper and N4ROMS already know these names.
+        self.lon_u = self.lon_v = self.lon_rho
+        self.lat_u = self.lat_v = self.lat_rho
+        self.u_mask = self.v_mask = self.rho_mask
+
+    def load_grid(self, *args, **kwargs):
+        """Build the effective wet mask before interpolation weights or MatchTopo.
+
+        A hindcast field can be masked even where static sea_mask == 1.
+        Open the already selected source file once more and only read the
+        requested spatial crop at the first timestep; no full-domain reads.
+        """
+        super().load_grid(*args, **kwargs)
+        window = (slice(self.m_ri, self.x_ri + 1),
+                  slice(self.m_rj, self.x_rj + 1))
+        with Dataset(self._hindcast_grid_path, 'r') as nc:
+            self._hindcast_wet_crop = probe_hindcast_wet_crop(
+                nc, window, self.rho_mask[window], self.h_rho[window]
+            )
+        n_static = int((~self.rho_mask[window]).sum())
+        n_valid = int(self._hindcast_wet_crop.sum())
+        print(f'  - Hindcast effective wet mask: {n_valid} / '
+              f'{n_static} static ocean source cells are valid for all fields')
+
+    def get_x_y_z(self):
+        # One projection call rather than three, because all points coincide.
+        self.x_rho, self.y_rho = self.Proj(self.lon_rho, self.lat_rho, inverse=False)
+        self.x_u = self.x_v = self.x_rho
+        self.y_u = self.y_v = self.y_rho
+
+    @property
+    def h_u(self):
+        return self.h_rho
+
+    @property
+    def h_v(self):
+        return self.h_rho
+
+    @property
+    def z_u(self):
+        return self.z_rho
+
+    @property
+    def z_v(self):
+        return self.z_rho
+
+    @cached_property
+    def _cropped_sigma_thickness(self):
+        """Sigma thicknesses in the crop only; avoid full-domain 41-layer arrays."""
+        depth = np.asarray(self.h_rho[
+            self.m_ri:self.x_ri + 1, self.m_rj:self.x_rj + 1])
+        # Land may have zero or missing depth; never divide by it. Those
+        # values are excluded later by the existing source land mask.
+        wet = np.isfinite(depth) & (depth > 0)
+        safe_depth = np.where(wet, depth, 1.)
+        s = np.asarray(self.s_w)[:, None, None]
+        cs = np.asarray(self.Cs_w)[:, None, None]
+        sw = ((self.hc * s + safe_depth[None, :, :] * cs)
+              / (self.hc + safe_depth[None, :, :]))
+        interfaces = safe_depth[None, :, :] * sw
+        weights = np.diff(interfaces, axis=0) / safe_depth[None, :, :]
+        return np.where(wet[None, :, :], weights, 0.)
+
+    @property
+    def cropped_dsigma_u(self):
+        return self._cropped_sigma_thickness
+
+    @property
+    def cropped_dsigma_v(self):
+        return self._cropped_sigma_thickness
 
 class NorShelf(ROMSbase):
     '''
@@ -312,7 +456,7 @@ class NorShelf(ROMSbase):
                 except:
                     raise NoAvailableData
 
-                if len(d.variables['ocean_time'][:])<self.min_len:  # Check to see if empty
+                if len(get_roms_time_variable(d)) < self.min_len:  # Check to see if empty
                     raise NoAvailableData
                 else:
                     break
@@ -378,7 +522,7 @@ class IMRNorFjords(ROMSbase):
     def test_ncfile(self, file):
         try:
             with Dataset(file, 'r') as d:
-                if len(d.variables['ocean_time'][:])<24:
+                if len(get_roms_time_variable(d)) < 24:
                     raise NoAvailableData(f'{file} does not have a complete timeseries')
         except:
             raise NoAvailableData
@@ -447,23 +591,51 @@ class RomsDownloader:
     '''
     Routine that downloads data. It will automatically stop and wait if the thredds server goes down / the data we need is temporarily unavailable
     '''
-    def read_timestep(self, index_here, filepath, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va'], sigma = None):
-        '''
-        Reads a timestep
-        '''
-        unavailable = True
-        while unavailable:
-            try:
-                timestep = self._load_roms_data(index_here, filepath, variables, sigma)
-                unavailable = False
+    # Keep the historical entry point: downstream code and tests call this.
+    @staticmethod
+    def _is_retryable_roms_io_error(exc):
+        """Same bounded classification as MetCoOp: DAP/curl are transient."""
+        return is_retryable_netcdf_error(exc)
 
-            except:
-                print("\n--------------------------------------\n"\
-                      + "The data is unavailable at the moment.\n"\
-                      + "We wait thirty seconds and try again.\n"\
-                      + "--------------------------------------\n")
-                time_mod.sleep(30)
-        return timestep
+    @contextmanager
+    def reuse_roms_datasets(self):
+        """Keep at most one ROMS source file open during a serial pass.
+
+        No global cache: parallel workers and standalone reads remain isolated.
+        All users of RomsDownloader (nesting and restart) share this behavior.
+        """
+        if getattr(self, '_roms_reader_cache', None) is not None:
+            raise RuntimeError('Nested ROMS Dataset reuse scopes are not supported')
+        pool = SourcePool(Dataset, max_open=1, mode=None)
+        self._roms_reader_cache = pool
+        try:
+            yield self
+        finally:
+            self._roms_reader_cache = None
+            pool.close()
+
+    @contextmanager
+    def _roms_dataset(self, filepath):
+        """Use the shared connection context, with damage-aware eviction."""
+        pool = getattr(self, '_roms_reader_cache', None)
+        with source_dataset(filepath, Dataset, pool=pool,
+                            classifier=self._is_retryable_roms_io_error) as nc:
+            yield nc
+
+    def read_timestep(self, index_here, filepath, variables=None, sigma=None,
+                      *, max_retries=5, retry_delay=30):
+        """Read a single ROMS timestep with shared bounded NetCDF/DAP retry."""
+        if variables is None:
+            variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']
+        return retry_read(
+            lambda: self._load_roms_data(index_here, filepath, variables, sigma),
+            max_retries=max_retries, retry_delay=retry_delay,
+            classifier=self._is_retryable_roms_io_error,
+            sleep=time_mod.sleep,
+            failure_message=(f'Could not read ROMS timestep {index_here} '
+                             f'from {filepath!s}'),
+            log_prefix=f'  - ROMS I/O error for {filepath}',
+        )
 
     def _load_roms_data(self, index_here, filepath, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va'], sigma = None):
         '''
@@ -472,43 +644,45 @@ class RomsDownloader:
         '''
         supported = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']
         timestep = ROMSTimeStep(index_here)
- 
-        with Dataset(filepath) as nc:
+        adapter = getattr(self.N4, 'source_adapter', None)
+        # Only the file names change; downstream code still uses salt/temp/u/v.
+        def field(logical):
+            return adapter.field(logical) if adapter is not None else logical
+
+        with self._roms_dataset(filepath) as nc:
             for var in variables:
                 if var not in supported:
                     raise InputError(f'The variable: "{var}" is not supported by RomsDownloader')
 
+            rho = (slice(self.N4.m_ri, self.N4.x_ri + 1),
+                   slice(self.N4.m_rj, self.N4.x_rj + 1))
+            u_slice = (slice(self.N4.m_ui, self.N4.x_ui + 1),
+                       slice(self.N4.m_uj, self.N4.x_uj + 1))
+            v_slice = (slice(self.N4.m_vi, self.N4.x_vi + 1),
+                       slice(self.N4.m_vj, self.N4.x_vj + 1))
+            level = slice(None) if sigma is None else sigma
+
             if 'salt' in variables:
-                if sigma is None:
-                    timestep.salt = nc['salt'][index_here, :, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
-                else:
-                    timestep.salt = nc['salt'][index_here, sigma, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
-
+                timestep.salt = nc[field('salt')][(index_here, level, *rho)]
             if 'temp' in variables:
-                if sigma is None:
-                   timestep.temp = nc['temp'][index_here, :, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
-                else:
-                    timestep.temp = nc['temp'][index_here, sigma, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
+                timestep.temp = nc[field('temp')][(index_here, level, *rho)]
             if 'zeta' in variables:
-                timestep.zeta = nc['zeta'][index_here, self.N4.m_ri:(self.N4.x_ri+1), self.N4.m_rj:(self.N4.x_rj+1)]
-
+                timestep.zeta = nc[field('zeta')][(index_here, *rho)]
             if 'u' in variables:
-                timestep.u    = nc['u'][index_here, :, self.N4.m_ui:(self.N4.x_ui+1), self.N4.m_uj:(self.N4.x_uj+1)]
-
+                timestep.u = nc[field('u')][(index_here, slice(None), *u_slice)]
             if 'v' in variables:
-                timestep.v    = nc['v'][index_here, :, self.N4.m_vi:(self.N4.x_vi+1), self.N4.m_vj:(self.N4.x_vj+1)]
+                timestep.v = nc[field('v')][(index_here, slice(None), *v_slice)]
 
             if 'ua' in variables:
-                try:
-                    timestep.ua = nc['ubar'][index_here, self.N4.m_ui:(self.N4.x_ui+1), self.N4.m_uj:(self.N4.x_uj+1)]
-                except:
-                    timestep.ua = np.sum(timestep.u*self.N4.cropped_dsigma_u, axis = 0)
-
+                if field('ubar') in nc.variables:
+                    timestep.ua = nc[field('ubar')][(index_here, *u_slice)]
+                else:
+                    timestep.ua = np.sum(timestep.u * self.N4.cropped_dsigma_u, axis=0)
             if 'va' in variables:
-                try:
-                    timestep.va = nc['vbar'][index_here, self.N4.m_vi:(self.N4.x_vi+1), self.N4.m_vj:(self.N4.x_vj+1)]
-                except:
-                    timestep.va = np.sum(timestep.v*self.N4.cropped_dsigma_v, axis = 0)
+                if field('vbar') in nc.variables:
+                    timestep.va = nc[field('vbar')][(index_here, *v_slice)]
+                else:
+                    timestep.va = np.sum(timestep.v * self.N4.cropped_dsigma_v, axis=0)
 
         return timestep
 
@@ -534,13 +708,19 @@ class RomsDownloader:
 
     def adjust_uv(self, timestep):
         '''
-        rotate angle of current to match north/south as in forcing model
+        Convert source velocities to FVCOM's lat/lon or projected axes.
         '''
-        # First rotate to north/east
-        timestep.u, timestep.v   = self._rotate_to_latlon(timestep.u, timestep.v, self.N4.angle)
-        timestep.ua, timestep.va = self._rotate_to_latlon(timestep.ua, timestep.va, self.N4.angle)
+        adapter = getattr(self.N4, 'source_adapter', None)
+        frame = adapter.velocity_frame if adapter is not None else 'grid'
+        if frame == 'grid':
+            # Native ROMS xi/eta components need rotation to east/north.
+            timestep.u, timestep.v = self._rotate_to_latlon(timestep.u, timestep.v, self.N4.angle)
+            timestep.ua, timestep.va = self._rotate_to_latlon(timestep.ua, timestep.va, self.N4.angle)
+        elif frame != 'east_north':
+            raise ValueError(f'Unsupported ROMS velocity frame: {frame}')
 
-        # Then correct for the meridional convergence in utm coordinates if needbe
+        # The hindcast already has geographic components. Both formats still
+        # need geographic-to-UTM rotation when FVCOM is in a projected CRS.
         if not self.latlon:
             timestep.u, timestep.v   = self._rotate_from_latlon(timestep.u, timestep.v, self.N4.cell_utm_angle)
             timestep.ua, timestep.va = self._rotate_from_latlon(timestep.ua, timestep.va, self.N4.cell_utm_angle)

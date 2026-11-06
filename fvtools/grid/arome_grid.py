@@ -4,7 +4,24 @@ from datetime import datetime
 from functools import cached_property
 from netCDF4 import Dataset
 from abc import ABC, abstractmethod
-from .base import BaseGrid
+import requests
+import time as time_mod
+
+from fvtools.util.thredds_io import retry_read, is_retryable_netcdf_error
+from .common.base import BaseGrid
+
+
+def _opendap_http_status(path):
+    """Only probe HTTP *after* NetCDF fails; no extra requests on success.
+
+    An OPeNDAP .dds request retrieves metadata, not numerical fields.
+    Unavailable HTTP diagnostics must never be mistaken for HTTP 404.
+    """
+    try:
+        with requests.get(f'{path}.dds', stream=True, timeout=(5, 15)) as response:
+            return response.status_code
+    except requests.RequestException:
+        return None
 
 def get_arome_grids(startdate, stopdate, Proj):
     # The arome grid changed feb. 5 2020
@@ -79,26 +96,48 @@ class AROMEbase(BaseGrid):
                 checkout_files.append(f'{folder}{file}')
         return checkout_files
 
-    def _test_netCDF(self, path):
-        '''
-        Just tries to access a netCDF file
-        '''
-        with Dataset(path) as f:
-            pass
+    def _test_netCDF(self, path, *, capture_time=False):
+        """Open one candidate once and optionally retain its time coordinate.
+
+        HTTP status is checked only if NetCDF fails. A confirmed 404/410 is
+        missing data; access denial must never turn into NoAvailableData.
+        """
+        if capture_time:
+            self._verified_time = None
+        try:
+            with Dataset(path, 'r') as ds:
+                if capture_time:
+                    clock = ds.variables['time']
+                    self._verified_time = (
+                        path, np.ma.asarray(clock[:]).copy(), clock.units)
+        except OSError as exc:
+            status = _opendap_http_status(path)
+            if status in (404, 410):
+                raise NoAvailableData(f'MetCoOp source does not exist (HTTP {status}): {path}') from exc
+            if status == 403:
+                raise PermissionError(f'MetCoOp THREDDS access denied (HTTP 403): {path}') from exc
+            if status == 429:
+                raise OSError(f'MetCoOp THREDDS rate limit (HTTP 429): {path}') from exc
+            raise
         return path
 
-    def _test_paths(self, paths):
-        '''
-        find the file we will use for normal stuff
-        '''
-        for file in paths:
+    def _test_paths(self, paths, *, capture_time=False):
+        """Try alternate archive files only for confirmed missing sources."""
+        for path in paths:
             try:
-                return self._test_netCDF(file)
-            except:
-                pass
-
-        # If we made it here, then there are no files with data
-        raise NoAvailableData
+                return retry_read(
+                    lambda: self._test_netCDF(path, capture_time=capture_time),
+                    max_retries=3, retry_delay=10,
+                    classifier=lambda exc: (
+                        not isinstance(exc, PermissionError)
+                        and is_retryable_netcdf_error(exc)),
+                    sleep=time_mod.sleep,
+                    failure_message=f'Could not access MetCoOp source {path}',
+                    log_prefix='  - MetCoOp file-list I/O error',
+                )
+            except NoAvailableData:
+                continue
+        raise NoAvailableData('No MetCoOp archive files exist for this date')
 
 class OldAromeGrid(AROMEbase, AROMEversion):
     '''
@@ -120,7 +159,7 @@ class OldAromeGrid(AROMEbase, AROMEversion):
         self.infer_day_month_year(day)
 
         # Get path to file for non-radiation-, radiation- and accumulated fields
-        file     = self._test_paths(self.files_in_folders(self.thredds_folders, [self.pp_file, self.extracted_file, self.subset_file]))
+        file     = self._test_paths(self.files_in_folders(self.thredds_folders, [self.pp_file, self.extracted_file, self.subset_file]), capture_time=True)
         file_acc = self._test_paths(self.files_in_folders(self.thredds_folders, [self.extracted_file, self.full_backup_file]))
         file_rad = self._test_paths(self.files_in_folders(self.thredds_folders, [self.extracted_file, self.subset_file]))
         return file, file_acc, file_rad
@@ -259,7 +298,7 @@ class NewAromeGrid(AROMEbase, AROMEversion):
         '''
         # Convert datetime to day, month and year numbers
         self.infer_day_month_year(day)
-        file = self._test_paths(self.files_in_folders(self.thredds_folders, [self.meps_file]))
+        file = self._test_paths(self.files_in_folders(self.thredds_folders, [self.meps_file]), capture_time=True)
         return file, file, file
 
 class NoAvailableData(Exception): pass

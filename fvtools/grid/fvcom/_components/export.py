@@ -1,0 +1,249 @@
+"""FVCOM mesh export mixin; unchanged implementation."""
+
+import os
+import numpy as np
+import geopandas as gpd
+import shapely as shp
+from pyproj import Proj, Transformer
+
+class ExportGrid:
+    '''
+    Routines to export data in FVCOM_grid to other formats
+    '''
+    def get_xy(self, latlon):
+        '''
+        will return the positions we need to write to a file depending on wether you write for a spherical or carthesian FVCOM run 
+        '''
+        if latlon:
+            return self.lon, self.lat
+        else:
+            return self.x, self.y
+
+    def write_bath(self, filename = None, latlon = False):
+        '''
+        - Generates an ascii FVCOM 5.x format bathymetry file
+        '''
+        if filename is None: 
+            filename = f'input/{self.casename}_dep.dat'
+
+        x_grid, y_grid = self.get_xy(latlon)
+        with open(filename, 'w') as f:
+            f.write(f'Node Number = {self.node_number}\n')
+            for x, y, h in zip(x_grid, y_grid, self.h):
+                line = '{0:.6f}'.format(x) + ' ' + '{0:.6f}'.format(y) + ' ' + '{0:.6f}'.format(h)+'\n'
+                f.write(line)
+        print(f'  - Wrote : {filename}')
+
+    def write_grd(self, filename = None, latlon = False, store_z = False):
+        '''
+        - Generates an ascii FVCOM 5.x format grid file
+        '''
+        if filename is None: 
+            filename = f'input/{self.casename}_grd.dat'
+
+        x_grid, y_grid = self.get_xy(latlon)  
+        if store_z:
+            h = self.h
+        else:
+            h = np.zeros(x_grid.shape)
+            
+        with open(filename, 'w') as f:
+            f.write(f'Node Number = {self.node_number}\n')
+            f.write(f'Cell Number = {self.cell_number}\n')
+            for i, (t1, t2, t3) in enumerate(self.tri):
+                f.write(f'{i+1} {t1+1} {t2+1} {t3+1} {i}\n')
+
+            for i, (x, y, z) in enumerate(zip(x_grid, y_grid, h)):
+                line = str(i+1) +' '+ '{0:.6f}'.format(x) + ' ' + '{0:.6f}'.format(y) + ' ' + '{0:.6f}'.format(z)+'\n'
+                f.write(line)
+        print(f'  - Wrote : {filename}')
+
+
+    def write_sponge(self, filename = None, sponge_radius = 0.0, sponge_factor = 0.0):
+        '''
+        - Generates an ascii FVCOM 5.x formatted sponge file
+        '''
+        self.sponge_radius = sponge_radius
+        self.sponge_factor = sponge_factor
+
+        if filename is None: 
+            filename = f'input/{self.casename}_spg.dat'
+
+        with open(filename, 'w') as f:
+            f.write(f'Sponge Node Number = {len(self.sponge_nodes)}\n')
+            if len(self.sponge_nodes):
+                for node in self.sponge_nodes:
+                    line = str(node+1) + ' ' + '{0:.6f}'.format(self.sponge_radius) + ' ' + '{0:.6f}'.format(self.sponge_factor)+'\n'
+                    f.write(line)
+        print(f'  - Wrote : {filename}')
+
+    def write_obc(self, filename = None):
+        """Write FVCOM OBC nodes once each, even for circular SMS nodestrings."""
+        if filename is None:
+            filename = f'input/{self.casename}_obc.dat'
+
+        # SMS represents closed nodestrings by repeating their first node.
+        # FVCOM's OBC-node count must not include that closing duplicate.
+        sequences = []
+        for nodestring in self.nodestrings:
+            nodes = np.asarray(nodestring, dtype=np.int64)
+            if nodes.size > 1 and nodes[0] == nodes[-1]:
+                nodes = nodes[:-1]
+            sequences.append(nodes)
+
+        with open(filename, 'w') as f:
+            f.write(f'OBC Node Number = {sum(map(len, sequences))}\n')
+            i = 0
+            for nodes in sequences:
+                for node in nodes:
+                    i += 1
+                    f.write(f'{i} {node+1} 1\n')
+        print(f'  - Wrote : {filename}')
+
+    def write_cor(self, filename = None, latlon = False):
+        '''
+        Generates an ascii FVCOM 5.x formatted coriolis file
+        - filename: name of the output file
+        - latlon:   True if the model is configured in spherical mode with WGS84 coordinates
+        '''
+        if filename is None: 
+            filename = f'input/{self.casename}_cor.dat'
+
+        if latlon:
+            x, y = self.lon, self.lat
+        else:
+            x, y = self.x, self.y
+
+        with open(filename, 'w') as f:
+            f.write(f'Node Number = {self.node_number}\n')
+            for x, y, lat in zip(x, y, self.lat):
+                line = '{0:.6f}'.format(x) + ' ' + '{0:.6f}'.format(y) + ' ' + '{0:.6f}'.format(lat)+'\n'
+                f.write(line)
+        print(f'  - Wrote : {filename}')
+
+    def write_coast(self, outfolder = None, buffer_width = 50000, verbose = False):
+        '''
+        Finds the coastline in your domain, writes to casename_coast.shp file
+        ---
+        - outfolder: Folder to store coast.shp
+                     - default: current directory 
+        - buffer:    Buffer side of polygon, basically the width of the "islands" we create for the exterior polygon
+                     - must always be positive, buffer measured in meters
+        '''
+        # Move most of these functions to the CoastLine class
+        if outfolder is None: 
+            outfolder = os.getcwd()
+
+        # Draw polygons based on the coastline
+        islands = self.get_land_polygons()
+        areas = [p.area for p in islands] # Find areas of the polygons to identify exterior polygon (max(areas) = exterior polygon)
+        exterior = islands.pop(np.squeeze(np.where(np.array(areas) == max(areas)))) # Split islands and exterior polygon (e.g. remove exterior from islands)
+        exterior_buffer = exterior.buffer(buffer_width, single_sided=True) # Exterior in one polygon
+
+        # Cut the exterior polygon so that we can remove polygons connected to the OBC
+        def construct_lines(line, polygon):
+            '''Add segments of the inner and outer polygon to a list, prepare to polygonize'''
+            x, y = polygon.exterior.xy
+            for i in range(len(polygon.exterior.xy[0])-1):
+                line.append(shp.geometry.LineString(np.array([[x[i], x[i+1]], [y[i], y[i+1]]]).T)) 
+
+        lines = []
+        construct_lines(lines, exterior_buffer)
+        construct_lines(lines, exterior)
+
+        # Add lines from OBC (in exterior) to the exterior_buffer polygon
+        obc_points = []
+        for nodestring in self.nodestrings:
+            # Closed loops have no land-connected endpoints to extend into
+            # the exterior buffer. Treat only open chains here.
+            if len(nodestring) > 1 and nodestring[0] == nodestring[-1]:
+                continue
+            points = [nodestring[0], nodestring[-1]]
+            ind = []
+            for point in points:
+                dst = np.sqrt((exterior_buffer.exterior.xy[0]-self.x[point])**2 + (exterior_buffer.exterior.xy[1]-self.y[point])**2)
+                ind.append(np.where(dst==dst.min())[0][0])
+
+            for point_ind, buffer_ind in zip(points, ind):
+                lines.append(shp.geometry.LineString([[self.x[point_ind],   self.y[point_ind]],  
+                                                      [np.array(exterior_buffer.exterior.xy[0])[buffer_ind], np.array(exterior_buffer.exterior.xy[1])[buffer_ind]], 
+                                                      ]))
+
+            # Make points on the obc, these will be used to mask parts of the obc polygons connecting to ocean
+            obc_points.append(shp.geometry.Point(self.x[nodestring[int(len(nodestring)/2)]], self.y[nodestring[int(len(nodestring)/2)]])) # A point on the line
+       
+        exterior_polys = list(shp.ops.polygonize(lines)) # Connect lines to polygons
+        cropped_polys = [pol for pol in exterior_polys if not exterior.contains(pol.representative_point())] # Remove interior polygon
+        cropped_polys = [pol for pol in cropped_polys if not any([pol.distance(p) == 0 for p in obc_points])] # Remove polygons at obc
+        islands.extend(cropped_polys) # Add obc polygons to the list with islands (land is now also an island)
+
+        # Re-project to latlon since this is what OpenDrift expects
+        project = Transformer.from_proj(self.Proj, Proj(init='epsg:4326')) # We always want to project to latlon, hence hardcoded
+        islands_latlon = [shp.ops.transform(project.transform, pol) for pol in islands]
+
+        # Put into geopandas object, save to outfolder
+        print(f'- Writing {outfolder}/{self.casename}_coast.shp and associated files')
+        s = gpd.GeoDataFrame({'FID': range(len(islands_latlon)), 'geometry': islands_latlon})
+        s.to_file(f'{outfolder}/{self.casename}_coast.shp')
+        if verbose:
+            all_islands = gpd.GeoDataFrame({'FID': range(len(islands)), 'geometry': islands})
+            all_islands.plot()
+            self.plot_grid()
+            
+    def write_2dm(self, name=None):
+        """Write the grid to an SMS 2DM file, without fvgrid.
+
+        The original API accepts a basename or a name ending in '.2dm'.
+        Coordinates and triangulation are stored as ND and E3T records.
+        Nodestrings are written only when OBC nodes are defined.
+        """
+        name = str(self.casename if name is None else name)
+        if name.lower().endswith('.2dm'):
+            name = name[:-4]
+
+        with open(f'{name}.2dm', 'w', encoding='utf-8', newline='\n') as file:
+            file.write('MESH2D\n')
+            file.write(f'MESHNAME "{name}"\n')
+            for i, (n1, n2, n3) in enumerate(self.tri, start=1):
+                file.write(f'E3T {i} {n1+1} {n2+1} {n3+1} 1\n')
+            for i, (xp, yp) in enumerate(zip(self.x, self.y), start=1):
+                file.write(f'ND {i} {xp} {yp} 0.00000001\n')
+
+            if len(self.obc_nodes) > 0:
+                for boundary_number, nodestring in enumerate(self.nodestrings, start=1):
+                    nodes = np.asarray(nodestring, dtype=np.int64)
+                    if nodes.size == 0:
+                        continue
+                    # Match fvgrid's ten-node chunking and trailing positive
+                    # boundary identifier; the last node ID is negative.
+                    for start in range(0, nodes.size, 10):
+                        part = nodes[start:start + 10] + 1
+                        if start + 10 >= nodes.size:
+                            part = part.copy()
+                            part[-1] *= -1
+                            text = ' '.join(map(str, part)) + f' {boundary_number}'
+                        else:
+                            text = ' '.join(map(str, part))
+                        file.write(f'NS  {text}\n')
+
+    def write_section(self):
+        '''
+        write x_sec, y_sec to a casename_section.txt file
+        '''
+        lonlat = np.vstack((self.Proj(self.x_sec, self.y_sec, inverse=True))).T
+        np.savetxt(f'{self.casename}_section.txt', lonlat, delimiter = ' ')
+        print(f'- saved section positions to {self.casename}_section.txt')
+
+    def to_npy(self, filename = 'M.npy'):
+        '''
+        Write no M.npy file
+        '''
+        M = {}
+        self.nv = self.tri
+        for var in ['x', 'y', 'lon', 'lat', 'h', 'h_raw', 'nv', 'siglay', 'siglev', 'obc_nodes', 'nodestrings', 'reference', 'info', 'ts']:
+            try:
+                M[var] = getattr(self, var)
+            except:
+                pass
+        np.save(filename, M)
+        print(f'- Wrote {filename}')

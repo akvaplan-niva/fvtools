@@ -1,0 +1,96 @@
+# Scripts used to prepare an experiment
+These should really be co-located with nesting and atmospheric forcing
+
+[[_TOC_]]
+
+## Overview
+### BuildCase
+Reads .2dm file, checks that the triangles are legal (and remove illegal ones), interpolates bathymetry to the mesh, smooths to comply with hydrostatic constitency criteria, writes .2dm files and returns a M.npy-mesh file.
+
+Example use:
+```python
+import fvtools.setup.BuildCase as bc
+bc.main('casename.2dm', 'depth_data.npy')
+```
+
+### BuildRivers
+Creates river forcing
+```python
+import fvtools.setup.BuildRivers as br
+
+# Run in JupyterLab; replace these example vassdrag IDs with your catchments.
+vassdrag = [91, 92]
+await br.main('2018-01-01', '2018-02-01', vassdrag, 'M.npy')
+
+# Temperatures for big models are stored on the Stokes and Betzy
+#   Stokes: /data/FVCOM/Setup_Files/Rivers/Raw_Temperatures/
+#   Betzy:  /cluster/shared/NS9067K/apn_backup/FVCOM/Setup_Files/Rivers/Raw_Temperatures/
+```
+
+### JulianTimeElev
+Reads a M.npy file and interpolates tidal harmonics from the TPXO database to the FVCOM-obc. 
+
+The routine reads the start data (year, month, day) and number of days to create forcing for (e.g. 365). Needs an FVCOM_grid object as input.
+```python
+import fvtools.setup.JulianTimeElev as je 
+from fvtools.grid.fvcom_grd import FVCOM_grid
+M = FVCOM_grid('M.npy')
+je.main(M, 2018, 10, 1, 300, netcdf_name = 'tides.nc')
+```
+
+There is something odd about the interpolation routines in the module that accesses tidal data and interpolates it to the mesh (pyTMD), it is therefore encouraged to check the quality of the forcing before moving on
+
+```python
+je.ModifyForcing('tides.nc', 'M.npy')
+```
+
+### fvtools.setup.initial.fvcom
+Interpolates inital fields from a FVCOM mother to you restartfile
+```python
+import fvtools.setup.initial.fvcom as ir
+ir.main(child_fn='my_experiment_restart_0001.nc', filelist='filelist.txt', speed=True)
+```
+Options:
+- Vertical interpolation is performed within `fvtools.setup.initial.fvcom.main()`.
+- `speed=True` also initializes velocity fields.
+
+
+### fvtools.setup.initial.roms
+Interpolated initial fields from a ROMS model to your restartfile
+```python
+import fvtools.setup.initial.roms as ir
+ir.main(restartfile='my_experiment_restart_0001.nc', mother='NKv3', uv=True, latlon=True)
+```
+Also available: `fvtools.setup.initial.cmems` (GLORYS/CMEMS restart) and `fvtools.setup.initial.tpxo` (TPXO tides).
+
+Switches:
+- uv: True if you want to interpolate a velocity field to the mesh
+- latlon: True if you run FVCOM in spherical model, will otherwise correct currents for meridional convergence in UTM coordinates
+
+### CMEMS/GLORYS + TPXO nesting
+Create `ngrd.npy` first (see `fvtools.setup.nesting.grid.get_ngrd`). CMEMS uses a local combined NetCDF with `deptho` and native time steps. TPXO is applied afterwards:
+
+```python
+import fvtools.setup.nesting.cmems as cmems_nest
+import fvtools.setup.nesting.tpxo as tpxo_nest
+
+cmems_nest.main('M.npy', 'ngrd.npy', 'input/cmems/glorys.nc', 'input/casename_nest.nc', latlon=True)
+tpxo_nest.main('input/casename_nest.nc', harmonics_files={'zeta': 'tpxo/h.nc'})
+```
+
+For TPXO currents also provide `u` and `v` harmonic files and `tpxo_bathymetry` (`hu/hv`); the nesting TPXO routine currently supports projected grids for elevation-only tides, not projected currents.
+
+### CMEMS/GLORYS + TPXO restart
+
+```python
+import fvtools.setup.initial.cmems as cmems_restart
+import fvtools.setup.initial.tpxo as tpxo_restart
+
+cmems_restart.main(restartfile='input/casename_restart.nc', fvcom_grid='M.npy',
+                   glorys_file='input/cmems/glorys.nc', uv=True, latlon=True,
+                   time_method='nearest')
+tpxo_restart.main('input/casename_restart.nc', harmonics_files={'zeta': 'tpxo/h.nc'})
+```
+
+The restart must exist when `restart_date` is omitted. Pass `restart_date='YYYY-MM-DD-HH'` to create it. TPXO must be applied only once and after the CMEMS interpolation.
+

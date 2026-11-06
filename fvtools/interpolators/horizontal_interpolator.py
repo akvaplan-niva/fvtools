@@ -1,7 +1,7 @@
 import numpy as np
 
 from fvtools.interpolators.nearest4 import N4 # base-class for nearest 4 interpolation & the method used to find nearest 4
-from pykdtree.kdtree import KDTree
+from fvtools.util.kdtree import KDTree
 from functools import cached_property
 
 class DomainMasks:
@@ -82,12 +82,12 @@ class N4Coefficients(N4, DomainMasks):
         # Check that the coarse grid covers the FVCOM grid
         print('- Compute interpolation coefficients')
         self.nindex, self.ncoef = self.get_interpolation_matrices(xy_source = self.xy_coarse,
-                                                                  xy_source_center = self.xy_coarse_center,
+                                                                  source_mask = self.fv_domain_mask,
                                                                   xy_fvcom = self.fv_nodes,
                                                                   widget_title = 'node')
 
         self.cindex, self.ccoef = self.get_interpolation_matrices(xy_source = self.xy_coarse,
-                                                                  xy_source_center = self.xy_coarse_center,
+                                                                  source_mask = self.fv_domain_mask,
                                                                   xy_fvcom = self.fv_cells,
                                                                   widget_title = 'cell')
 
@@ -101,47 +101,42 @@ class N4Coefficients(N4, DomainMasks):
         Identify land points, these must be removed for the radiation field interpolation
         '''
         newindex = np.copy(index)
-        newcoef  = np.copy(coef)
+        newcoef = np.copy(coef)
 
-        # Set weight of land points to zero and re-normalize (use nearest3)
-        landbool = self.LandMask[newindex] == 0
-        newcoef[landbool] = 0
-        newcoef = newcoef/np.sum(newcoef, axis=1)[:, None]
+        # N4Coefficients.LandMask uses 1=sea and 0=land.
+        newcoef[self.LandMask[newindex] == 0] = 0.0
+        total = np.sum(newcoef, axis=1)
+        has_ocean = total > 0
+        # Never divide by zero when all four corners are land.
+        newcoef[has_ocean] /= total[has_ocean, None]
 
-        # Find the nearest neighbour where all points are landpoints
-        points_on_COARSE_land = np.where(np.isnan(newcoef[:,0]))[0]  # points completely covered by arome land
-        nearest_COARSE_ocean  = self._find_nearest_ocean_neighbor(index, coef)
-
-        # Overwrite indices at points completely covered by arome land
-        newindex[points_on_COARSE_land, :] = nearest_COARSE_ocean[points_on_COARSE_land][:, None]
-        newcoef[points_on_COARSE_land, :]  = 0.25 # just weight the same point = 0.25 for 4 times, because why not...
+        all_land = ~has_ocean
+        if np.any(all_land):
+            nearest = self._find_nearest_ocean_neighbor(
+                index[all_land], coef[all_land])
+            # Repeat the same nearest sea point four times, preserving the
+            # existing nearest-ocean fallback without masked / NaN weights.
+            newindex[all_land, :] = nearest[:, None]
+            newcoef[all_land, :] = 0.25
         return newindex, newcoef
 
     def _find_nearest_ocean_neighbor(self, index, coef):
         '''
         replace land point with nearest ocean neighbor
         '''
-        # Points we need to change
-        fvcom_x = np.sum(self.xy_coarse[index, 0]*coef, axis=1)
-        fvcom_y = np.sum(self.xy_coarse[index, 1]*coef, axis=1)
-
-        # Ocean points in the COARSE model
-        ocean = self.LandMask==1
-        ocean_x = self.xy_coarse[ocean, 0]
-        ocean_y = self.xy_coarse[ocean, 1]
-
-        # Create a tree referencing ocean points
-        ocean_tree = KDTree(np.array([ocean_x, ocean_y]).transpose())
-        full_coarse_tree = KDTree(self.xy_coarse)
-
-        # Nearest ocean point
-        _, _nearest_ocean = ocean_tree.query(np.array([fvcom_x, fvcom_y]).transpose())
-        nearest_ocean_x = ocean_x[_nearest_ocean]
-        nearest_ocean_y = ocean_y[_nearest_ocean]
-
-        # With same indexing as the rest of AROME
-        _, nearest_coarse_ocean = full_coarse_tree.query(np.array([nearest_ocean_x, nearest_ocean_y]).transpose())
-        return nearest_coarse_ocean
+        ocean_indices = np.flatnonzero(self.LandMask == 1)
+        if not ocean_indices.size:
+            raise ValueError(
+                'No sea points in the cropped atmospheric grid. Check the '
+                'ERA5 land/sea mask (lsm: 0=sea, 1=land), grid extent and '
+                'DomainMasks.offset; ocean-only variables cannot be interpolated.'
+            )
+        # Positions of only the targets requiring land fallback.
+        fvcom_x = np.sum(self.xy_coarse[index, 0] * coef, axis=1)
+        fvcom_y = np.sum(self.xy_coarse[index, 1] * coef, axis=1)
+        ocean_tree = KDTree(self.xy_coarse[ocean_indices])
+        _, nearest = ocean_tree.query(np.column_stack((fvcom_x, fvcom_y)))
+        return ocean_indices[np.atleast_1d(nearest)]
 
     def dump(self):
         '''
