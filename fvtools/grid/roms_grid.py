@@ -32,6 +32,91 @@ def get_roms_time_variable(nc):
     raise ValueError("ROMS source has neither 'ocean_time' nor 'time'")
 
 
+def compute_roms_s_coordinates(nlevels, vstretching):
+    """Reproduce the ROMS s-coordinate definitions for Vstretching 1-5.
+
+    The s-coordinates are independent of theta_s, theta_b and hc. The
+    corresponding Cs_r/Cs_w stretching curves must still come from the
+    source file; they are not computed here.
+
+    Vstretching=5 follows ROMS/Utility/set_scoord.F (Souza coordinates),
+    which uses a quadratic distribution rather than equally spaced s.
+    Arrays are ordered bottom-to-surface, like ROMS NetCDF coordinates.
+    """
+    n = int(nlevels)
+    if n < 1 or n != nlevels:
+        raise ValueError(f'Invalid number of ROMS s_rho levels: {nlevels!r}')
+    version = int(np.asarray(vstretching).item())
+
+    k_rho = np.arange(1, n + 1, dtype=np.float64) - 0.5
+    k_w = np.arange(n + 1, dtype=np.float64)
+
+    if version in (1, 2, 3, 4):
+        s_rho = (k_rho - n) / n
+        s_w = (k_w - n) / n
+    elif version == 5:
+        if n < 2:
+            raise ValueError('Vstretching=5 requires at least two ROMS layers')
+
+        # Exact quadratic function in ROMS set_scoord.F, applied to both
+        # half-integer rho levels and integer w levels.
+        def souza_s(k):
+            return (-(k*k - 2.0*k*n + k + n*n - n) / (n*n - n)
+                    - 0.01*(k*k - k*n) / (1.0 - n))
+
+        s_rho = souza_s(k_rho)
+        s_w = souza_s(k_w)
+        # ROMS sets these endpoints explicitly.
+        s_w[0] = -1.0
+        s_w[-1] = 0.0
+    else:
+        raise ValueError(f'Unsupported ROMS Vstretching={version}; expected 1-5')
+
+    return s_rho, s_w
+
+
+def read_roms_s_coordinates(nc):
+    """Prefer stored s_rho/s_w; calculate only missing coordinates.
+
+    Reading Cs_r metadata to determine N avoids any extra remote field read.
+    Missing coordinates require a Vstretch/Vstretching scalar variable or
+    the corresponding global attribute. Present coordinates need no such
+    metadata, so existing hindcast files retain their previous behavior.
+    """
+    nlevels = len(nc.variables['Cs_r'])
+    if len(nc.variables['Cs_w']) != nlevels + 1:
+        raise ValueError('ROMS Cs_w must contain N+1 interfaces')
+
+    s_rho = nc.variables['s_rho'][:] if 's_rho' in nc.variables else None
+    s_w = nc.variables['s_w'][:] if 's_w' in nc.variables else None
+
+    if s_rho is None or s_w is None:
+        source = nc.variables.get('Vstretch')
+        if source is None:
+            source = nc.variables.get('Vstretching')
+        if source is not None:
+            version = source[()]
+        else:
+            version = getattr(nc, 'Vstretching', None)
+            if version is None:
+                version = getattr(nc, 'Vstretch', None)
+        if version is None:
+            raise ValueError('Cannot calculate missing ROMS s-coordinates: '
+                             'Vstretching/Vstretch metadata is absent')
+        calculated_rho, calculated_w = compute_roms_s_coordinates(
+            nlevels, version)
+        if s_rho is None:
+            s_rho = calculated_rho
+        if s_w is None:
+            s_w = calculated_w
+
+    if np.ndim(s_rho) != 1 or len(s_rho) != nlevels:
+        raise ValueError(f'ROMS s_rho must have shape ({nlevels},)')
+    if np.ndim(s_w) != 1 or len(s_w) != nlevels + 1:
+        raise ValueError(f'ROMS s_w must have shape ({nlevels + 1},)')
+    return s_rho, s_w
+
+
 def get_roms_grid(mother, projection = None):
     '''
     Returns a ROMS object for the mother model of question
@@ -218,25 +303,27 @@ class ROMSbase(ROMSdepths, ROMSCropper):
         - angle between XI-axis and east
         '''
         load_position_fields = [
-            'lon_rho', 'lat_rho', 
-            'lat_u', 'lat_v', 
+            'lon_rho', 'lat_rho',
+            'lat_u', 'lat_v',
             'lon_u', 'lon_v',
-            'h', 'angle', 
-            'Cs_r', 's_rho', 
-            'Cs_w', 's_w', 
-            'hc',
-            'Vstretch'
-            ]
+            'h', 'angle',
+            'Cs_r', 'Cs_w',
+        ]
         with Dataset(path, 'r') as ncdata:
-            for load in load_position_fields:
-                try:
-                    setattr(self, load, ncdata.variables.get(load)[:])
-                except:
-                    if load == 'Vstretch':
-                        setattr(self, load, ncdata.variables.get('Vstretching')[:])
-                    else:
-                        raise TypeError(f'{load} is not available in {path}.')
+            for name in load_position_fields:
+                if name not in ncdata.variables:
+                    raise TypeError(f'{name} is not available in {path}.')
+                setattr(self, name, ncdata.variables[name][:])
 
+            self.hc = ncdata.variables['hc'][()]
+            source = ncdata.variables.get('Vstretch')
+            if source is None:
+                source = ncdata.variables.get('Vstretching')
+            if source is None:
+                raise TypeError(f'Vstretching/Vstretch is not available in {path}.')
+            self.Vstretch = np.asarray(source[()]).item()
+
+            self.s_rho, self.s_w = read_roms_s_coordinates(ncdata)
             self.h_rho = self.__dict__.pop('h')
 
             load_mask = ['u', 'v', 'rho']
@@ -336,8 +423,7 @@ class METNorKystV3Hindcast(METNorKystV3):
     def load_grid_from_nc(self, path):
         """Read the one collocated source grid exactly once per setup."""
         with Dataset(path, 'r') as nc:
-            required = ('lon', 'lat', 'h', 'sea_mask', 's_rho', 's_w',
-                        'Cs_r', 'Cs_w', 'hc')
+            required = ('lon', 'lat', 'h', 'sea_mask', 'Cs_r', 'Cs_w', 'hc')
             absent = [name for name in required if name not in nc.variables]
             if absent:
                 raise ValueError(f'NorKyst v3 hindcast is missing {absent}: {path}')
@@ -345,17 +431,18 @@ class METNorKystV3Hindcast(METNorKystV3):
                 if tuple(nc.variables[name].dimensions) != ('Y', 'X'):
                     raise ValueError(f'Hindcast {name} must have (Y, X) dimensions')
             for name in ('s_rho', 'Cs_r'):
-                if tuple(nc.variables[name].dimensions) != ('s_rho',):
+                if name in nc.variables and tuple(nc.variables[name].dimensions) != ('s_rho',):
                     raise ValueError(f'Hindcast {name} must have (s_rho,) dimensions')
             for name in ('s_w', 'Cs_w'):
-                if tuple(nc.variables[name].dimensions) != ('s_w',):
+                if name in nc.variables and tuple(nc.variables[name].dimensions) != ('s_w',):
                     raise ValueError(f'Hindcast {name} must have (s_w,) dimensions')
             self.lon_rho = nc.variables['lon'][:]
             self.lat_rho = nc.variables['lat'][:]
             self.h_rho = nc.variables['h'][:]
             self.rho_mask = np.asarray(nc.variables['sea_mask'][:]) != 1
-            for name in ('s_rho', 's_w', 'Cs_r', 'Cs_w'):
+            for name in ('Cs_r', 'Cs_w'):
                 setattr(self, name, nc.variables[name][:])
+            self.s_rho, self.s_w = read_roms_s_coordinates(nc)
             # hc is a scalar NetCDF variable: use [()], not [:].
             self.hc = nc.variables['hc'][()]
 
