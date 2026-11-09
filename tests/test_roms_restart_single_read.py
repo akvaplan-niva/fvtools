@@ -12,8 +12,13 @@ import pytest
 from fvtools.setup.initial import roms as restart
 
 
-@pytest.mark.parametrize('uv', [False, True])
-def test_main_reads_one_roms_timestep_and_reuses_vertical_weights(monkeypatch, uv):
+@pytest.mark.parametrize(
+    ('uv', 'continuity_correction'),
+    [(False, False), (True, False), (True, True)],
+)
+def test_main_reads_one_roms_timestep_and_reuses_vertical_weights(
+    monkeypatch, uv, continuity_correction,
+):
     events = []
     zeta = np.array([[1.0, 2.0], [3.0, 4.0]])
     expected_zeta = np.array([1.5, 3.5])
@@ -98,8 +103,19 @@ def test_main_reads_one_roms_timestep_and_reuses_vertical_weights(monkeypatch, u
             assert roms.zeta is zeta
             return SimpleNamespace(zeta=zeta.ravel().copy())
 
-        def dump(self, timestep, *, variables):
+        def interpolate_eta_tendency(self, full_zeta):
+            events.append('eta_tendency')
+            assert full_zeta is zeta
+            return np.array([0.0, 0.0])
+
+        def dump(self, timestep, *, variables, eta_tendency=None,
+                 continuity_options=None):
             events.append('write')
+            if continuity_correction:
+                np.testing.assert_array_equal(eta_tendency, [0.0, 0.0])
+                assert continuity_options == {'max_velocity_correction': 0.1}
+            else:
+                assert eta_tendency is None
             assert self.N4.vertical_ready
             assert np.array_equal(timestep.zeta, zeta.ravel())
             assert tuple(variables) == (
@@ -147,12 +163,20 @@ def test_main_reads_one_roms_timestep_and_reuses_vertical_weights(monkeypatch, u
         return n4
 
     monkeypatch.setattr(restart.vi, 'add_vertical_interpolation2N4', add_vertical_weights)
-    restart.main(restartfile='restart.nc', fvcom_grid='M.npy', mother='NKv3', uv=uv)
+    restart.main(
+        restartfile='restart.nc', fvcom_grid='M.npy', mother='NKv3', uv=uv,
+        continuity_correction=continuity_correction,
+        continuity_options={'max_velocity_correction': 0.1},
+    )
 
     assert len(constructed) == 1
     assert events.count('zeta_read') == 1
     assert sum(isinstance(item, tuple) and item[0] == 'download' for item in events) == 1
     assert events.count('n4_dump') == 2  # before and after vertical weights
+    if continuity_correction:
+        assert events.index('eta_tendency') < events.index('scope_close')
+    else:
+        assert 'eta_tendency' not in events
     assert events.index('scope_close') < events.index(('vertical', ('rho', 'u', 'v') if uv else ('rho',)))
     assert events[-1] == 'write'
 

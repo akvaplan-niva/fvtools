@@ -32,12 +32,16 @@ from ._helpers.restart_io import publish_staged_restart
 from fvtools.interpolators.glorys_fields import (
     VARIABLES, _horizontal, _open_cmems, _vertical,
 )
+from .continuity import (
+    apply_initial_continuity, select_time_indices, quadratic_eta_tendency,
+)
 
 def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
          glorys_file='glorys.nc', uv=False, latlon=False, *,
          time_method='exact', max_time_difference_hours=12,
          coastal_max_distance_m=50_000, chunk_size=20_000,
-         overwrite=False):
+         overwrite=False, continuity_correction=False,
+         continuity_options=None):
     """
     Initialize an FVCOM restart from a local, combined GLORYS NetCDF.
 
@@ -64,11 +68,13 @@ def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
         Permit replacing an existing output when *creating* a new restart.
         Updating an explicitly supplied existing restart is always permitted.
 
-    Returns the output restart path. A failed interpolation never alters it.
+    Returns None. A failed interpolation never alters the destination.
     """
     print('\nInterpolate CMEMS/Glorys oceanographic properties to the FVCOM grid')
     if restart_date is None and restartfile is None:
         raise ValueError('Specify restartfile or restart_date')
+    if continuity_correction and not uv:
+        raise ValueError('continuity_correction requires uv=True')
 
     # Load the grid
     if type(fvcom_grid) == str:
@@ -114,9 +120,14 @@ def main(restartfile=None, restart_date=None, fvcom_grid='M.npy',
                 selected = _source_time_index(
                     ds.time.values, requested_time, method=time_method,
                     max_hours=max_time_difference_hours)
-                _write_restart(nc, grid, source, ds, selected, uv=uv,
-                               latlon=latlon, chunk_size=chunk_size,
-                               coastal_max_distance_m=coastal_max_distance_m)
+                _write_restart(
+                    nc, grid, source, ds, selected, uv=uv,
+                    latlon=latlon, chunk_size=chunk_size,
+                    coastal_max_distance_m=coastal_max_distance_m,
+                    continuity_correction=continuity_correction,
+                    restart_time=requested_time,
+                    continuity_options=continuity_options,
+                )
                 nc.glorys_source_file = str(glorys_file)
                 nc.glorys_source_time = np.datetime_as_string(
                     np.datetime64(ds.time.values[selected]), unit='s')
@@ -252,8 +263,32 @@ def _read_field(ds, name, index):
         dtype=np.float64), np.nan)
 
 
+def _glorys_eta_tendency(
+    ds, source_zeta, time_index, restart_time, node_mask, node_ids, node_weights,
+):
+    """Interpolate three GLORYS SSH records to FVCOM nodes and differentiate."""
+    source_times = np.asarray(ds.time.values, dtype='datetime64[ms]')
+    target_time = np.datetime64(restart_time, 'ms')
+    offsets = np.asarray(
+        (source_times - target_time) / np.timedelta64(1, 's'),
+        dtype=np.float64,
+    )
+    selected = select_time_indices(offsets, 0.0, count=3)
+    zeta_samples = []
+    for source_index in selected:
+        field = (source_zeta if int(source_index) == int(time_index)
+                 else _read_field(ds, 'zeta', int(source_index)))
+        zeta_samples.append(_horizontal(
+            field, node_mask, node_ids, node_weights))
+    tendency = quadratic_eta_tendency(
+        offsets[selected], np.stack(zeta_samples), 0.0)
+    return tendency, source_times[selected]
+
+
 def _write_restart(nc, grid, source, ds, time_index, *, uv, latlon,
-                   chunk_size, coastal_max_distance_m):
+                   chunk_size, coastal_max_distance_m,
+                   continuity_correction=False, restart_time=None,
+                   continuity_options=None):
     written = _validate_restart(nc, grid, uv)
     if not isinstance(chunk_size, int) or chunk_size < 1:
         raise ValueError('chunk_size must be a positive integer')
@@ -332,6 +367,28 @@ def _write_restart(nc, grid, source, ds, time_index, *, uv, latlon,
             )
             for name, data in (('u', u), ('v', v), ('ua', ua), ('va', va)):
                 nc[name][0, ..., first:last] = data
+
+    if continuity_correction:
+        if not uv or restart_time is None:
+            raise ValueError('Continuity correction requires uv=True and restart_time')
+        eta_tendency, parent_times = _glorys_eta_tendency(
+            ds, values['zeta'], time_index, restart_time,
+            node_mask, node_ids, node_w,
+        )
+        options = dict(continuity_options or {})
+        options.setdefault('chunk_size', chunk_size)
+        report = apply_initial_continuity(nc, grid, eta_tendency, **options)
+        nc.setncattr('initial_continuity_source', 'CMEMS/GLORYS')
+        nc.setncattr(
+            'initial_continuity_parent_times',
+            ', '.join(np.datetime_as_string(value, unit='s')
+                      for value in parent_times),
+        )
+        print(
+            '  - Parent-driven continuity correction: '
+            f"RMS {report.attrs['rms_residual_before_m_s']:.3e} -> "
+            f"{report.attrs['rms_residual_after_m_s']:.3e} m/s"
+        )
 
     # Read written data again from the temporary restart (including f32 cast).
     for name in written:

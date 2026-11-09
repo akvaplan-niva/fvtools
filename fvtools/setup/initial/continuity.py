@@ -288,6 +288,149 @@ def _check_3d_mean(grid, nc, time_index, ua, va, chunk_size, max_error):
     return worst
 
 
+def select_time_indices(times, target, count=3):
+    """Indices of the nearest distinct times, returned chronologically."""
+    values = np.asarray(
+        np.ma.filled(np.ma.asarray(times, dtype=np.float64), np.nan))
+    try:
+        target = float(target)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('target must be a finite numeric time') from exc
+    if values.ndim != 1 or not values.size or not np.isfinite(values).all():
+        raise ValueError('Parent times must be a nonempty finite 1-D array')
+    if (not np.isfinite(target) or not isinstance(count, (int, np.integer))
+            or count < 2):
+        raise ValueError('A finite target and integer count >= 2 are required')
+
+    selected, seen = [], set()
+    for index in np.argsort(np.abs(values - target), kind='stable'):
+        value = float(values[index])
+        if value in seen:
+            continue
+        seen.add(value)
+        selected.append(int(index))
+        if len(selected) == count:
+            break
+    if len(selected) < count:
+        raise ValueError(
+            f'Continuity correction needs {count} distinct parent times; '
+            f'only {len(selected)} are available')
+    return np.asarray(sorted(selected, key=lambda i: values[i]), dtype=np.int64)
+
+
+def quadratic_eta_tendency(times_seconds, zeta_samples, target_seconds=0.0):
+    """Differentiate a quadratic interpolant through three parent SSH samples.
+
+    ``times_seconds`` is relative to any epoch and ``zeta_samples`` has shape
+    ``(3, node)``. Unequal intervals and one-sided endpoint stencils work.
+    """
+    times = np.asarray(
+        np.ma.filled(np.ma.asarray(times_seconds, dtype=np.float64), np.nan))
+    zeta = np.asarray(
+        np.ma.filled(np.ma.asarray(zeta_samples, dtype=np.float64), np.nan))
+    try:
+        target_seconds = float(target_seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('target_seconds must be finite') from exc
+    if times.shape != (3,) or zeta.ndim != 2 or zeta.shape[0] != 3:
+        raise ValueError('Expected three times and zeta_samples with shape (3, node)')
+    if (not np.isfinite(times).all() or not np.isfinite(target_seconds)
+            or not np.isfinite(zeta).all()):
+        raise ValueError('Parent times and zeta samples must be finite')
+    x = times - target_seconds
+    if len(np.unique(x)) != 3:
+        raise ValueError('Parent timestamps must be distinct')
+    derivative_weights = np.array([
+        -(x[1] + x[2]) / ((x[0] - x[1]) * (x[0] - x[2])),
+        -(x[0] + x[2]) / ((x[1] - x[0]) * (x[1] - x[2])),
+        -(x[0] + x[1]) / ((x[2] - x[0]) * (x[2] - x[1])),
+    ])
+    tendency = derivative_weights @ zeta
+    if not np.isfinite(tendency).all():
+        raise ValueError('Computed parent eta tendency is nonfinite')
+    return tendency
+
+
+def apply_initial_continuity(
+    nc, FVCOM_grid, eta_tendency, *, time_index=0,
+    max_velocity_correction=0.25, relative_residual_tolerance=0.02,
+    absolute_residual_tolerance=1e-8, max_2d_3d_mismatch=1e-5,
+    max_iterations=4000, chunk_size=50000,
+):
+    """Apply the projection to an already-open, staged FVCOM restart.
+
+    The caller owns atomic staging/publication. The same horizontal increment
+    is added to every sigma layer, preserving vertical shear.
+    """
+    from fvtools.setup.initial._helpers.fields import validate_restart_fields
+
+    if not isinstance(chunk_size, (int, np.integer)) or chunk_size < 1:
+        raise ValueError('chunk_size must be a positive integer')
+    if (not isinstance(time_index, (int, np.integer))
+            or 'time' not in nc.dimensions
+            or not 0 <= time_index < len(nc.dimensions['time'])):
+        raise IndexError('Restart time_index is out of range')
+    if not np.isfinite(max_2d_3d_mismatch) or max_2d_3d_mismatch < 0:
+        raise ValueError('max_2d_3d_mismatch must be finite and non-negative')
+
+    validate_restart_fields(nc, ('zeta', 'ua', 'va', 'u', 'v'))
+    nnode, ncell = len(FVCOM_grid.x), len(FVCOM_grid.tri)
+    if (nc['zeta'].shape != (len(nc.dimensions['time']), nnode)
+            or nc['ua'].shape != (len(nc.dimensions['time']), ncell)
+            or nc['va'].shape != (len(nc.dimensions['time']), ncell)):
+        raise ValueError('Restart and FVCOM grid node/element dimensions do not match')
+
+    zeta = _vector(nc['zeta'][time_index, :], (nnode,), 'restart zeta')
+    ua = _vector(nc['ua'][time_index, :], (ncell,), 'restart ua')
+    va = _vector(nc['va'][time_index, :], (ncell,), 'restart va')
+    original_error = _check_3d_mean(
+        FVCOM_grid, nc, time_index, ua, va, int(chunk_size),
+        max_2d_3d_mismatch)
+    report = project_initial_continuity(
+        FVCOM_grid, zeta=zeta, ua=ua, va=va, eta_tendency=eta_tendency,
+        max_velocity_correction=max_velocity_correction,
+        relative_residual_tolerance=relative_residual_tolerance,
+        absolute_residual_tolerance=absolute_residual_tolerance,
+        max_iterations=max_iterations,
+    )
+    report.attrs['max_original_2d_3d_mismatch_m_s'] = original_error
+    du = np.asarray(report['delta_ua'].values)
+    dv = np.asarray(report['delta_va'].values)
+
+    # Projection and all safety checks are complete before the first write.
+    nc['ua'][time_index, :] = report['corrected_ua'].values
+    nc['va'][time_index, :] = report['corrected_va'].values
+    for start in range(0, ncell, int(chunk_size)):
+        stop = min(start + int(chunk_size), ncell)
+        for name, increment in (('u', du), ('v', dv)):
+            profile = _vector(
+                nc[name][time_index, :, start:stop],
+                (nc[name].shape[1], stop - start), name)
+            nc[name][time_index, :, start:stop] = (
+                profile + increment[None, start:stop])
+
+    corrected_ua = _vector(nc['ua'][time_index, :], (ncell,), 'written ua')
+    corrected_va = _vector(nc['va'][time_index, :], (ncell,), 'written va')
+    corrected_error = _check_3d_mean(
+        FVCOM_grid, nc, time_index, corrected_ua, corrected_va,
+        int(chunk_size), max_2d_3d_mismatch)
+    nc.setncattr(
+        'initial_continuity_projection',
+        'Constrained kinetic-energy minimum; all exterior-edge cells fixed')
+    nc.setncattr('initial_continuity_rms_before_m_s',
+                 float(report.attrs['rms_residual_before_m_s']))
+    nc.setncattr('initial_continuity_rms_after_m_s',
+                 float(report.attrs['rms_residual_after_m_s']))
+    nc.setncattr('initial_continuity_max_velocity_correction_m_s',
+                 float(report.attrs['max_velocity_correction_m_s']))
+    nc.setncattr('initial_continuity_max_original_2d_3d_mismatch_m_s',
+                 float(original_error))
+    nc.setncattr('initial_continuity_max_corrected_2d_3d_mismatch_m_s',
+                 float(corrected_error))
+    nc.sync()
+    return report
+
+
 def correct_restart_continuity(
     FVCOM_grid, restartfile, outputfile, *, eta_tendency, time_index=0,
     max_velocity_correction=0.25, relative_residual_tolerance=0.02,

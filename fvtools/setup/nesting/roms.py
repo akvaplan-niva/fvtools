@@ -56,7 +56,7 @@ def main(fvcom_grd,
                  - 'NKv3' for NorKyst-800 version 3, with data from 2023-05-07 to present
                  - 'NKv3H' hincast NorKyst version 3 stored at metno thredds
                  - 'H-NS' or 'D-NS' for hourly values or daily averages from NorShelf-2.4km
-                 - 'IMR-NF' NorFjords-150 data from the IMR.
+                 - 'IMR-NF' NorFjords-160 data from the IMR.
                  - 'IMR-NKv3' NorKyst version 3 downloaded from the institute of marine research AWS S3 storage
 
     weights    - tuple giving the weight interval for the nest nodes and cells. By default, weights = [2.5e-4, 2.5e-5].

@@ -18,6 +18,9 @@ from fvtools.util.tools import Filelist
 from ._helpers.empty_initial import make_initial_file
 from ._helpers.plot_restart import plot_interps
 from ._helpers.restart_io import atomic_update_restart
+from .continuity import (
+    apply_initial_continuity, select_time_indices, quadratic_eta_tendency,
+)
 
 
 global versionnr
@@ -37,7 +40,8 @@ def main(
         result_folder = None,
         name          = None,
         filelist      = None,
-        speed         = False
+        speed         = False,
+        *, continuity_correction=False, continuity_options=None,
     ):
     '''
     Two options for child specification:
@@ -55,6 +59,9 @@ def main(
     Optional:
     speed          - Initialize the model with velocities as well. Sometimes works, many times not - hence False by default.
     '''
+    if continuity_correction and not speed:
+        raise ValueError('continuity_correction requires speed=True')
+
     # Load (or create) child restart file
     child_fn = get_child_file(child_fn, startdate, child_grid)
     nodefield, cellfield, alias = interpolation_fields(speed)
@@ -72,8 +79,15 @@ def main(
                       [np.min(M_ch.y)-10000, np.max(M_ch.y)+10000])
 
         print('Searching for correct time index, prepare grid metrics')
+        eta_tendency = None
+        parent_times = None
         with netCDF4.Dataset(mother_fn,'r', format='NETCDF4') as mother:
             ind = check_time(mother['time'],child['time'])
+            if continuity_correction:
+                eta_tendency, parent_times = _fvcom_parent_eta_tendency(
+                    mother, mother_fn, M, M_ch, float(child['time'][0]),
+                    filelist=filelist, result_folder=result_folder, name=name,
+                )
 
             print('\nInterpolate data')
             print('- Horizontal interpolation (nearest neighbor):')
@@ -94,6 +108,24 @@ def main(
 
         # Dump to netCDF
         child = dump_data(data, child)
+        if continuity_correction and not all(
+            name in data for name in ('u', 'v', 'ua', 'va')
+        ):
+            raise ValueError('Parent FVCOM source must provide u, v, ua and va')
+        if eta_tendency is not None:
+            report = apply_initial_continuity(
+                child, M_ch, eta_tendency, **(continuity_options or {}),
+            )
+            child.setncattr('initial_continuity_source', 'FVCOM')
+            child.setncattr(
+                'initial_continuity_parent_times_mjd',
+                ', '.join(f'{value:.12g}' for value in parent_times),
+            )
+            print(
+                '  - Parent-driven continuity correction: '
+                f"RMS {report.attrs['rms_residual_before_m_s']:.3e} -> "
+                f"{report.attrs['rms_residual_after_m_s']:.3e} m/s"
+            )
 
         # Done!
         child.mother           = mother_fn
@@ -156,6 +188,66 @@ def check_time(tm,tch):
                          f'- This mother file starts: {netCDF4.num2date(tm[0],tm.units).strftime("%d. %b %Y - %H:%M")}\n'+\
                          f'                 and ends: {netCDF4.num2date(tm[-1],tm.units).strftime("%d. %b %Y - %H:%M")}')
     return ind
+
+def _fvcom_parent_eta_tendency(
+    mother, mother_fn, M, M_ch, target_time, *,
+    filelist=None, result_folder=None, name=None,
+):
+    """Interpolate three parent FVCOM zeta records to child nodes and d/dt."""
+    records = {}
+    if filelist is not None:
+        fl = Filelist(filelist)
+        for value, path, index in zip(fl.time, fl.path, fl.index):
+            if np.isfinite(value):
+                records[float(value)] = (path, int(index))
+
+    if result_folder is not None:
+        if not name:
+            raise ValueError('name is required with result_folder for continuity correction')
+        with open(result_folder, 'r') as fid:
+            directories = [line.strip() for line in fid if line.strip()]
+        for directory in directories:
+            for filename in sorted(os.listdir(directory)):
+                if (name not in filename
+                        or len(filename) != len(name) + 8):
+                    continue
+                path = os.path.join(directory, filename)
+                if not os.path.isfile(path):
+                    continue
+                with netCDF4.Dataset(path, 'r') as source:
+                    values = np.asarray(np.ma.filled(
+                        np.ma.asarray(source['time'][:], dtype=np.float64), np.nan))
+                for index, value in enumerate(values):
+                    if np.isfinite(value):
+                        records[float(value)] = (path, index)
+
+    # Include all records from the already-open source file; this also makes
+    # the helper work when the filelist contains only a subset of the run.
+    current_times = np.asarray(np.ma.filled(
+        np.ma.asarray(mother['time'][:], dtype=np.float64), np.nan))
+    for index, value in enumerate(current_times):
+        if np.isfinite(value):
+            records[float(value)] = (mother_fn, index)
+
+    times = np.asarray(sorted(records), dtype=np.float64)
+    selected = select_time_indices(times, float(target_time), count=3)
+    nearest = M.find_nearest(M_ch.x, M_ch.y, grid='node')
+    source_nodes = np.asarray(M.cropped_nodes)[nearest]
+    zeta_samples = []
+    for source_index in selected:
+        path, record = records[float(times[source_index])]
+        if os.path.abspath(path) == os.path.abspath(mother_fn):
+            zeta = mother['zeta'][record, source_nodes]
+        else:
+            with netCDF4.Dataset(path, 'r') as source:
+                zeta = source['zeta'][record, source_nodes]
+        zeta_samples.append(np.asarray(np.ma.filled(
+            np.ma.asarray(zeta, dtype=np.float64), np.nan)))
+
+    offsets = (times[selected] - float(target_time)) * 86400.0
+    tendency = quadratic_eta_tendency(offsets, np.stack(zeta_samples), 0.0)
+    return tendency, times[selected]
+
 
 def find_file(name, data_directories, time):
     ''' 

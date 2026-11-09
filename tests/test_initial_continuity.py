@@ -7,7 +7,8 @@ import pytest
 
 from fvtools.setup.initial.continuity import (
     _half_edge_matrix, project_initial_continuity,
-    correct_restart_continuity,
+    correct_restart_continuity, apply_initial_continuity,
+    select_time_indices, quadratic_eta_tendency,
 )
 
 
@@ -177,3 +178,62 @@ def test_atomic_restart_writes_both_2d_and_3d_without_shear_change(tmp_path):
         np.testing.assert_array_equal(f['zeta'][0],f0['zeta'][0])
     with pytest.raises(FileExistsError):
         correct_restart_continuity(grid,source,output,eta_tendency=target)
+
+
+
+def test_select_time_indices_returns_nearest_distinct_samples_in_time_order():
+    times = np.array([-4.0, -2.0, 0.0, 2.0, 2.0, 8.0])
+    selected = select_time_indices(times, 1.0)
+    np.testing.assert_array_equal(times[selected], [-2.0, 0.0, 2.0])
+
+
+def test_quadratic_eta_tendency_is_exact_for_unequal_time_intervals():
+    times = np.array([-3.0, 0.5, 4.0])
+    target = 0.25
+    zeta = np.stack((
+        2.0 + 3.0 * times + 0.5 * times**2,
+        -1.0 + 4.0 * times - 2.0 * times**2,
+    ), axis=1)
+    expected = np.array([3.0 + target, 4.0 - 4.0 * target])
+    np.testing.assert_allclose(
+        quadratic_eta_tendency(times, zeta, target),
+        expected, rtol=0, atol=1e-12,
+    )
+
+
+def test_apply_initial_continuity_preserves_shear_and_updates_2d_and_3d(tmp_path):
+    netcdf4 = pytest.importorskip('netCDF4')
+    grid = small_mesh()
+    zeta, ua, va = state(grid)
+    target = eta_target(grid, zeta, ua, va)
+    free = ~np.any(grid.T.NBE < 0, axis=1)
+    ua[free] += 0.015
+    va[free] -= 0.008
+    source = tmp_path / 'staged.nc'
+    with netcdf4.Dataset(source, 'w') as nc:
+        for dim, size in (
+            ('time', 1), ('node', len(zeta)), ('nele', len(ua)), ('siglay', 2),
+        ):
+            nc.createDimension(dim, size)
+        nc.createVariable('zeta', 'f8', ('time', 'node'))[0, :] = zeta
+        nc.createVariable('ua', 'f8', ('time', 'nele'))[0, :] = ua
+        nc.createVariable('va', 'f8', ('time', 'nele'))[0, :] = va
+        nc.createVariable('u', 'f8', ('time', 'siglay', 'nele'))[0, :, :] = np.vstack(
+            (ua + 0.06, ua - 0.04))
+        nc.createVariable('v', 'f8', ('time', 'siglay', 'nele'))[0, :, :] = np.vstack(
+            (va - 0.03, va + 0.02))
+
+    with netcdf4.Dataset(source, 'r+') as nc:
+        u_before = nc['u'][0, :, :].copy()
+        v_before = nc['v'][0, :, :].copy()
+        report = apply_initial_continuity(nc, grid, target)
+
+    with netcdf4.Dataset(source) as nc:
+        np.testing.assert_allclose(nc['ua'][0], report['corrected_ua'].values)
+        np.testing.assert_allclose(nc['va'][0], report['corrected_va'].values)
+        np.testing.assert_allclose(
+            nc['u'][0, 0] - nc['u'][0, 1], u_before[0] - u_before[1])
+        np.testing.assert_allclose(
+            nc['v'][0, 0] - nc['v'][0, 1], v_before[0] - v_before[1])
+        np.testing.assert_array_equal(nc['zeta'][0], zeta)
+        assert 'initial_continuity_rms_after_m_s' in nc.ncattrs()

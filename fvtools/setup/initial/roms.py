@@ -10,15 +10,22 @@ from datetime import timedelta
 from fvtools.util.kdtree import KDTree
 from fvtools.interpolators.barotropic import correct_fvcom_barotropic
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.grid.roms_grid import get_roms_grid, get_roms_time_variable, RomsDownloader
+from fvtools.grid.roms_grid import (
+    get_roms_grid, get_roms_time_variable, RomsDownloader, ROMSTimeStep,
+)
 from fvtools.interpolators.roms_interpolators import N4ROMS, LinearInterpolation
 
 
 from ._helpers.empty_initial import make_initial_file
 from ._helpers.restart_io import atomic_update_restart
 from ._helpers.fields import ROMS_TO_FVCOM
+from .continuity import (
+    apply_initial_continuity, select_time_indices, quadratic_eta_tendency,
+)
 
-def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother = None, uv = False, latlon = False):
+def main(restartfile=None, restart_date=None, fvcom_grid='M.npy', mother=None,
+         uv=False, latlon=False, *, continuity_correction=False,
+         continuity_options=None):
     '''
     Interpolate hydrographic properties from the ROMS mother model to be used as initial conditions for the FVCOM model.
     ---
@@ -34,6 +41,8 @@ def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother =
     '''
     if restartfile is None and restart_date is None:
         raise ValueError('You need to spesify the restart file to overwrite, or the date you want to restart from (for making a new restartfile)')
+    if continuity_correction and not uv:
+        raise ValueError('continuity_correction requires uv=True')
 
     print('Load the FVCOM grid ')
     M = FVCOM_grid(fvcom_grid)
@@ -102,10 +111,15 @@ def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother =
     # needed to calculate ROMS layer depths, whereas the downloaded fields
     # are cropped for horizontal interpolation.
     Restarter = Roms2FVCOMRestart(restartfile, N4, M.tri, variables, latlon, verbose=False)
+    Restarter.fvcom_grid = M
     with Restarter.reuse_roms_datasets():
         full_zeta = Restarter.z
         ROMS.zeta = full_zeta
         timestep = Restarter.download(variables=variables, full_zeta=full_zeta)
+        eta_tendency = (
+            Restarter.interpolate_eta_tendency(full_zeta)
+            if continuity_correction else None
+        )
 
     # Compute FVCOM water-column depths using the unmodified, cropped zeta.
     M.zeta = np.sum(timestep.zeta[N4.rho_index] * N4.rho_coef, axis=1)
@@ -120,7 +134,13 @@ def main(restartfile = None, restart_date = None, fvcom_grid = 'M.npy', mother =
     # file list or ROMS timestep.  dump() modifies the timestep in place.
     Restarter.N4 = N4.dump()
     print('\nInterpolate and store ROMS hydrography to the FVCOM restart file')
-    Restarter.dump(timestep, variables=variables)
+    if eta_tendency is None:
+        Restarter.dump(timestep, variables=variables)
+    else:
+        Restarter.dump(
+            timestep, variables=variables, eta_tendency=eta_tendency,
+            continuity_options=continuity_options,
+        )
     print('\nFin.')
 
 class N4DEPTH:
@@ -287,7 +307,38 @@ class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
             ]
         return self.crop_and_transpose(timestep, variables=variables)
 
-    def dump(self, timestep, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']):
+    def interpolate_eta_tendency(self, full_zeta):
+        """Interpolate three parent SSH records and differentiate at restart time.
+
+        The exact restart-time full-grid zeta already read for vertical
+        coordinates is reused. Only the other two selected records are read.
+        """
+        selected = select_time_indices(
+            self.source_times, self.restart_source_time, count=3)
+        offsets = (self.source_times[selected] - self.restart_source_time) * 86400.0
+        samples = []
+        for source_index in selected:
+            path = self.source_paths[int(source_index)]
+            record = int(self.source_indices[int(source_index)])
+            if path == self.path and record == self.index_here:
+                timestep = ROMSTimeStep(record)
+                timestep.zeta = full_zeta[
+                    self.N4.m_ri:self.N4.x_ri + 1,
+                    self.N4.m_rj:self.N4.x_rj + 1,
+                ]
+            else:
+                timestep = self.read_timestep(record, path, variables=['zeta'])
+            timestep = self.crop_and_transpose(timestep, variables=['zeta'])
+            timestep = self.horizontal_interpolation(
+                timestep, variables=['zeta'])
+            samples.append(np.asarray(np.ma.filled(
+                np.ma.asarray(timestep.zeta, dtype=np.float64), np.nan)))
+
+        self.continuity_parent_times = self.source_times[selected].copy()
+        return quadratic_eta_tendency(offsets, np.stack(samples), 0.0)
+
+    def dump(self, timestep, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va'],
+             *, eta_tendency=None, continuity_options=None):
         '''
         Download all required fields from the thredds server
         '''
@@ -295,9 +346,13 @@ class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
         timestep = self.vertical_interpolation(timestep, variables = variables)
         if 'u' in variables or 'v' in variables or 'ua' in variables or 'va' in variables:
             timestep = self.adjust_uv(timestep) # adjust from (xi, eta) to (lon, lat) - and then to (x,y) in utm if self.latlon=False
-        self.write_to_restart(timestep, variables = variables)
+        self.write_to_restart(
+            timestep, variables=variables, eta_tendency=eta_tendency,
+            continuity_options=continuity_options,
+        )
 
-    def write_to_restart(self, timestep, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va']):
+    def write_to_restart(self, timestep, variables = ['salt', 'temp', 'zeta', 'u', 'v', 'ua', 'va'],
+                         *, eta_tendency=None, continuity_options=None):
         '''
         Dump the fields to the restart file
         '''
@@ -336,20 +391,43 @@ class Roms2FVCOMRestart(RomsDownloader, LinearInterpolation):
                 nc.variables['va'][0,:]         = timestep.va
                 print('  - Updated va')
 
+            if eta_tendency is not None:
+                report = apply_initial_continuity(
+                    nc, self.fvcom_grid, eta_tendency,
+                    **(continuity_options or {}),
+                )
+                nc.setncattr('initial_continuity_source', 'ROMS')
+                nc.setncattr(
+                    'initial_continuity_parent_times_mjd',
+                    ', '.join(f'{value:.12g}'
+                              for value in self.continuity_parent_times),
+                )
+                print(
+                    '  - Parent-driven continuity correction: '
+                    f"RMS {report.attrs['rms_residual_before_m_s']:.3e} -> "
+                    f"{report.attrs['rms_residual_after_m_s']:.3e} m/s"
+                )
     def find_roms_to_start_from(self, verbose):
         '''
         Search for the relevant time and index over more than one file, in case we use a forecast- or a HI-NorKyst file
         '''
         with netCDF4.Dataset(self.restartfile) as nc:
             self._prepare_search()
-            time, self.path, self.indices = rn.make_fileList(self.start_time, self.stop_time, self.ROMS)
-            ind = np.where(time==nc['time'][0])
+            times, paths, indices = rn.make_fileList(
+                self.start_time, self.stop_time, self.ROMS)
+            target = float(nc['time'][0])
 
-        if ind[0].size == 0:
+        self.source_times = np.asarray(times, dtype=np.float64)
+        self.source_paths = list(paths)
+        self.source_indices = np.asarray(indices, dtype=np.int64)
+        matches = np.flatnonzero(self.source_times == target)
+        if matches.size == 0:
             raise CouldNotFindRestartTime("We were not able to find a suitable restart time")
 
-        self.path  = self.path[ind[0][0]]
-        self.index_here = self.indices[ind[0][0]]
+        self.restart_source_time = target
+        self.path = self.source_paths[int(matches[0])]
+        self.index_here = int(self.source_indices[int(matches[0])])
+        self.indices = self.source_indices.tolist()
 
         if verbose:
             with netCDF4.Dataset(self.path) as nc:
