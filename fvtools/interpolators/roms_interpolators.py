@@ -211,7 +211,7 @@ class N4ROMS(N4):
         smallerN4 = N4_interpolation()
         # Preserve the source schema even after N4 is sent to a worker.
         smallerN4.source_adapter = getattr(self.ROMS, 'source_adapter', None)
-        smallerN4 = self._set_attributes_to_dump(smallerN4, self.ROMS, ['cropped_dsigma_u', 'cropped_dsigma_v', 'fv_rho_mask'])
+        smallerN4 = self._set_attributes_to_dump(smallerN4, self.ROMS, ['fv_rho_mask'])
         smallerN4 = self._set_attributes_to_dump(smallerN4, self.FV, ['cell_utm_angle'])
         smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['rho_index', 'rho_coef'])
 
@@ -227,7 +227,11 @@ class N4ROMS(N4):
             pass
 
         if self.uv:
-            smallerN4 = self._set_attributes_to_dump(smallerN4, self.ROMS, ['fv_u_mask', 'fv_v_mask'])
+            # Hydrography-only restarts must not construct velocity crop masks
+            # or full-grid sigma thickness arrays.
+            smallerN4 = self._set_attributes_to_dump(
+                smallerN4, self.ROMS,
+                ['cropped_dsigma_u', 'cropped_dsigma_v', 'fv_u_mask', 'fv_v_mask'])
             smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['angle', 'u_index', 'v_index', 'u_coef', 'v_coef'])
             try:
                 smallerN4 = self._set_attributes_to_dump(smallerN4, self, ['vi_ind1_u', 'vi_ind2_u', 'vi_weigths1_u', 'vi_weigths2_u'])

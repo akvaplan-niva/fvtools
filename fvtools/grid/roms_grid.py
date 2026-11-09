@@ -775,10 +775,14 @@ class RomsDownloader:
 
             rho = (slice(self.N4.m_ri, self.N4.x_ri + 1),
                    slice(self.N4.m_rj, self.N4.x_rj + 1))
-            u_slice = (slice(self.N4.m_ui, self.N4.x_ui + 1),
-                       slice(self.N4.m_uj, self.N4.x_uj + 1))
-            v_slice = (slice(self.N4.m_vi, self.N4.x_vi + 1),
-                       slice(self.N4.m_vj, self.N4.x_vj + 1))
+            # The compact N4 object used by uv=False restarts has no U/V
+            # crop metadata. Resolve each staggered crop only if needed.
+            if 'u' in variables or 'ua' in variables:
+                u_slice = (slice(self.N4.m_ui, self.N4.x_ui + 1),
+                           slice(self.N4.m_uj, self.N4.x_uj + 1))
+            if 'v' in variables or 'va' in variables:
+                v_slice = (slice(self.N4.m_vi, self.N4.x_vi + 1),
+                           slice(self.N4.m_vj, self.N4.x_vj + 1))
             level = slice(None) if sigma is None else sigma
 
             if 'salt' in variables:
