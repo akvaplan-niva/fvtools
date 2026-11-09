@@ -578,14 +578,18 @@ class IMRNorFjords(ROMSbase):
             dirs.extend([x[0] for x in os.walk(folder)])
 
         # remove folders that contain folders
-        leaf_branch = []
-        for dr in dirs:
-            if dr[-1]=='/':
-                continue
-            else:
-                # This string is at the end of the branch, thus this is where the data is stored
-                leaf_branch.append(dr)
-        self.subfolders = leaf_branch
+        if not dirs:
+            self.subfolders = self.folders
+
+        else:
+            leaf_branch = []
+            for dr in dirs:
+                if dr[-1]=='/':
+                    continue
+                else:
+                    # This string is at the end of the branch, thus this is where the data is stored
+                    leaf_branch.append(dr)
+            self.subfolders = leaf_branch
 
     def _list_ncfiles(self):
         '''
