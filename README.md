@@ -58,12 +58,12 @@ These scrips were developed to emulate the workflow from `fvcom_toolbox/fvtools`
 
 `We most of the time`:
 - Work in Norway, where input data are most easily accessible in `UTM33W` coordinates
-- Nest into existing `FVCOM` experiments using files stored on `Betzy` or on `Stokes`
+- Nest into existing FVCOM experiments using files stored on `Betzy` or on `Stokes`
 
 `We sometimes`:
 - Nest into larger domain ROMS models operated by the met office or the institute of marine research
   - `NorFjords160` is a series of 160 m resolution ROMS models configured to model fjords.
-  - `NorKyst800` is an 800 m ROMS model configured for near-coast modelling.
+  - `NorKyst800` is an 800 m resolution ROMS model configured for near-coast modelling.
   - `NorShelf2.5km` is a 2500 m resolution data assimilated ROMS model configured for shelf modelling.
 
 You can call most scripts via the `main` function, which will create input/forcing files following a standardized setup:
@@ -79,14 +79,14 @@ You can call most scripts via the `main` function, which will create input/forci
 
 - `fvtools.setup.BuildRivers.main` creates river forcing for your experiment
 - `fvtools.setup.nesting.get_ngrd.main` cuts out a nesting zone mesh from the main mesh
-  - for fvcom to fvcom nested domains, this routine will dump the `casename_bathymetry.dat` file to your `input` folder 
+  - for fvcom to fvcom nested domains, this routine will dump the `casename_bathymetry.dat` file to your `input` folder
 - `atmospheric forcing: fvtools.setup.atm.read_metCoop.main`
   - interpolates atmospheric forcing to your domain
 
 Boundary forcing is created by these modules:
 - `fvtools.setup.nesting.roms.main` (ROMS / NorKyst)
 - `fvtools.setup.nesting.fvcom.main` (FVCOM mother)
-- `fvtools.setup.nesting.cmems.main` (CMEMS/GLORYS)
+- `fvtools.setup.nesting.cmems.main` (CMEMS/GLORYS or NWSHELF)
 - `fvtools.setup.nesting.tpxo.main` (add TPXO tides to a nesting file)
 
 they will produce `.nc` forcing files for the boundary and `.dat` depth files, where the depth near the open boundaries is set equal to that of the forcing model, with a relaxation zone connecting it to the bathymetry set by BuildCase.
@@ -111,6 +111,7 @@ You have a `casename.2dm` file (either from smeshing or from SMS); create the FV
 import fvtools.setup.BuildCase as bc
 bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 ```
+
 `Mesh quality`: BuildCase prepares the grid before a simulation. It checks if there are invalid triangles (with more than one side facing the boundary) and will remove such triangles if present.
 
 `Bathymetry`: BuildCase smooths the bathymetry to a  [rx0](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwil_uzfvL39AhWPnYsKHZREAtAQFnoECAUQAQ&url=http%3A%2F%2Fmathieudutour.altervista.org%2FPresentations%2FSteepnessPresExt.pdf&usg=AOvVaw1bBZEBsmkvWmSeCkxlrE3y) factor less than `rx0max`. 
@@ -120,10 +121,10 @@ bc.main('cases/inlet/casename.2dm', 'bathymetry.txt')
 `BuildCase` returns `casename_*.dat` FVCOM input files to the `input` folder and a file called `M.npy` used by other setup routines.
 
 #### The mesh in the nesting zone
-fvtools supports ROMS, FVCOM and CMEMS/GLORYS nesting (using the same `ngrd.npy` nesting grid):
+fvtools supports ROMS, FVCOM and CMEMS nesting (using the same `ngrd.npy` nesting grid):
 - From `ROMS` (`NorKyst`, `NorShelf`, or IMR NorFjords)
 - From `FVCOM` (from any `FVCOM` model that overlaps with this mesh)
-- From `CMEMS/GLORYS` (local combined NetCDF)
+- From `CMEMS` (`GLORYS` or `NWSHELF`, using a local combined NetCDF)
 
 ```python
 import fvtools.setup.nesting.get_ngrd as gn
@@ -150,7 +151,6 @@ f2f.main(ngrd = 'ngrd.npy',
          output_file = '/input/my_experiment_nest.nc', 
          start_time = '2018-01-01-00', 
          stop_time = '2018-02-01-00')
-
 ```
 
 `ROMS-FVCOM nesting` will automatically find the forcing it needs at thredds.met.no:
@@ -170,22 +170,31 @@ MET Norway does _not_ guarantee data is continuous in time. We must keep the tid
 
 Adding a ROMS reader to `fvtools.grid.roms_grid` can support other ROMS experiments.
 
-#### CMEMS/GLORYS and TPXO nesting
+#### CMEMS/GLORYS or NWSHELF and TPXO nesting
 
-CMEMS nesting starts from a **local combined GLORYS NetCDF** containing `thetao`, `so`, `uo`, `vo`, `zos` and static `deptho`. The download helper can create this combined file using the Copernicus Marine service (requires access to its data):
+CMEMS nesting starts from a **local combined NetCDF** containing `thetao`, `so`, `uo`, `vo`, `zos` and static `deptho`. The download helpers in `fvtools.setup.download.cmems` create this file from Copernicus Marine data:
 
 ```python
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.setup.nesting.cmems_download import download_cmems
+from fvtools.setup.download.cmems import download_glorys, download_nwshelf
 import fvtools.setup.nesting.cmems as cmems_nest
 
 M = FVCOM_grid('M.npy')
-download_cmems(M, '2024-04-01', '2024-04-30', outfile='input/cmems/glorys.nc')
-cmems_nest.main('M.npy', 'ngrd.npy', 'input/cmems/glorys.nc',
+
+# GLORYS (daily):
+download_glorys(M, '2024-04-01', '2024-04-30', outfile='input/cmems/glorys.nc')
+
+# NWSHELF (hourly):
+download_nwshelf(M, '2024-10-01', '2024-10-03', outfile='input/cmems/nwshelf.nc')
+
+# The same nesting interpolator reads either combined file:
+cmems_nest.main('M.npy', 'ngrd.npy', 'input/cmems/nwshelf.nc',
                 'input/casename_nest.nc', latlon=True)
 ```
 
-CMEMS/GLORYS supplies temperature, salinity, sea-surface elevation and currents on its native daily timestamps. The routine matches nesting-zone bathymetry and computes horizontal/vertical interpolation without resampling time; FVCOM handles time interpolation. Run it using an original, **unmatched** FVCOM `M.npy` when changing the mother model.
+Both downloaders include static `deptho` and use the variable names and dimensions expected by `fvtools.setup.nesting.cmems`. GLORYS retains its native daily timestamps. NWSHELF uses hourly timestamps; because its 3D temperature, salinity and current datasets have a shorter historical coverage than some 2D products, the combined file keeps only timestamps shared by all downloaded datasets. The NWSHELF 3D current dataset also provides `wo` and the 2D barotropic components `ubar` and `vbar`.
+
+The nesting routine matches nesting-zone bathymetry and computes horizontal/vertical interpolation. Run it using an original, **unmatched** FVCOM `M.npy` when changing the mother model.
 
 Add TPXO tides **after** CMEMS nesting (do not add the same tides twice):
 
@@ -247,7 +256,7 @@ ir.main(restartfile="casename_restart_0001.nc", mother="H-NS", uv=True)
 
 #### CMEMS/GLORYS restart, followed by TPXO
 
-`fvtools.setup.initial.cmems` reads a **local combined GLORYS NetCDF** (including `deptho`). It updates an existing FVCOM restart or creates a new one with `restart_date`. The source provides `zeta`, temperature and salinity and, with `uv=True`, cell-centred `u/v/ua/va`. Use `time_method='nearest'` explicitly when the restart time differs from the native daily CMEMS timestamp.
+`fvtools.setup.initial.cmems` reads a **local combined CMEMS NetCDF** (including `deptho`). It updates an existing FVCOM restart or creates a new one with `restart_date`. The source provides `zeta`, temperature and salinity and, with `uv=True`, cell-centred `u/v/ua/va`. Use `time_method='nearest'` explicitly when the restart time differs from the native source timestamp.
 
 ```python
 import fvtools.setup.initial.cmems as cmems_restart
@@ -288,6 +297,7 @@ You have now run FVCOM, which has stored results to output folders, e.g. output1
 /cluster/shared/NS9067K/apn_backup/FVCOM/MATNOC/PO10/output04
 /cluster/shared/NS9067K/apn_backup/FVCOM/MATNOC/PO10/output05
 ```
+
 fvcom_make_file_list.py makes a file that links points in time to files and indices in FVCOM results.
 ```bash
 python -m fvtools.util.fvcom_make_file_list -d folders.txt -s PO10 -f fileList.txt
@@ -316,8 +326,8 @@ Creates quick georeferenced gifs of velocity fields. It accepts `filelist` and `
 import fvtools.plot.qc_gif_uv as qc
 qc.main(folder='output01', sigma=0)
 qc.main(folder='output01', z=10)
-
 ```
+
 ## The mesh object - FVCOM_grid
 The mesh object is the main interface for looking at an FVCOM grid. It reads a variety of input formats:
 - `casename_xxxx.nc`
@@ -342,7 +352,6 @@ M.plot_grid()
 
 # Write the mesh to a .2dm file so that you can edit it in SMS
 M.write_2dm()
-
 ```
 
 You can georeference data
@@ -361,7 +370,6 @@ M.plot_cvs(M.h)
 Alternatively plot on triangle patches (much faster the first time):
 ```python
 M.plot_field(M.h)
-
 ```
 
 ### Check mass conservation
@@ -370,7 +378,6 @@ tracer = M.load_netCDF('casename_0001.nc', 'fabm_tracer')
 for i in range(len(tracer[:,0,0])):
   mass = np.sum(M.node_volume * tracer[i,:].T)
   plt.scatter(i, mass)
-
 ```
 
 ### Interpolate data to z-levels

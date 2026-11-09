@@ -5,21 +5,28 @@ The notebooks here are examples, not packaged command-line entry points.
 - `make_roms_forced_experiment.ipynb`: FVCOM grid preparation, ROMS nesting and `fvtools.setup.initial.roms` restart, river and atmospheric forcing.
 - `identify_rivers_download_temperatures.ipynb`: river outlets and temperature climatology. Its imports from `fvtools.setup.rivers.NVEforcing` remain valid.
 
-## CMEMS/GLORYS + TPXO (nesting)
+## CMEMS/GLORYS or NWSHELF + TPXO (nesting)
 
 ```python
 from fvtools.grid.fvcom_grd import FVCOM_grid
-from fvtools.setup.nesting.cmems_download import download_cmems
+from fvtools.setup.download.cmems import download_glorys, download_nwshelf
 import fvtools.setup.nesting.cmems as cmems_nest
 import fvtools.setup.nesting.tpxo as tpxo_nest
 
 M = FVCOM_grid('M.npy')
-download_cmems(M, '2024-04-01', '2024-04-30', outfile='input/cmems/glorys.nc')
+
+# Choose one source:
+download_glorys(M, '2024-04-01', '2024-04-30', outfile='input/cmems/glorys.nc')
+# download_nwshelf(M, '2024-10-01', '2024-10-03', outfile='input/cmems/nwshelf.nc')
+
+# The same nesting interpolator reads either combined file:
 cmems_nest.main('M.npy', 'ngrd.npy', 'input/cmems/glorys.nc', 'input/casename_nest.nc', latlon=True)
 tpxo_nest.main('input/casename_nest.nc', harmonics_files={'zeta': 'tpxo/h.nc'})
 ```
 
-`cmems_nest` interpolates the original CMEMS samples without time interpolation; the combined GLORYS file needs static `deptho`. Add TPXO only once afterwards. For TPXO currents provide both U/V harmonic files and `tpxo_bathymetry='tpxo/grid.nc'` (containing `hu/hv`); projected FVCOM nesting currently supports elevation-only TPXO.
+Both downloaders produce one local NetCDF with `thetao`, `so`, `uo`, `vo`, `zos` and static `deptho`, using the variable names expected by `fvtools.setup.nesting.cmems`. NWSHELF additionally retains `wo`, `ubar` and `vbar`; the latter are the 2D barotropic current components. The NWSHELF output uses timestamps common to all downloaded hourly datasets.
+
+`cmems_nest` interpolates the source timestamps without time interpolation. Add TPXO only once afterwards. For TPXO currents provide both U/V harmonic files and `tpxo_bathymetry='tpxo/grid.nc'` (containing `hu/hv`); projected FVCOM nesting currently supports elevation-only TPXO.
 
 ## CMEMS/GLORYS + TPXO (restart)
 
