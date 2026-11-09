@@ -539,7 +539,7 @@ class LocalData:
         '''
         property holding all local ncfiles
         '''
-        print(f'- Assuming that norfjords data is available under {self.local_folder}')
+        print(f'- Assuming that data is available under {self.local_folder}')
         self.folders = [self.local_folder]
         self._bottom_folders()
         return self._list_ncfiles()
