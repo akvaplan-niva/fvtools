@@ -52,11 +52,13 @@ def main(fvcom_grd,
     optional:
     ----
     mother     - ROMS model to nest into
-                 - 'HI-NK'    for NorKyst-800 version 1
                  - 'NKv2' for NorKyst-800 version 2, with data from 2017-02-20 to 2025-10-17
                  - 'NKv3' for NorKyst-800 version 3, with data from 2023-05-07 to present
+                 - 'NKv3H' hincast NorKyst version 3 stored at metno thredds
                  - 'H-NS' or 'D-NS' for hourly values or daily averages from NorShelf-2.4km
-                 - 'IMR-NF'   for NorFjords-150 data from the IMR. Assu
+                 - 'IMR-NF' NorFjords-150 data from the IMR.
+                 - 'IMR-NKv3' NorKyst version 3 downloaded from the institute of marine research AWS S3 storage
+
     weights    - tuple giving the weight interval for the nest nodes and cells. By default, weights = [2.5e-4, 2.5e-5].
     nprocs     - Number of processes to use when downloading (set equal to None to use all available cores)
                 - set to 1 by default, since thredds should not be accessed by multiple workers. It can be helpfull to use
