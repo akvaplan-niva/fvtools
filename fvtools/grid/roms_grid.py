@@ -503,6 +503,7 @@ class NorShelf(ROMSbase):
             https = "https://thredds.met.no/thredds/dodsC/sea_norshelf_files/norshelf_qck_an_"
         return https+ "{0.year}{0.month:02}{0.day:02}".format(date) + "T00Z.nc"
 
+# For data stored on norstore
 class LocalData:
     def test_ncfile(self, file):
         try:
@@ -571,7 +572,7 @@ class LocalData:
             dirs.extend([x[0] for x in os.walk(folder)])
 
         # remove folders that contain folders
-        if not dirs:
+        if dirs == self.folders:
             self.subfolders = self.folders
 
         else:
@@ -607,7 +608,7 @@ class IMRNorFjords(ROMSbase, LocalData):
 
 class IMRNorKystv3(ROMSbase, LocalData):
     '''
-    Routines to check if IMR-NorFjords data is available, inherits grid-methods from ROMSbase
+    Routines to check if IMR-NorKyst data is available, inherits grid-methods from ROMSbase
     '''
     @property
     def local_folder(self):
