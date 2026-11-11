@@ -35,6 +35,23 @@ def get_arome_grids(startdate, stopdate, Proj):
         NewAROME.prepare_grid()
     return OldAROME, NewAROME
 
+def grid_x_axis_angles(lon, lat, x, y):
+    '''
+    Direction of a structured grid's x-axis (its last index) at each grid point, in radians,
+    counter-clockwise:
+    - angle_xy:   from the x-axis of the projected coordinates x, y
+    - angle_east: from true east, using lon, lat
+
+    AROME/MEPS x_wind_10m and y_wind_10m are components along the grid's own (Lambert) axes,
+    not east/north. Turning them counter-clockwise by angle_xy gives components along x/y,
+    by angle_east east/north components.
+    '''
+    lon, lat, x, y = (np.asarray(v, dtype=float) for v in (lon, lat, x, y))
+    angle_xy   = np.arctan2(np.gradient(y, axis=1), np.gradient(x, axis=1))
+    dlon       = np.gradient(np.unwrap(lon, period=360, axis=1), axis=1)
+    angle_east = np.arctan2(np.gradient(lat, axis=1), dlon * np.cos(np.radians(lat)))
+    return angle_xy, angle_east
+
 class AROMEversion(ABC):
     @abstractmethod
     def test_day(self, day):
@@ -46,7 +63,8 @@ class AROMEversion(ABC):
     @abstractmethod
     def prepare_grid(self):
         '''
-        Method that loads the grids and projects them to a UTM coordinate
+        Method that loads the grids, projects them to a UTM coordinate and sets the direction of the
+        grid's x-axis (x_axis_angle, x_axis_angle_east), which the winds are turned by
         '''
         pass
 
@@ -232,6 +250,11 @@ class OldAromeGrid(AROMEbase, AROMEversion):
         self.x,   self.y   = self.Proj(self.lonpp, self.latpp, inverse=False)
         self.xex, self.yex = self.Proj(self.lonex, self.latex, inverse=False)
 
+        # Direction of the grid's x-axis, which the winds are along. The interpolation coefficients index
+        # the pp grid (fv_domain_mask); winds read from extracted/subset files with fv_domain_mask_ex are
+        # on the same points (see crop_extended), so the pp angle serves both.
+        self.x_axis_angle, self.x_axis_angle_east = grid_x_axis_angles(self.lonpp, self.latpp, self.x, self.y)
+
     @cached_property
     def land_mask(self):
         '''
@@ -264,6 +287,9 @@ class NewAromeGrid(AROMEbase, AROMEversion):
         with Dataset(self.basepath, 'r') as nc:
             self.lon, self.lat = nc.variables.get('longitude')[:], nc.variables.get('latitude')[:]
         self.x, self.y = self.Proj(self.lon, self.lat, inverse=False)
+
+        # Direction of the grid's x-axis, which the winds are along
+        self.x_axis_angle, self.x_axis_angle_east = grid_x_axis_angles(self.lon, self.lat, self.x, self.y)
 
     @property
     def basepath(self):
