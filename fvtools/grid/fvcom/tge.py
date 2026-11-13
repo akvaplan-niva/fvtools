@@ -888,8 +888,8 @@ def get_art1(NT, MT, VX, VY, XC, YC, NV, ISONB, NTVE, NBVE, NBVT, NBSN):
     '''
     # Set aside some storage
     ART1 = np.zeros((MT), dtype = np.float64)
-    XX   = np.zeros((2*np.max(NTVE)+2), dtype = np.float64)
-    YY   = np.zeros((2*np.max(NTVE)+2), dtype = np.float64)
+    XX   = np.zeros((2*np.max(NTVE)+3), dtype = np.float64)
+    YY   = np.zeros((2*np.max(NTVE)+3), dtype = np.float64)
 
     # Calculate area of control volume
     for I in range(MT):

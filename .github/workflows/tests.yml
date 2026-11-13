@@ -1,0 +1,56 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request cancels the run it replaces.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The lowest Python that pyproject.toml allows, and the newest one
+        # with wheels for every locked runtime dependency.
+        python-version: ["3.12", "3.15"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install the locked dependencies (runtime + test group)
+        run: uv sync --locked --no-dev --group test
+
+      - name: Run the tests, offline
+        # Every HTTP client is pointed at a closed local port, so no test can
+        # reach MET's THREDDS or any other server. libcurl (netCDF4/OPeNDAP)
+        # reads the lower-case names; requests and urllib read both. Keys in
+        # `env` are case-insensitive, so the upper-case copies are exported in
+        # the script.
+        # NUMBA_BOUNDSCHECK=1 makes an out-of-range index in a Numba kernel
+        # raise IndexError. Without it such a write silently corrupts memory
+        # and the suite crashes later, at random, somewhere else.
+        env:
+          http_proxy: http://127.0.0.1:9
+          https_proxy: http://127.0.0.1:9
+          no_proxy: ""
+          NUMBA_BOUNDSCHECK: "1"
+        run: |
+          export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$https_proxy" NO_PROXY=""
+          uv run --no-sync pytest -q -ra

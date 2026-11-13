@@ -43,3 +43,21 @@ dev = [
     "ipympl",
     "OWSLib",
 ]
+# What CI installs on top of the runtime dependencies: `uv sync --no-dev --group test`.
+test = [
+    "pytest>=8.4.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# fvtools is not installed into the uv environment (no build system), so put
+# the repository root on sys.path; `uv run pytest` then works like
+# `python -m pytest`.
+pythonpath = ["."]
+# Tests that need the internet (e.g. MET's THREDDS) carry @pytest.mark.network
+# and are skipped unless asked for with `-m network`. --strict-markers turns a
+# misspelt marker into an error instead of a test that runs anyway.
+addopts = "-m 'not network' --strict-markers"
+markers = [
+    "network: needs internet access (e.g. MET's THREDDS); skipped unless run with -m network",
+]
