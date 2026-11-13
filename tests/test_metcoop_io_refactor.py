@@ -289,6 +289,8 @@ def test_serial_download_reuses_files_between_steps_and_closes_on_change(monkeyp
     monkeypatch.setattr(met.AROMEDownloader, 'read_data', staticmethod(read))
     monkeypatch.setattr(met.AROMEDownloader, 'interpolate_arome_data',
                         lambda self, timestep, n4: timestep)
+    monkeypatch.setattr(met.AROMEDownloader, 'rotate_arome_vectors',
+                        lambda self, timestep, n4: timestep)
     monkeypatch.setattr(met.AROMEDownloader, 'write_timestep',
                         lambda self, timestep: written.append((timestep.counter, timestep.index)))
 
@@ -328,6 +330,8 @@ def test_writer_exception_is_not_retried(monkeypatch):
         return SimpleNamespace()
     monkeypatch.setattr(met.AROMEDownloader, '_read_with_retry', staticmethod(reader))
     monkeypatch.setattr(met.AROMEDownloader, 'interpolate_arome_data',
+                        lambda self, timestep, n4: timestep)
+    monkeypatch.setattr(met.AROMEDownloader, 'rotate_arome_vectors',
                         lambda self, timestep, n4: timestep)
     def broken_write(self, timestep):
         raise RuntimeError('model output bug')

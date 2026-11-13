@@ -228,9 +228,11 @@ class ROMSbase(ROMSdepths, ROMSCropper):
 
             self.h_rho = self.__dict__.pop('h')
 
+            # True on land. Round first: MET's NorKyst v3 files are written with lossy compression and store
+            # some water points as 1.0000038, which a plain bool() would count as land
             load_mask = ['u', 'v', 'rho']
             for load in load_mask:
-                setattr(self, f'{load}_mask', ((ncdata.variables.get(f'mask_{load}')[:]-1)*(-1)).astype(bool))
+                setattr(self, f'{load}_mask', np.round(np.asarray(ncdata.variables.get(f'mask_{load}')[:])) == 0)
 
     def get_x_y_z(self):
         '''

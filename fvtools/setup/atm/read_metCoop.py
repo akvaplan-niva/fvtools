@@ -8,6 +8,7 @@ import progressbar as pb
 from fvtools.grid.fvcom_grd import FVCOM_grid  # objects that load what we need to know about the FVCOM grid
 from fvtools.grid.arome_grid import get_arome_grids, NoAvailableData # objects that load arome grid data
 from fvtools.interpolators.horizontal_interpolator import N4Coefficients
+from pyproj import CRS
 
 from time import gmtime, strftime
 from datetime import datetime, timedelta
@@ -30,12 +31,15 @@ def main(grd_file, outfile, start_time, stop_time, latlon=False):
     outfile:     name of netcdf output
     start_time: 'yyyy-mm-dd-hh'
     stop_time:  'yyyy-mm-dd-hh'
-    latlon:     Set true if you are making a latlon model (will otherwise rotate to adjust for UTM north/east distortion)
+    latlon:     Set true if you are making a latlon model: the winds are then written as east/north components.
+                Otherwise they are written along the x/y axes of the model's projection (M.reference, e.g. UTM).
+                AROME's x_wind_10m/y_wind_10m follow its own Lambert grid, and are turned to these axes in both cases.
     '''
     print(f'\nCreate {outfile} - unstuctured grid atmospheric forcing file')
     print(f'---')
     print(f'- Load {grd_file}')
     M = FVCOM_grid(grd_file)
+    check_latlon_flag(M, latlon)
     startdate, stopdate = get_start_and_stop_as_datetime(start_time, stop_time)
 
     if startdate < datetime(2017,9,7):
@@ -48,7 +52,7 @@ def main(grd_file, outfile, start_time, stop_time, latlon=False):
     time, path, path_acc, path_rad, index = metcoop_make_fileList(startdate, stopdate, OldAROME = OldAROME, NewAROME = NewAROME)
 
     # Two different grids, with the option to load pre-loaded interpolation coefficients
-    oldN4, newN4 = get_nearest4(OldAROME, NewAROME, M)
+    oldN4, newN4 = get_nearest4(OldAROME, NewAROME, M, latlon)
 
     # Dump to outfile
     print('\nDump to outfile\n---')
@@ -57,6 +61,22 @@ def main(grd_file, outfile, start_time, stop_time, latlon=False):
     Downloader.dump_single()
 
 # Routines to parse input
+def check_latlon_flag(M, latlon):
+    '''
+    Warn if latlon does not fit the model's coordinates: with latlon=True the winds are east/north components,
+    which a model in projected x/y (UTM) would read as if they were along its x/y axes.
+    (Printed, since this module silences warnings.)
+    '''
+    try:
+        crs = CRS.from_user_input(M.reference)
+    except Exception:
+        return
+    if latlon and crs.is_projected:
+        print(f'\n  WARNING: latlon=True, but the grid is in {M.reference} (projected). The winds will be east/north\n'
+              f'           components, not components along the model\'s x/y axes. Use latlon=False for a model in {M.reference}.\n')
+    elif not latlon and crs.is_geographic:
+        print(f'\n  WARNING: latlon=False, but the grid is in {M.reference} (geographic). Use latlon=True for a lat/lon model.\n')
+
 def get_start_and_stop_as_datetime(start_time, stop_time):
     '''
     return start and stop as datetime objects
@@ -67,13 +87,15 @@ def get_start_and_stop_as_datetime(start_time, stop_time):
     stopdate   = datetime(int(stopnum[0]), int(stopnum[1]), int(stopnum[2]))
     return startdate, stopdate
 
-def get_nearest4(OldAROME, NewAROME, M):
+def get_nearest4(OldAROME, NewAROME, M, latlon):
     '''
     The data on met/thredds is stored on two AROME/MetCoOp main grids - the "original" running to 5. feb. 2020, and the extended
     version running (over a bigger domain since they now work together with the baltic states) running ever since.
 
     We seem to need two different interpolation algorithms, since they changed the grid 
     (not sure if the grid points covering Norway are the same as before)
+
+    Each also gets the angle the winds are turned by at the FVCOM cells (to east/north if latlon, else to the model's x/y).
     '''
     N4A = None
     newN4A = None
@@ -81,10 +103,12 @@ def get_nearest4(OldAROME, NewAROME, M):
     if OldAROME is not None:
         N4A = N4Coefficients(M, OldAROME)
         N4A.compute_nearest4()
+        N4A.compute_cell_arome_angle(latlon)
 
     if NewAROME is not None:
         newN4A = N4Coefficients(M, NewAROME)
         newN4A.compute_nearest4()
+        newN4A.compute_cell_arome_angle(latlon)
 
     return N4A, newN4A
 
@@ -232,8 +256,7 @@ class AROMEDownloader:
                         )
                         timestep.counter = counter
                         timestep = self.interpolate_arome_data(timestep, N4)
-                        if not self.latlon:
-                            timestep = self.rotate_arome_vectors(timestep, N4)
+                        timestep = self.rotate_arome_vectors(timestep, N4)
                         self.write_timestep(timestep)
                         bar.update(counter + 1)
         finally:
@@ -324,8 +347,7 @@ class AROMEDownloader:
                     i+=1
                     bar.update(i)
                     timestep = self.interpolate_arome_data(timestep, timestep.N4)
-                    if not self.latlon:
-                        timestep = self.rotate_arome_vectors(timestep, timestep.N4)
+                    timestep = self.rotate_arome_vectors(timestep, timestep.N4)
                     self.write_timestep(timestep)
 
     def write_timestep(self, timestep):
@@ -370,22 +392,14 @@ class AROMEDownloader:
 
     def rotate_arome_vectors(self, timestep, N4):
         '''
-        When running FVCOM in UTM mode, we need to rotate so that we account for true north
+        AROME's x_wind_10m/y_wind_10m are along its own Lambert grid axes, not east/north. Turn them to the
+        model's x/y axes (or to east/north if latlon) by N4.cell_arome_angle, counter-clockwise.
         '''
-        timestep.Uwind, timestep.Vwind = self._rotate_vector(timestep.Uwind, timestep.Vwind, N4.cell_utm_angle)
+        angle = N4.cell_arome_angle
+        u, v  = timestep.Uwind, timestep.Vwind
+        timestep.Uwind = u*np.cos(angle) - v*np.sin(angle)
+        timestep.Vwind = u*np.sin(angle) + v*np.cos(angle)
         return timestep
-
-    def _rotate_vector(self, u, v, angle):
-        '''
-        Rotates vectors from (x', y') system to (x,y)
-
-        (u, v) velocity components in (x', y') system
-        angle is the angle between (x') and (xnew)
-        returns unew, vnew
-        '''
-        unew =  u*np.cos(angle) + v*np.sin(angle)
-        vnew = -u*np.sin(angle) + v*np.cos(angle)
-        return unew, vnew
 
     @staticmethod
     def read_data(N4, path, path_acc, path_rad, index, *, datasets=None):
@@ -476,8 +490,12 @@ def create_nc_forcing_file(name, FVCOM_grd, times, latlon, epsg):
 
         if latlon:
             nc.interpolation_projection = 'degrees'
+            nc.wind_components = 'eastward/northward (turned from the AROME grid axes)'
+            u_name, v_name = 'Eastward Wind Speed', 'Northward Wind Speed'
         else:
             nc.interpolation_projection = epsg
+            nc.wind_components = f'along {epsg} x/y (turned from the AROME grid axes)'
+            u_name, v_name = f'Wind Speed along {epsg} x', f'Wind Speed along {epsg} y'
 
         # Create dimensions
         nc.createDimension('time', None)
@@ -610,28 +628,28 @@ def create_nc_forcing_file(name, FVCOM_grd, times, latlon, epsg):
         air_temp.type            = 'data'
 
         U10 = nc.createVariable('U10', 'single', ('time', 'nele',))
-        U10.long_name            = 'Eastward Wind Speed'
+        U10.long_name            = u_name
         U10.units                = 'm/s'
         U10.grid                 = 'fvcom_grid'
         U10.coordinates          = ''
         U10.type                 = 'data'
 
         uwind_speed = nc.createVariable('uwind_speed', 'single', ('time', 'nele',))
-        uwind_speed.long_name    = 'Eastward Wind Speed'
+        uwind_speed.long_name    = u_name
         uwind_speed.units        = 'm/s'
         uwind_speed.grid         = 'fvcom_grid'
         uwind_speed.coordinates  = ''
         uwind_speed.type         = 'data'
 
         V10 = nc.createVariable('V10', 'single', ('time', 'nele',))
-        V10.long_name            = 'Northward Wind Speed'
+        V10.long_name            = v_name
         V10.units                = 'm/s'
         V10.grid                 = 'fvcom_grid'
         V10.coordinates          = ''
         V10.type                 = 'data'
 
         vwind_speed = nc.createVariable('vwind_speed', 'single', ('time', 'nele',))
-        vwind_speed.long_name    = 'Northward Wind Speed'
+        vwind_speed.long_name    = v_name
         vwind_speed.units        = 'm/s'
         vwind_speed.grid         = 'fvcom_grid'
         vwind_speed.coordinates  = ''
